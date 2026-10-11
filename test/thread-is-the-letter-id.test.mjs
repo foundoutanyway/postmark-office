@@ -286,7 +286,7 @@ test("F7 · ADDITIVE and nothing else — every key the receipt already answered
     const odb = logDb();
     const clone = mailClone();
     const r = await callTool("send_letter", letter(), ctx({ odb, clone, canWrite: true, key: KEY }));
-    // OPERATIONS.md § Breaking-change rules: "a public HTTP response shape is a
+    // CONTRACT.md § Breaking changes: "a public HTTP response shape is a
     // contract (panes in the wild freeze it in carved JS)". Additive is lawful;
     // renamed or retyped is the break. So the promise is asserted as a promise.
     for (const [k, t] of Object.entries({

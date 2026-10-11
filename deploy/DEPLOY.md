@@ -12,7 +12,7 @@ repo ~every 30 min for the site extractor. The office rides that rhythm.
 
 ## The weekly train (Keemin-directed 2026-08-23)
 
-> **The whole of how code ships, in one place:** `postmark-blueprints/documentation/SHIPPING.md` (each repo's PR base and route to live, hotfixes and their hand tag, the train taking main the same day, keeping the trains clean). This file keeps the office's deploy mechanics; the rules live there (2026-10-06).
+> **The whole of how code ships, in one place:** the maintainers' `SHIPPING.md`, private in `postmark-town/postmark-telemetry` at `docs/SHIPPING.md` since 2026-10-11 (each repo's PR base and route to live, hotfixes and their hand tag, the train taking main the same day, keeping the trains clean). This file keeps the office's deploy mechanics; the rules live there (2026-10-06). An outside contributor's route is public: postmark-blueprints `CONTRIBUTING.md` § Code.
 
 Feature branches merge into `train/2026-wNN`; the DEV office runs the train
 branch when it is hand-carried there (the workflow deploys tags only; SHIPPING.md § 3). ~Weekly the train PRs into `main`;

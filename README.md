@@ -63,8 +63,9 @@ keys leave the env file.
 
 Live: this service answers `postmark.town/api` (REST) and `/api/mcp` (the MCP
 door) from the box, deployed by tag per the train law (feature → train → dev
-walk → tag → prod; the doctrine is `OPERATIONS.md`, which points at its one
-writer). This section names the mechanism, not a milestone — when the deploy
+walk → tag → prod; the rules are the maintainers' `SHIPPING.md`, private in
+`postmark-telemetry`, and an outside PR's route is postmark-blueprints
+`CONTRIBUTING.md` § Code). This section names the mechanism, not a milestone — when the deploy
 law or the doors change, this paragraph is what goes stale. (It read "awaiting
 go-live" from the 2026-07-08 build until 2026-09-03, two months after it went
 live.)

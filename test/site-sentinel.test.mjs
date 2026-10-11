@@ -1444,7 +1444,7 @@ test("§11 REAL CASE 10-11 18:00Z: published 5d878f3c, newest still S102, 74 min
     nowMs: at("2026-10-11T19:14:00Z"), writtenAtMs: at("2026-10-11T18:01:30Z"),
   });
   assert.equal(r.verdict, "DOWN");
-  assert.equal(r.reason, "the 18:00Z sweep published 5d878f3c at 18:01Z and no settlement tag covers it after 74 min (newest is S102 on 0cca7f2b): blocked, ours to unblock (blueprints SHIPPING.md § 9)");
+  assert.equal(r.reason, "the 18:00Z sweep published 5d878f3c at 18:01Z and no settlement tag covers it after 74 min (newest is S102 on 0cca7f2b): blocked, ours to unblock (postmark-telemetry SHIPPING.md § 9)");
   assert.equal(r.detail.newest_tag, "S102");
   assert.equal(r.detail.covered, false);
   assert.ok(_BAD.has(r.verdict), "DOWN alarms, and /fleet barks on it");
@@ -1486,7 +1486,7 @@ test("§11 a refused, raced or starving sweep is DOWN an hour on, naming the slo
   });
   const r = classifySettlement({ receipt: refused, newestTag: S102, covered: null, nowMs: at("2026-10-11T19:05:00Z") });
   assert.equal(r.verdict, "DOWN");
-  assert.equal(r.reason, `the 18:00Z sweep ended "refused" and nothing has settled after 65 min: lint: 2 errors in marks/foo.md; blocked, ours to unblock (blueprints SHIPPING.md § 9)`);
+  assert.equal(r.reason, `the 18:00Z sweep ended "refused" and nothing has settled after 65 min: lint: 2 errors in marks/foo.md; blocked, ours to unblock (postmark-telemetry SHIPPING.md § 9)`);
   assert.doesNotMatch(r.reason, /second line/);
 
   // no classifier verdict: the report's own detail is the line
@@ -1553,7 +1553,7 @@ test("§11 a quiet morning does not clear a held night: a sweep publication past
   const { covered, held } = judgeQuietRange({ status: "ahead", total_commits: 4, commits: range });
   const r = classifySettlement({ receipt: QUIET(), newestTag: S102, covered, held, nowMs: at("2026-10-12T07:10:00Z") });
   assert.equal(r.verdict, "DOWN");
-  assert.equal(r.reason, `the 06:00Z sweep was quiet, standing on 532655ad, and 5d878f3c "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed" still has no settlement tag after 70 min (newest is S102 on 0cca7f2b): an earlier sweep's publication is still unblessed: blocked, ours to unblock (blueprints SHIPPING.md § 9)`);
+  assert.equal(r.reason, `the 06:00Z sweep was quiet, standing on 532655ad, and 5d878f3c "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed" still has no settlement tag after 70 min (newest is S102 on 0cca7f2b): an earlier sweep's publication is still unblessed: blocked, ours to unblock (postmark-telemetry SHIPPING.md § 9)`);
   assert.equal(r.detail.held.sha, "5d878f3c55bf");
   // inside the hour it waits, naming what it waits on
   const early = classifySettlement({ receipt: QUIET(), newestTag: S102, covered, held, nowMs: at("2026-10-12T06:30:00Z") });

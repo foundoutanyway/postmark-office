@@ -906,7 +906,7 @@ export function actionFields(props = {}, required = [], { strip = STANDPOINT_PAR
 // src/declare.mjs § DECLARE_SCHEMA). They belong on the act's own CARD
 // (`household { read: "declare" }`), which is what the site's move-in form is
 // generated from. They do NOT belong on the acts index the bare answer carries
-// — OPERATIONS.md § Breaking-change rules: "REST: stable/simple for frozen
+// — CONTRACT.md § Breaking changes: "REST: stable/simple for frozen
 // consumers", and test/foyer-shrink.test.mjs F5/F7d pin that index's shape
 // key by key and its size — so the index keeps exactly the shape it had:
 // `type`, `description`, `required`, and whatever else the schema always

@@ -553,7 +553,7 @@ assertActCardsReachable(HOUSEHOLD_DISPATCHABLE, HOUSEHOLD_READS);
 // door can do, one line each, and the exact call that opens any one of them.
 //
 // ⚠ THE CONNECTOR SKIN'S ALONE, and that is a contract decision rather than a
-// convenience. OPERATIONS.md § Breaking-change rules: "The REST and MCP skins
+// convenience. CONTRACT.md § Breaking changes: "The REST and MCP skins
 // may deliberately hold different promises (REST: stable/simple for frozen
 // consumers; MCP: renegotiated per session) — one implementation, two
 // contracts, both pinned by tests." A pane in the wild has this answer's shape
@@ -986,7 +986,7 @@ function actCard(act, db, ctx = {}, { human = false } = {}) {
 // instead of it, in the world's shape (`read`, `card`, the domain, the law).
 //
 // ⚠ CONNECTOR SKIN ONLY, and the gate is `slim` — the same flag the foyer's own
-// shrink rides. OPERATIONS.md § Breaking-change rules: "REST: stable/simple for
+// shrink rides. CONTRACT.md § Breaking changes: "REST: stable/simple for
 // frozen consumers; MCP: renegotiated per session." `GET /household?read=address`
 // is a REST answer with a shape carved into somebody's JS; the parity is the
 // connector's renegotiation, so REST keeps the answer it has always given.
@@ -1015,7 +1015,7 @@ function actCard(act, db, ctx = {}, { human = false } = {}) {
 // the slim gate. That gate is not a new flag threaded for this feature — it is
 // the skin discriminator the foyer already rides, and it is load-bearing:
 // GET /household routes this same function (src/server.mjs:1126), so without it
-// the parity walks onto a frozen consumer's ?read=address. OPERATIONS.md:
+// the parity walks onto a frozen consumer's ?read=address. CONTRACT.md § Breaking changes:
 // "REST: stable/simple for frozen consumers; MCP: renegotiated per session."
 //
 // NOTE for anyone tracing the falsifier: `callTool` (src/mcp.mjs:573) dispatches

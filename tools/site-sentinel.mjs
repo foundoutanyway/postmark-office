@@ -1047,7 +1047,7 @@ export function classifyMeeps({ raw = null, readError = null, nowMs, staleAfterM
 // minutes is the keeper's ~:40 plus slack, and it is the ruling's number. Inside
 // it a held sweep is OK ("awaiting the blessing"); past it, DOWN. DOWN and not
 // STALE: the town is not behind, it is blocked, and the repair is a person
-// (blueprints SHIPPING.md § 9: ours to unblock, never the keeper's).
+// (postmark-telemetry docs/SHIPPING.md § 9: ours to unblock, never the keeper's).
 //
 // PAST THE HOUR, SILENCE IS NOT POSSIBLE (coordinator, 2026-10-11). UNKNOWN
 // never alerts here and /fleet barks only on DOWN or STALE, so an unread input
@@ -1090,7 +1090,7 @@ const firstLine = (s) => String(s ?? "").split("\n").map((l) => l.trim()).find(B
 // "74 min" while it reads as minutes; "12h38m" once minutes stop being a number a reader can hold.
 const minutesOrDuration = (ms) => (ms < 2 * HOUR ? `${Math.floor(ms / MINUTE)} min` : humanDuration(ms));
 
-const SHIPPING_9 = "blocked, ours to unblock (blueprints SHIPPING.md § 9)";
+const SHIPPING_9 = "blocked, ours to unblock (postmark-telemetry SHIPPING.md § 9)";
 
 /**
  * @param {object|null} receipt      settlement-auto.json, parsed; null when unread

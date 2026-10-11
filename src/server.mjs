@@ -2450,8 +2450,8 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           // have carried an instruction for a door it is not standing at. This
           // hint names a letter id and the field `thread`, and both doors have
           // both. Teaching at one door and not the other is the exact defect
-          // Ferry filed; the shape rule it must respect (OPERATIONS.md
-          // § Breaking-change rules — a public HTTP response SHAPE is a
+          // Ferry filed; the shape rule it must respect (CONTRACT.md
+          // § Breaking changes — a public HTTP response SHAPE is a
           // contract) is respected by being purely additive: no key of this
           // receipt is renamed, retyped or removed, and the key is absent
           // whenever there is nothing to say.

@@ -55,6 +55,13 @@ import { fileURLToPath } from "node:url";
 const OFFICE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const scratch = mkdtempSync(join(tmpdir(), "postmark-hhrefresh-"));
 after(() => { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* litter */ } });
+// THE STORE the crossing's household export renders (POS-350): the export reads
+// the registry from the store, never the fixture town's printouts, so each
+// crossing re-states the store from the town seed first.
+import { registryStoreForTowns } from "./helpers/office-under-test.mjs";
+const REG = await registryStoreForTowns({ db: "refresh_registry_test" });
+after(() => REG.stop());
+
 
 const has = (cmd) => { try { execFileSync("sh", ["-c", cmd], { stdio: "ignore" }); return true; } catch { return false; } };
 // The chain is POSIX-shell shaped. Where `sh` is not a real shell these SKIP
@@ -258,6 +265,7 @@ function runCrossing(root, { env = {} } = {}) {
   const seen = join(root, `registry-seen-${++seq}.json`);
   const argvOut = join(root, `sweep-argv-${seq}.txt`);
 
+  REG.seedFromSync(join(root, "town-seed"));
   const res = spawnSync("sh", [join(OFFICE, "deploy", "settlement-auto.sh")], {
     encoding: "utf8",
     env: {
@@ -273,6 +281,7 @@ function runCrossing(root, { env = {} } = {}) {
       WORLD_DYNAMIC_DB: join(root, "dynamic.db"),
       REGISTRY_SEEN_OUT: seen,
       SWEEP_ARGV_OUT: argvOut,
+      ...REG.env,
       ...env,
     },
   });
@@ -540,7 +549,16 @@ test("F7 · the refresh runs on a STORE crossing too, because the wall and the l
   // so the receipt must show it ran even on a crossing that went on to refuse.
   // The store's `identities`/`town_roll` do not yet feed the wall or the lint,
   // so a store crossing that skipped this step would fold on the same stale file.
-  const c = crossing("store", { env: { SETTLEMENT_SOURCE: "store" } });
+  //
+  // NO WAIT FOR A CANDLE THAT CANNOT COME (POS-491). Since POS-350 the fixture
+  // DOES carry a store credential (REG.env, for the registry's export), so the
+  // crossing's candle wait (await-clearing.mjs, settlement-auto.sh:837) connects
+  // and polls its full SETTLEMENT_CLEARING_WAIT_S default, 240 s, for a window
+  // no fixture clears: 258 s for this one test, past the file's 180 s timeout,
+  // which is the hang CI measured (the watcher's tree, office#484). Zero asks
+  // once and refuses `clearing-did-not-run`, which is the early refusal this
+  // test was written against.
+  const c = crossing("store", { env: { SETTLEMENT_SOURCE: "store", SETTLEMENT_CLEARING_WAIT_S: "0" } });
   assert.equal(c.receipt.source, "store");
   assert.equal(c.receipt.registry.ran, true,
     "the registry refresh is not git-mode only — under `store` the same three readers still read this file");

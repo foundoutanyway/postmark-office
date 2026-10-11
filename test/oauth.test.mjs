@@ -11,17 +11,19 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { fixtureDb } from "./fixture.mjs";
-import { indexStore } from "./helpers/office-under-test.mjs";
+import { indexStore, seedRegistry } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
+import { seedStaticKeys } from "./helpers/static-keys.mjs"; // POS-352: static keys are store rows
 
 // The town index this file's offices read: a store seeded from each fixture
 // office.db (POS-268, office-under-test.mjs). Stopped when the file is done.
 const STORES = [];
-const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x.env; };
+const storeFor = async (dbPath) => { const x = await indexStore(dbPath); STORES.push(x); return x; };
 test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,8 +38,8 @@ let PORT;
 let GH_PORT = null;
 let BASE;
 const KEY = "statickey";
-// A SECOND STATIC ROW, PINNED. `OFFICE_KEYS` entries may carry `#<gh_id>`
-// (server.mjs § KEYS, the founder's ruling 2026-08-26), and that changes what
+// A SECOND STATIC ROW, PINNED. A static row may carry a gh_id (an OFFICE_KEYS
+// entry's `#<gh_id>`, static-keys.mjs; the founder's ruling 2026-08-26), and that changes what
 // the row can do — which the lane's report got wrong and the reviewer caught by
 // minting a working key from one.
 const PINNED_KEY = "staticpinned";
@@ -51,7 +53,8 @@ before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-oauth-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
-  const IX_ENV = await storeFor(dbPath);
+  const IX = await storeFor(dbPath);
+  const IX_ENV = IX.env;
 
   // a minimal town clone: just the pins file the household mapping reads
   const clone = join(tmp, "town-clone");
@@ -60,6 +63,10 @@ before(async () => {
   writeFileSync(join(clone, "tools", "github-ids.json"), JSON.stringify({
     wright: { login: "keeminlee", id: 999, pinned: "2026-07-05" },
   }));
+  // Sign-in reads the STORE's pins (POS-343), so the same pin is stated there.
+  // wright stands in no house in this registry, so the household block the
+  // office adds to /me (POS-342) is the honest solo one.
+  await seedRegistry(IX.store, null, { wright: { login: "keeminlee", id: 999, pinned: "2026-07-05" } });
 
   // mock GitHub: authorize redirects straight back; token + user are canned
   ghServer = createServer((req, res) => {
@@ -86,10 +93,9 @@ before(async () => {
   GH_PORT = ghServer.address().port;
 
   ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port),
-    "--db", dbPath, "--oauth-db", join(tmp, "oauth.db")], {
+    "--db", dbPath, "--oauth-db", seedStaticKeys(join(tmp, "oauth.db"), `${KEY}=keemin:wright;${PINNED_KEY}=keemin#999:wright`)], {
     env: {
-      ...process.env, ...IX_ENV,
-      OFFICE_KEYS: `${KEY}=keemin:wright;${PINNED_KEY}=keemin#999:wright`,
+      ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV,
       TOWN_CLONE: clone, TOWN_PUSH: "",
       PUBLIC_BASE: `http://127.0.0.1:${port}`,
       POSTMARK_OAUTH_GITHUB_CLIENT_ID: "mock-gh-app",
@@ -209,7 +215,8 @@ test("full dance: register → GitHub → consent → code → token → /town 2
   // GET /me — the signed-in household reads its own identity (the login island's key)
   const me = await (await fetch(`${BASE}/me`, { headers: { authorization: `Bearer ${grant.access_token}` } })).json();
   assert.deepEqual(me, { household: "keeminlee", handles: ["wright"], visitor: false,
-    verified_github: { login: "keeminlee", id: 999 }, key_kind: "oauth", principal: false });
+    verified_github: { login: "keeminlee", id: 999 }, key_kind: "oauth", principal: false,
+    households: { wright: { key: "solo:wright", slug: null, human: null, residents: ["wright"] } } });
 
   // refresh rotates: old refresh dies, new pair works
   const ref = await fetch(`${BASE}/oauth/token`, {
@@ -320,7 +327,8 @@ test("key desk: a signed-in household mints a pmk_ key that resolves like the si
 
   const me = await (await fetch(`${BASE}/me`, { headers: { authorization: `Bearer ${key}` } })).json();
   assert.deepEqual(me, { household: "keeminlee", handles: ["wright"], visitor: false,
-    verified_github: { login: "keeminlee", id: 999 }, key_kind: "household", principal: false });
+    verified_github: { login: "keeminlee", id: 999 }, key_kind: "household", principal: false,
+    households: { wright: { key: "solo:wright", slug: null, human: null, residents: ["wright"] } } });
 });
 
 test("key desk: minting again rotates — the old key dies, the new one works", async () => {
@@ -659,4 +667,109 @@ test("a berth's declared household and card are rendered as text on the co-sign 
   const denied = await consent(form, "deny");
   assert.equal(denied.status, 200);
   assert.match(await denied.text(), /Not co-signed/);
+});
+
+// ── POS-570 · a berth's "where did you hear" answer leaves through no read ─────
+//
+// begin asks the question now, and parks the answer APART from the declaration
+// (073; src/arrival-heard.mjs § THE WRITE). The parked declaration lives on the
+// berth row, so every reader of that row is driven here, on the real server,
+// with the berth's own key: begin's own answer; the bare household read (the
+// standing) and the doorstep, on REST and on MCP; begin's card; /me; the
+// co-sign link and its consent page; the denial; and the berth row itself,
+// read from the paper file the server writes. None may return the choice or
+// the note. The positive control: the store's owner sees the answer parked,
+// so the instrument is pointed at the answer that was given.
+test("POS-570: a berth's answer to the join question is parked privately, and no reader of the parked declaration returns it", async () => {
+  ghIdentity = { id: 999, login: "keeminlee" };
+  const MARK = "zz-berth-heard-5c1e";
+  const NOTE = `a zine at the Porto café, ${MARK}`;
+  const boarded = await fetch(`${BASE}/berth`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ slug: "heard-berth" }),
+  });
+  assert.equal(boarded.status, 201, "a berth boards keyless");
+  const { key } = await boarded.json();
+  const auth = { authorization: `Bearer ${key}` };
+  const rest = (body) => fetch(`${BASE}/household`, { method: "POST", headers: { "content-type": "application/json", ...auth }, body: JSON.stringify(body) });
+  const mcp = (args) => fetch(`${BASE}/mcp`, {
+    method: "POST", headers: { "content-type": "application/json", ...auth },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "household", arguments: args } }),
+  }).then((r) => r.text());
+
+  const begun = await rest({ do: "begin", args: { household: "Heard House", card: "I listen first.\nThen I write.", heard: "Other", heard_note: NOTE } });
+  const seen = { begin: await begun.text() };
+  assert.equal(begun.status, 200, `begin takes the question: ${seen.begin}`);
+  assert.match(JSON.parse(seen.begin).result.heard_about, /kept privately with your declaration until your human co-signs/);
+
+  seen.bare = await (await fetch(`${BASE}/household`, { headers: auth })).text();
+  seen.doorstep = await (await rest({ read: "doorstep" })).text();
+  seen.card = await (await rest({ read: "begin" })).text();
+  seen.mcp_bare = await mcp({});
+  seen.mcp_doorstep = await mcp({ read: "doorstep" });
+  seen.mcp_card = await mcp({ read: "begin" });
+  seen.me = await (await fetch(`${BASE}/me`, { headers: auth })).text();
+
+  const r1 = await fetch(`${BASE}/oauth/berth-cosign?slug=heard-berth`, { redirect: "manual" });
+  assert.equal(r1.status, 302, "the co-sign link sends the human to GitHub");
+  const r2 = await fetch(r1.headers.get("location"), { redirect: "manual" });
+  const r3 = await fetch(r2.headers.get("location"));
+  seen.consent = await r3.text();
+  assert.equal(r3.status, 200);
+  const form = {
+    pending_id: /name="pending_id" value="([^"]+)"/.exec(seen.consent)[1],
+    nonce: /name="nonce" value="([^"]+)"/.exec(seen.consent)[1],
+  };
+  seen.denied = await (await consent(form, "deny")).text();
+
+  const paper = new DatabaseSync(join(tmp, "oauth.db"), { readOnly: true });
+  try { seen.berth_row = JSON.stringify(paper.prepare("SELECT * FROM berths WHERE slug = 'heard-berth'").all()); }
+  finally { paper.close(); }
+
+  // The readers did read the parked declaration, so their silence about the answer means something.
+  assert.match(seen.bare, /berth-declared/);
+  assert.match(seen.mcp_bare, /berth-declared/);
+  assert.match(seen.consent, /Heard House/);
+  assert.match(seen.berth_row, /I listen first/);
+  assert.match(seen.card, /Where did you hear about Postmark/, "begin's card asks the question");
+  assert.match(seen.mcp_card, /Where did you hear about Postmark/);
+  for (const [reader, text] of Object.entries(seen)) {
+    assert.equal(text.includes(MARK), false, `${reader} returns the note`);
+    assert.doesNotMatch(text, /\\?"heard(_note)?\\?"\s*:\s*\\?"(?!string)/, `${reader} returns an answer field`);
+  }
+  assert.equal(JSON.parse(JSON.parse(seen.berth_row)[0].card).heard, undefined, "the parked declaration carries no answer");
+
+  // The positive control: the answer that was given is parked, where only the owner reads it.
+  const owner = await STORES[0].store.connect("world2_owner");
+  try {
+    assert.deepEqual((await owner.query("SELECT heard, note FROM berth_heard WHERE slug = 'heard-berth'")).rows, [{ heard: "other", note: NOTE }]);
+  } finally { await owner.end(); }
+});
+
+// ── POS-391 · registration is limited per CALLER, read as nginx names it ─────
+//
+// Behind nginx the office's socket peer is nginx itself; the caller is the last
+// X-Forwarded-For hop (bouncer.mjs § clientIp), which nginx appends. A limit
+// keyed on anything else is not a limit per caller. These callers name
+// themselves the way nginx would; none of them is the bare socket the tests
+// above register from, so neither spends the other's budget.
+const registerAs = (forwardedFor) => fetch(`${BASE}/oauth/register`, {
+  method: "POST",
+  headers: { "content-type": "application/json", "x-forwarded-for": forwardedFor },
+  body: JSON.stringify({ client_name: "per-caller test", redirect_uris: [REDIRECT] }),
+});
+
+test("registration: eleven callers at eleven addresses each register — one caller's budget is not another's", async () => {
+  const statuses = [];
+  for (let i = 1; i <= 11; i++) statuses.push((await registerAs(`203.0.113.${i}`)).status);
+  assert.deepEqual(statuses, Array(11).fill(201));
+});
+
+test("registration: one caller still has ten an hour, whatever first hop it writes itself", async () => {
+  const statuses = [];
+  for (let i = 1; i <= 10; i++) statuses.push((await registerAs(`192.0.2.${i}, 198.51.100.40`)).status);
+  assert.deepEqual(statuses, Array(10).fill(201));
+  const eleventh = await registerAs("192.0.2.99, 198.51.100.40");
+  assert.equal(eleventh.status, 429);
+  assert.equal((await eleventh.json()).error, "slow_down");
 });

@@ -173,9 +173,13 @@ export function containmentParents(marks) {
 `);
 
 put("seeding/manifest.json", JSON.stringify({ homes: [] }));
-// FOUR HANDLES, ONE CREDENTIAL — the household is over the cap by itself.
+// THE EXPORT LAGS THE REGISTRY (POS-545). The four handles are one household in
+// the store's registry (below, `READERHOUSE`), and the world clone's printed copy
+// has not caught up: it lists only the stranger. The door reads the store, so the
+// household's ground is its four parcels; a door that read this file would see
+// four households of one.
 put("WORLD/households.json", JSON.stringify({ households: {
-  reader: "gh:9", sailor: "gh:9", pica: "gh:9", builder: "gh:9", stranger: "gh:77",
+  stranger: "gh:77",
 } }));
 put("WORLD/skeleton.json", JSON.stringify({ features: [], physics_registry: {} }));
 put("WORLD/world-state.json", JSON.stringify({
@@ -234,9 +238,15 @@ process.env.W2_PEN = "";
 process.env.TOWN_PUSH = "";
 
 const { installActsPen, uninstallActsPen, RECORD_ON } = await import("./acts-pen-stub.mjs");
+const { rowsFromRegistry } = await import("../src/registry-rows.mjs");
 process.env.WORLD2_PG = RECORD_ON.WORLD2_PG;
 process.env.WORLD2_PG_URL = RECORD_ON.WORLD2_PG_URL;
-const pen = installActsPen();
+// FOUR HANDLES, ONE HOUSEHOLD, in the record the door reads (households.mjs §
+// householdLookup): the household is over the cap by itself.
+const READERHOUSE = rowsFromRegistry({ schema_version: 1, households: {
+  readerhouse: { name: "readerhouse", residents: ["reader", "sailor", "pica", "builder"] },
+} }, {});
+const pen = installActsPen({ households: READERHOUSE.households, pins: READERHOUSE.pins, meta: [] });
 after(() => { uninstallActsPen(); delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; });
 
 const keyFor = (household, ...handles) => ({ household, handles: new Set(handles) });
@@ -318,15 +328,15 @@ test("a parcel filed AT ITS ID amends identically — the filing was never the v
 // or the one-line fix would quietly repeal the cap instead of scoping it. This
 // leg fails the moment the cap stops asking of a fresh claim.
 
-test("CONTROL: a genuinely NEW parcel for the same household is still refused at the cap", async () => {
+test("CONTROL: a genuinely NEW parcel for a household at the cap is ACCEPTED at the door; the settlement applies the cap (POS-364)", async () => {
+  // R11, Darko 2026-10-04: the office accepts every physically legal act; the settlement applies limits in act order (POS-364). The cap still holds, but at the settlement, citing the-town/claim-cap
+  // (test/world-settlement.test.mjs § the limits), never as this door's refusal.
   const out = await leave({
     slug: "the-fifth-plot", kind: "parcel", by: "reader",
     at: { x: 1500, y: 1500 }, body: "new ground, not an amendment",
   }, HOUSE);
-  assert.equal(out.code, 403, `the cap must still hold for new ground, got ${JSON.stringify(out)}`);
-  assert.match(out.defect, /already holds 4 parcels/,
-    "FOUR here — nothing is excluded, because this slug names no standing mark. The same arithmetic that showed Current `four` when his flat WAS excluded from five.");
-  assert.match(out.hint, /capped at 3 per household/);
+  assert.equal(out.ok, true, `the door accepts new ground over the cap, got ${JSON.stringify(out)}`);
+  assert.doesNotMatch(JSON.stringify(out), /already holds/);
 });
 
 // ── LEG 7 · a slug is unique PER AUTHOR, and the fix does not widen that ────
@@ -336,14 +346,12 @@ test("CONTROL: a genuinely NEW parcel for the same household is still refused at
 // way past it. Ids are author-scoped, so it cannot — asserted rather than
 // assumed, because the fix's whole effect is to trust `amending`.
 
-test("a DIFFERENT author's same slug is a fresh claim, capped as today — and cannot be amended into", async () => {
+test("a DIFFERENT author's same slug is a fresh claim (accepted; the settlement applies the cap) — and cannot be amended into", async () => {
   const fresh = await leave({
     slug: "the-keepers-flat", kind: "parcel", by: "sailor",
     at: { x: 1800, y: 1800 }, body: "the same word, a different author",
   }, HOUSE);
-  assert.equal(fresh.code, 403, `a different author's same slug is NEW ground, got ${JSON.stringify(fresh)}`);
-  assert.match(fresh.defect, /already holds 4 parcels/,
-    "FOUR — nothing excluded, because `sailor/the-keepers-flat` names no standing mark. Reader's flat is not sailor's to stand on.");
+  assert.equal(fresh.ok, true, `a different author's same slug is NEW ground, accepted (R11), got ${JSON.stringify(fresh)}`);
 
   const amend = await leave({
     slug: "the-keepers-flat", kind: "parcel", by: "sailor", amend: true,
@@ -368,4 +376,141 @@ test("and the path was never in doubt: gate A resolves the <by>/<slug> id to the
     pathFor({ id: "reader/the-keepers-flat", by: "reader", slug: "the-keepers-flat", kind: "parcel" }, { publishedPathOf: filed }),
     "WORLD/marks/let-there-be-light/the-doubled-coast/the-keepers-flat/mark.md",
     "an amend carrying the id lands on the existing file — never a WORLD/marks/reader/the-keepers-flat twin");
+});
+
+// ── LEG 8 · a published mark MOVES by amend on the single-log lane ──────────
+//
+// POS-483's lane (2026-10-09). The leave-mark card said "an amend that MOVES a
+// published mark is refused for now (#1862)". That refusal lives only in
+// leave-exec.mjs, the git lane, which prod never reaches (WORLD_SINGLE_LOG=1).
+// On the lane prod runs, the move guard is retired and the door forecasts the
+// carry (POS-441). This leg is that door's own word, so the card's new sentence
+// is pinned to what the door does.
+
+test("POS-483: on the single-log lane, an amend that MOVES a published parcel is not refused — no 409, and the answer forecasts the carry", async () => {
+  const out = await leave({
+    slug: "the-sloop-at-anchor", kind: "parcel", by: "sailor", amend: true,
+    at: { x: 520, y: 500 }, body: "the sloop, warped twenty metres east",
+  }, HOUSE);
+  assert.notEqual(out.code, 409, `a published move must not be refused on the single-log lane: ${JSON.stringify(out)}`);
+  assert.equal(out.ok, true, `the move goes forward: ${JSON.stringify(out)}`);
+  assert.equal(out.amended, true, "as an amendment of the standing mark");
+  assert.equal(out.carries?.forecast, true, "and the answer carries the carry's forecast (POS-441)");
+  assert.deepEqual([out.carries.dx, out.carries.dy], [20, 0], "for exactly the move asked");
+});
+
+// ── LEGS 9–11 · the leave door names your ground (POS-493) ──────────────────
+//
+// The read-shape eval (POS-486, 2026-10-09): two agents asked to leave a mark
+// on their own parcel landed it half a metre outside, because nothing they read
+// named the edge. The door now names the household's parcels as ranges on
+// every sited leave, and when a footprint lands outside them but within a
+// parcel's side of one, says by how much and where it would sit wholly inside.
+// This bottle's household (readerhouse, in the store) holds four parcels; the flat spans
+// x 287.5..312.5, y 287.5..312.5. Its marksContain is the centre-only stub
+// above, so "outside" here is the verdict's own word, as it is on the box.
+
+const bench = (over = {}) => ({ slug: "the-bench", kind: "sited", by: "reader", extent: { w: 1, h: 1 }, body: "a bench by the flat", ...over });
+
+test("POS-493: a mark 0.5 m outside the parcel's edge warns, names the parcel's ranges and where it sits wholly inside, and the preview says it before anything is written", async () => {
+  for (const preview of [true, false]) {
+    const out = await leave(bench({ slug: preview ? "the-bench-preview" : "the-bench", at: { x: 300, y: 313 }, ...(preview ? { preview: true } : {}) }), HOUSE);
+    assert.equal(out.ok, true, `the act is accepted, never refused (R11): ${JSON.stringify(out)}`);
+    assert.equal(out.preview === true, preview);
+    assert.deepEqual(out.your_ground?.find((g) => g.parcel === "reader/the-keepers-flat"),
+      { parcel: "reader/the-keepers-flat", x: "287.5..312.5", y: "287.5..312.5" }, "the household's parcels, as ranges");
+    assert.equal(out.your_ground.length, 4, "every parcel the household holds");
+    const off = out.off_your_ground;
+    assert.ok(off, `the warning rides the answer: ${JSON.stringify(out)}`);
+    assert.equal(off.parcel, "reader/the-keepers-flat");
+    assert.match(off.note, /reaches 1 m outside your parcel reader\/the-keepers-flat \(x 287\.5\.\.312\.5, y 287\.5\.\.312\.5\)/);
+    assert.match(off.note, /publishes as a commons mark and needs ✦1/);
+    assert.deepEqual(off.corrected_at, { x: 300, y: 312 }, "the nearest point that holds the whole footprint inside");
+    assert.equal(off.preview.do, "leave-mark");
+    assert.deepEqual(off.preview.args, { slug: preview ? "the-bench-preview" : "the-bench", kind: "sited", by: "reader", body: "a bench by the flat",
+      extent: { w: 1, h: 1 }, at: { x: 300, y: 312 }, preview: true }, "the caller's own call, at the corrected point, as a preview");
+    assert.match(off.note, /writes nothing/);
+    assert.equal(out._ground_own, undefined, "the internal field never leaves the door");
+  }
+});
+
+test("POS-493: a mark inside the parcel does not warn, and still names your ground", async () => {
+  const out = await leave(bench({ slug: "the-inner-bench", at: { x: 300, y: 311 } }), HOUSE);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.off_your_ground, undefined, `no warning inside: ${JSON.stringify(out.off_your_ground)}`);
+  assert.equal(out.your_ground?.length, 4);
+});
+
+test("POS-493: a mark far from every parcel is a deliberate commons mark — no warning, only the ranges", async () => {
+  const out = await leave(bench({ slug: "the-far-bench", at: { x: 1500, y: -1500 } }), HOUSE);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.off_your_ground, undefined);
+  assert.equal(out.your_ground?.length, 4);
+});
+
+test("POS-493: the leave-mark read (world_my_marks) names your household's parcels as ranges", async () => {
+  const { worldMyMarks } = await import("../src/world.mjs");
+  const r = await worldMyMarks(HOUSE);
+  assert.ok(!r?.error, `the read answers: ${JSON.stringify(r)}`);
+  // The page's own household (the stake slice's `residents`, read from the
+  // store's registry since POS-545), so the ranges and the page's other shelves
+  // name one house, and the same house the leave door's verdict reads.
+  assert.deepEqual(r.residents, ["builder", "pica", "reader", "sailor"], "the store's household, which the world clone's export does not list");
+  const expected = PUBLISHED.filter((m) => m.kind === "parcel" && r.residents.includes(m.by)).map((m) => m.id).sort();
+  assert.deepEqual(r.your_ground?.map((g) => g.parcel).sort(), expected, "exactly the household's published parcels");
+  assert.equal(r.your_ground.length, 4);
+  assert.deepEqual(r.your_ground.find((g) => g.parcel === "reader/the-keepers-flat"), { parcel: "reader/the-keepers-flat", x: "287.5..312.5", y: "287.5..312.5" });
+});
+
+// ── LEG 12 · the verdict reads the store (POS-545) ──────────────────────────
+//
+// The household is in the store's registry and missing from the world clone's
+// WORLD/households.json (the bottle's export lists only the stranger). A ✦0
+// mark on a housemate's parcel is on the household's own ground, so it goes
+// forward; the stranger, whose household holds no parcel here, is still on the
+// commons. THE FLIP: read the file again at world.mjs § groundMinimumStake and
+// the reader's ✦0 is held back as commons (put_forward false, ✦1 asked).
+
+test("POS-545: the ground verdict reads the store's registry: ✦0 on a housemate's parcel goes forward though WORLD/households.json lacks the house", async () => {
+  const shed = { slug: "the-shed-on-the-sloop", kind: "sited", by: "reader", extent: { w: 2, h: 2 },
+    at: { x: 500, y: 500 }, body: "a shed on a housemate's parcel", stamps: 0, preview: true };
+  const out = await leave(shed, HOUSE);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.put_forward, true, `✦0 on the household's own ground goes forward: ${JSON.stringify(out)}`);
+  const stranger = await leave({ ...shed, by: "stranger", slug: "the-strangers-shed" }, STRANGER);
+  assert.equal(stranger.ok, true, JSON.stringify(stranger));
+  assert.equal(stranger.put_forward, false, "the same spot is the commons to another household");
+});
+
+// ── LEG 13 · a store blip is "could not tell", never "commons" (POS-545 review)
+//
+// `markStandsOnOwnGround` feeds the stake door's `unbackedRefusalFor`, which
+// takes a zero-balance promotion back off the docket only on `false`. Without
+// the registry the verdict falls to the solo grain, which cannot see a
+// housemate's parcel, so a blip read as `false` would retract a lawful
+// own-ground promotion. THE FLIP: return `min === 0` again and the blip leg
+// answers false, and the refusal fires.
+
+test("POS-545: with the registry unreadable, a mark on a housemate's parcel reads null (could not tell), and the promotion is not taken back", async () => {
+  const { markStandsOnOwnGround } = await import("../src/world.mjs");
+  const { unbackedRefusalFor } = await import("../src/world-stake.mjs");
+  const { __setPoolForTest } = await import("../src/world2-acts.mjs");
+  const shed = { by: "reader", kind: "sited", at: { x: 500, y: 500 }, extent: { w: 2, h: 2 } };
+  const far = { ...shed, at: { x: 1500, y: -1500 } };
+  assert.equal(await markStandsOnOwnGround(shed), true, "with the registry, the housemate's parcel is the household's own ground");
+  assert.equal(await markStandsOnOwnGround(far), false, "CONTROL: with the registry, open ground is the commons");
+
+  const blip = () => { throw Object.assign(new Error("Connection terminated unexpectedly (synthetic blip, POS-545)"), { code: "57P01" }); };
+  __setPoolForTest({ query: async () => blip(), connect: async () => blip() });
+  try {
+    const onMates = await markStandsOnOwnGround(shed);
+    assert.equal(onMates, null, "the registry could not be read, so the office cannot tell");
+    assert.equal(unbackedRefusalFor({ mark: "reader/the-shed", n: 1, promoted: true, applied: 0, ownGround: onMates }), null,
+      "and a lawful own-ground promotion stays on the docket");
+    assert.equal(await markStandsOnOwnGround({ ...shed, at: { x: 300, y: 300 } }), true,
+      "the author's OWN parcel is still a finding without the registry");
+  } finally {
+    __setPoolForTest(pen);
+  }
+  assert.equal(await markStandsOnOwnGround(shed), true, "and the store's answer is back");
 });

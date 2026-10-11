@@ -73,6 +73,7 @@ import { hotMailBlock, outboxTense, replayLetter, sendLetterAsRow, MAIL_DOOR, NO
 import { pendingRows } from "../src/town-journal.mjs";
 import { enqueueLetter } from "../src/write.mjs";
 import { outboxSettled } from "../src/queries.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
 
 delete process.env.TOWN_PUSH; // nothing here may leave the machine
 
@@ -96,6 +97,11 @@ const dbPath = join(dir, "fixture.db");
 fixtureDb(dbPath).close();
 const db = new DatabaseSync(dbPath, { readOnly: true });
 after(() => { db.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+// The doors below run in this process and read their town index from a store
+// seeded from this fixture (POS-268, office-under-test.mjs).
+const IX = await indexStore(dbPath);
+const IX_RESTORE = await IX.useInProcess();
+after(async () => { await IX_RESTORE(); await IX.stop(); });
 
 const KEY = { household: "keemin", handles: new Set(["wright"]), ghId: "42", ghLogin: "keeminlee" };
 const LIMEN = { household: "limen-house", handles: new Set(["limen"]), ghId: "43", ghLogin: "limenkeeper" };
@@ -296,6 +302,19 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   // act. PSA for the release notes: "the fund page's USDC verify takes your
   // signed-in account, and a signed-in key can only credit its own household."
   //
+  // ⚑ REGENERATED 2026-10-06 FOR POS-361 (the town's stance as law, Darko's
+  // rulings of 10-06): the declare-stance-on card gained `as` (as: "town", the
+  // town's word written by its own pen) and `law` (the law marks an opposition
+  // cites). ADDITIVE and proven so: the capture diff added exactly
+  // `/acts/12/fields/as/{type,enum,description}` and
+  // `/acts/12/fields/law/{type,items,description}` and removed or retyped none
+  // (the stance enum gained "neutral", a value, not a key). Both stay off the
+  // abridged index (household-apex.mjs § OFF_INDEX), so the connector's answer
+  // is unchanged in shape. PSA for the release notes: "a resident may declare
+  // neutral, which clears 'awaiting your word'; the town's hands speak the
+  // town's word with as: \"town\", and an opposition cites the law by mark id."
+  // Its witness, against the LIVE card, follows the window's below.
+  //
   // This is the WITNESS the regeneration would otherwise have no room for, and
   // it is positional-independent on purpose: the stake act is found by the one
   // field only it carries, so a reordering of the acts list cannot make it pass
@@ -328,6 +347,13 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   assert.ok(windowCard, "the window act is the only one carrying a `blueprint` field");
   assert.equal(windowCard.fields.file_path?.type, "string");
   assert.equal(windowCard.fields.html?.required, undefined, "the frozen shape no longer marks html required");
+  // POS-361's witness: the stance card, found by the one field only it carries
+  // (`stance`), takes `as` and `law` in the frozen shape AND on the live door.
+  const stanceCard = frozen.acts.find((a) => a.fields && "stance" in a.fields);
+  assert.ok(stanceCard?.fields?.as && stanceCard?.fields?.law, "the frozen stance card carries as and law");
+  const liveStance = full.acts.find((a) => a.fields && "stance" in a.fields);
+  assert.deepEqual(liveStance?.fields?.as?.enum, ["town"], "the live stance card takes as: \"town\"");
+  assert.deepEqual(liveStance?.fields?.stance?.enum, ["welcomed", "neutral", "opposed"], "and the three words");
   const liveWindow = full.acts.find((a) => a.fields && "blueprint" in a.fields);
   assert.equal(liveWindow?.fields?.file_path?.type, "string", "the live window card takes file_path");
   assert.equal(liveWindow?.fields?.html?.required, undefined, "and the live card does not mark html required — a card that did would refuse the road it advertises");
@@ -407,6 +433,26 @@ test('F5 · OPERATIONS.md: "REST: stable/simple for frozen consumers" — the RE
   // the frozen copy AND the live door.
   assert.equal(homeFrozen?.fields?.image?.type, "string", "the frozen home card carries image");
   assert.equal(homeLive?.fields?.image?.type, "string", "the live home card takes image — a picture the card did not advertise would be refused for a field nobody was told about");
+  // ⚑ REGENERATED 2026-10-10 FOR POS-570 (the join question on the berth's
+  // road), named here for the same reason. What grew: begin's card gained
+  // declare's two optional fields, `heard` and `heard_note`. Because the
+  // golden keeps each act SHAPE once (shapeOf de-duplicates the acts list),
+  // begin's shape is now declare's, and the capture diff reads as one shape
+  // fewer: −1 shape, +0, and the removed shape plus {heard, heard_note} is
+  // exactly declare's (proved key by key in the lane's paperwork,
+  // docs/2026-10-10/rail/POS-570/proofs/). No key removed or retyped on any
+  // card. Both stay off the abridged index (household-apex.mjs § OFF_INDEX,
+  // F5d). PSA for the release notes: "begin asks the join question too: a
+  // berth's agent may pass heard and heard_note, kept privately until its
+  // human co-signs; only weekly counts ever leave the office."
+  //
+  // The witness: in the frozen copy, exactly one act shape carries `heard`,
+  // and on the live door begin's card is that shape, and so is declare's.
+  const heardShapes = frozen.acts.filter((a) => a.fields && "heard" in a.fields);
+  assert.equal(heardShapes.length, 1, "begin and declare share one shape in the frozen copy");
+  const beginLive = full.acts.find((a) => a.act === "begin");
+  assert.deepEqual(shapeOf(beginLive), heardShapes[0], "the live begin card asks the question");
+  assert.deepEqual(shapeOf(full.acts.find((a) => a.act === "declare")), heardShapes[0]);
 });
 
 test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the connector's bare answer under ${SLIM_CEILING}B`, async () => {
@@ -427,15 +473,18 @@ test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the c
 // stay off the ABRIDGED index; the ceiling stays (raising it is Keemin's call).
 // Measured on the POS-292 head with them off: connector bare 8,180 B, so the
 // headroom under SLIM_CEILING is 12 B; REST bare 21,668 B under 24,576.
-test("F5d · POS-292: the abridged index leaves declare's heard fields off, and the card still carries them", async () => {
+// POS-570: begin asks the same two fields, on the same rule.
+test("F5d · POS-292 + POS-570: the abridged index leaves declare's and begin's heard fields off, and both cards still carry them", async () => {
   const slim = await householdApex({}, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
-  const declare = slim.acts.find((a) => a.act === "declare");
-  assert.ok(declare, "declare is on the index");
-  for (const f of ["heard", "heard_note"]) assert.equal(f in declare.fields, false, `${f} rides the foyer`);
-  assert.ok("household" in declare.fields, "the rest of declare's fields are still listed");
-  const card = await householdApex({ read: "declare" }, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
-  const fields = card.card?.fields ?? card.fields ?? {};
-  for (const f of ["heard", "heard_note"]) assert.ok(f in fields, `${f} is on declare's card: ${JSON.stringify(Object.keys(fields))}`);
+  for (const act of ["declare", "begin"]) {
+    const entry = slim.acts.find((a) => a.act === act);
+    assert.ok(entry, `${act} is on the index`);
+    for (const f of ["heard", "heard_note"]) assert.equal(f in entry.fields, false, `${act}'s ${f} rides the foyer`);
+    assert.ok("household" in entry.fields, `the rest of ${act}'s fields are still listed`);
+    const card = await householdApex({ read: act }, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
+    const fields = card.card?.fields ?? card.fields ?? {};
+    for (const f of ["heard", "heard_note"]) assert.ok(f in fields, `${f} is on ${act}'s card: ${JSON.stringify(Object.keys(fields))}`);
+  }
 });
 
 test("F5b · and the slim-only keys never leak onto it", async () => {
@@ -687,10 +736,12 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   // pins the same two lines — one fixture, composed the same way on both sides,
   // which is the same reason the instant above is imported rather than
   // re-spelled.
+  //
+  // AND ITS STORE IS ITS OWN, FRESH AND EMPTY (POS-491), as the capture's is:
+  // the tree's dynamic.db carried whatever a machine's office had left there.
   const { STANCE_ON, stancePoolFromJournal } = await import("./stance-pool-stub.mjs");
-  const { dynamicDbPath } = await import("../src/dynamic-store.mjs");
   Object.assign(process.env, STANCE_ON);
-  stancePoolFromJournal(dynamicDbPath());
+  stancePoolFromJournal(join(mkdtempSync(join(dir, "f7c5-")), "dynamic.db"));
   const meta = { as_of: "fixturesha000000000000000000000000000000" };
   const bctx = { db, key: null, meta, asOf: meta.as_of, canWrite: false, clone: null, pen: null, odb: null, dbPath: null, nowMs: GOLDEN_NOW_MS };
   const now = { full: await doorstepBundle("wright", bctx), slim: await doorstepBundle("wright", { ...bctx, slim: true }) };
@@ -827,6 +878,62 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //
   // Both skins move identically: `posts` has no teaching block to cut, so it
   // rides the connector whole, the way `stakes`' rows do.
+  //
+  // ⚠ AND PATCHED A NINTH TIME, 2026-10-06 (POS-412, reported by mari), for
+  // the stakes read saying how old its escrow is: mari read escrow 2 here a
+  // minute after a stake the ledger already held, because the store's copy is
+  // only taken at the clearing. Not re-captured: the lane's tree carried a
+  // dynamic.db whose stances differ from this golden's on base too, so the
+  // three new paths were inserted into the committed golden by hand, and the
+  // patch was checked to equal a capture at the lane's head with only the
+  // golden's own `stances` put back. The leaf diff: NONE removed; added
+  // `full.stakes.escrow_ingested_at`, `.catches_up_at`, `.later_stakes`, and
+  // on slim the first two; changed `slim.stakes.abridged`, which now names
+  // `later_stakes` as cut (it is the same sentence on every page, like `rule`
+  // and `read_the_rest` beside it).
+  //
+  // Measured from the file (residual 0):
+  //
+  //   full  19754 -> 19992 (+238, +1.20%) = later_stakes +169, catches_up_at +43, escrow_ingested_at +26
+  //   slim  17386 -> 17485 (+99, +0.57%)  = catches_up_at +43, abridged +30, escrow_ingested_at +26
+  //
+  // ⚠ AND RE-CAPTURED A TENTH TIME, 2026-10-11 (POS-491), because it had stopped
+  // gating anything again: it was a known red on the train from 10-05 (POS-419's
+  // list), so the lanes that moved the page after that had nothing to tell them.
+  // Two inputs were not pinned, and the fix is the instrument first:
+  //
+  //   1. THE STANCE STORE WAS THE TREE'S. The stub read `dynamicDbPath()`, the
+  //      tree's dynamic.db, so a capture carried whatever marks that machine's
+  //      office had left there (CI has none). It is now a fresh, empty store of
+  //      the case's own, here and in the capture tool alike. This pin is
+  //      defensive, not the cause of the red: on the re-capturing tree the
+  //      tree's store and a fresh one gave the same bytes (flipped both ways),
+  //      but the ninth note's tree differed on base because of its store.
+  //      What reddened the case on CI was the golden itself, which was older
+  //      than the four merged changes and the world pin listed below.
+  //   2. THE WORLD IS THE PINNED CLONE, and that one stays: `stances` and
+  //      `stakes` read WORLD_CLONE, which is test/clone-pins.json's world
+  //      (b8581dc9 at this capture). So those leaves move when the world pin
+  //      moves, and a PR that moves the pin re-captures here, with this note.
+  //
+  // Same discipline, and the diff was run leaf by leaf BEFORE the capture: 963
+  // paths before, 1057 after, 10 removed, 104 added and 142 changed. Every path
+  // outside the pinned world's data traces to a merged commit:
+  //   `copy` (5 leaves a skin), POS-332, 68c35c4c; `clocks`, the standing
+  //   tense, bbb233e9; `stakes.clock`, candle N, POS-355, d2492441;
+  //   `stances.stances_awaiting_ground` "resident:wright" -> "household",
+  //   POS-361, b1b7881a.
+  // The rest is the world at the pin: `stances` counts 61 awaiting where it
+  // counted 23, its `ground` names the 70 marks the household holds (23 before),
+  // its five rows are newer marks, and `stakes.rows[8].class` is "commons" (the
+  // crossing bench's own class in the world).
+  //
+  // Measured from the file (residual 0):
+  //
+  //   full  19992 -> 21848 (+1856, +9.28%)  = stances +1345, copy +356, clocks +88, stakes +67
+  //   slim  17485 -> 19341 (+1856, +10.61%) = stances +1345, copy +356, clocks +88, stakes +67
+  //
+  // Both skins move identically: none of the four is abridged on the connector.
   //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:

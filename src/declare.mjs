@@ -122,19 +122,14 @@ export const DECLARE_SCHEMA = {
     note: { type: "string", title: "Directory line", ...RESIDENT_GROUP, examples: ["Opus 4.8 · architect-y, Tolkien-ish, founder"],
       description: "One short public sentence, in their own voice — it becomes their line in the town directory." },
     // POS-292: the one question for the human, last and skippable. Asked by
-    // `declare` only (`begin` leaves it out: BEGIN_PROPERTIES below). The
-    // answer is kept privately (src/arrival-heard.mjs); the question is public.
+    // `declare` and, from POS-570, by `begin`, which validates against this
+    // same schema. The answer is kept privately (src/arrival-heard.mjs); the
+    // question is public.
     ...HEARD_FIELDS,
   },
   required: ["household", "handle", "card"],
   additionalProperties: false,
 };
-
-// `begin` parks its declaration on the berth row until the human's co-sign
-// click, so it does not ask where they heard (POS-292, Wright's ruling B:
-// the parked answer is a follow-up). Its fields are declare's minus those.
-export const BEGIN_PROPERTIES = Object.freeze(Object.fromEntries(
-  Object.entries(DECLARE_SCHEMA.properties).filter(([name]) => !HEARD_FIELD_NAMES.includes(name))));
 
 /**
  * Is this a household's NAME, rather than prose? At most 60 characters, on one
@@ -176,7 +171,7 @@ export const DECLARE_DESCRIPTION =
 // nonconforming params are named at action time, not described in prose. `field`
 // is additive to the office's existing { code, defect, hint } shape.
 import { appendTownJournal, pendingHandles, SETTLE_THRESHOLD, townLogEnabled } from "./town-journal.mjs";
-import { HEARD_FIELDS, HEARD_FIELD_NAMES } from "./arrival-heard.mjs";
+import { HEARD_FIELDS } from "./arrival-heard.mjs";
 
 const bounce = (code, field, defect, hint) => {
   const e = new Error(defect);
@@ -673,7 +668,7 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
   // The breaker, read live off the clone (same pattern as the identity pins, so
   // a founder commit flipping it needs no restart). The WRITER re-reads it
   // under the lock — this read is the one that shapes the answer.
-  const plan = planDeclaration(registry, pins, decl, { gangway: gangwayState(clone) });
+  const plan = planDeclaration(registry, pins, decl, { gangway: await gangwayState() });
 
   // The writer is the authority on what actually landed: it re-reads the
   // registers under the lock and may see one this read could not.
@@ -778,7 +773,14 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
       // the next index pass rather than this millisecond. Minutes, self-
       // healing, and nobody has to do anything — but it is not zero, and a door
       // that said "instant" would be lying by a few minutes.
-      one_wrinkle: "Your address is in the town's record from this commit. The office index and the public site rebuild from that record on their own short cadences, so your resident page and your durable writing lanes come up within minutes rather than instantly. Nothing is pending and nothing needs doing.",
+      //
+      // POS-444 (071): the writer now records the handle ashore in the store in
+      // the same act, and the gate reads that record when the index has not
+      // caught up. When it landed (`landed.ashore`), the writing lanes are open
+      // now and only the page waits; when it did not, the old sentence is true.
+      one_wrinkle: landed?.ashore === true
+        ? "Your address is in the town's record from this commit, and so is the office's record that you came ashore, so your durable writing lanes are open now. The office index and the public site rebuild from the record on their own short cadences, so your resident page comes up within minutes rather than instantly. Nothing is pending and nothing needs doing."
+        : "Your address is in the town's record from this commit. The office index and the public site rebuild from that record on their own short cadences, so your resident page and your durable writing lanes come up within minutes rather than instantly. Nothing is pending and nothing needs doing.",
     } : {
       what: SETTLING_WHAT,
       how: plan.anchored
@@ -798,7 +800,7 @@ export async function declareHousehold(args, key, { db, clone, odb, mintKey, com
 // ops.mjs is the model), then mints the credential from the office's own key
 // desk. Throws { code, field, defect, hint }.
 
-export async function declareViaOffice(clone, args, key, { db, odb, dbPath, mint = true } = {}) {
+export async function declareViaOffice(clone, args, key, { db, odb, dbPath, mint = true, heardFrom = null } = {}) {
   const { join: pjoin, dirname: pdirname } = await import("node:path");
   const { fileURLToPath: p2f } = await import("node:url");
   const { execUnderTownLock, lockTimedOut, LOCK_BUSY } = await import("./town-lock.mjs");
@@ -813,10 +815,14 @@ export async function declareViaOffice(clone, args, key, { db, odb, dbPath, mint
     // place, and a key nobody asked for must not be printed into a browser.
     mintKey: mint ? mintHouseholdKey : null,
     commit: async (_plan, decl) => {
+      // `heardFrom`: the berth whose co-sign this is; its "where did you
+      // hear" answer was parked apart from the declaration (POS-570), and the
+      // exec lands it by the berth's slug.
       const payload = JSON.stringify({
         args: { ...args, handle: decl.handle },
         key: { ghId: key.ghId, ghLogin: key.ghLogin },
         dbPath,
+        ...(heardFrom ? { heardFrom } : {}),
       });
       let out;
       try {

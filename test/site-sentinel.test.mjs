@@ -572,9 +572,17 @@ const GREEN_TABLE = {
 };
 
 // git ls-remote, stubbed: main tip, then the release tag list.
-const stubExec = ({ siteTip = "sitetip0000", townTip = "towntip0000", relSha = "relsha00000" } = {}) =>
+// The world's settlement tags too (§11): annotated, so each lists twice, and the
+// newest by number is S50, peeled to `settleSha` — the fixture receipt's world.
+const stubExec = ({ siteTip = "sitetip0000", townTip = "towntip0000", relSha = "relsha00000", settleSha = "worldtip0000" } = {}) =>
   (_bin, args) => {
     const repo = args.find((a) => a.startsWith("https://")) ?? "";
+    if (repo.includes("postmark-world")) {
+      return [
+        "tagobj49\trefs/tags/settlement/S49", "older0049\trefs/tags/settlement/S49^{}",
+        "tagobj50\trefs/tags/settlement/S50", `${settleSha}\trefs/tags/settlement/S50^{}`,
+      ].join("\n") + "\n";
+    }
     if (args.includes("--tags")) return `${relSha}\trefs/tags/release/2026-w35.1\n`;
     return repo.includes("postmark-site") ? `${siteTip}\trefs/heads/main\n` : `${townTip}\trefs/heads/main\n`;
   };
@@ -626,8 +634,15 @@ const GREEN_DISK = () => ({ path: "/", usedPct: 62, freeBytes: 14 * 2 ** 30 });
 // trip it; its own verdicts are pinned in §10 below.
 const _meeps = join(_wdir, "meeps.json");
 _wf(_meeps, JSON.stringify({ schema: 1, generated_at: new Date(T0 - 60_000).toISOString(), status: "OK", summary: "all 9 meeps answering; every round due in the last 3 h fired", problems: [], meeps: {} }));
+// §11 fixture, same discipline: a real temp settlement receipt from the 06:00Z
+// sweep before the fixed clock, published to the world S50 peels to, so the
+// healthy tick exercises the probe and never reads the box's own
+// /srv/postmark-harbor/settlement-auto.json.
+const _settle = join(_wdir, "settlement-auto.json");
+_wf(_settle, JSON.stringify({ at: "2026-08-25T06:00:02Z", status: "published", world_from: "worldprev000", world_to: "worldtip0000", refusal: null, detail: "3 published" }));
 const FIXTURE_CONFIG = {
   ..._CFG,
+  settlement: { ..._CFG.settlement, receipt: _settle },
   clones: [{ key: "town_clone", label: "the office's town clone", path: _clone }],
   watchers: [{ key: "usdc_watch", label: "the usdc-watch timer", state: _wstate, cadenceMs: 6 * 60 * 60_000 }],
   siteRefresh: { ..._CFG.siteRefresh, report: _rrep, cadenceMs: 6 * 60 * 60_000 },
@@ -1383,4 +1398,330 @@ test("§10 the probe reaches the board as `meeps` and the sentinel's message car
   assert.equal(t2.probes.find((p) => p.key === "meeps").verdict, "STALE");
   assert.deepEqual(t2.alerts.map((a) => a.key), ["meeps"]);
   assert.equal(composeBoard({ probes: t2.probes, nowIso: t2.nowIso, alerting: {} }).status, "STALE");
+});
+
+// ── §11: the settlement (Darko 2026-10-11) ──────────────────────────────────
+//
+// "If the settlement that we expect has not gone through an hour after its
+// expected time … it needs to bark." The two real cases are pinned with their
+// real shas: the 2026-10-10T18:00Z sweep (33306f30, uncovered until S102 on
+// 0cca7f2b, a descendant, cut 10-11 ~06:38Z) and the 2026-10-11T18:00Z sweep
+// (5d878f3c, held, newest still S102 an hour on).
+
+import {
+  classifySettlement,
+  newestSettlementTag,
+  newestSettlementSlot,
+  SETTLEMENT_GRACE_MS,
+  SETTLEMENT_SLOTS_UTC,
+  BAD as _BAD,
+  judgeQuietRange,
+  isSweepPublication,
+} from "../tools/site-sentinel.mjs";
+
+const W_1010 = "33306f30851b245fb5ced97e28062c92e770293c";
+const W_1011 = "5d878f3c55bf6de671ed66b3c7688b05e34c1dec";
+const S102 = { n: 102, sha: "0cca7f2b08a330462d90d2b54c9c66c7f1cb4764" };
+const S101 = { n: 101, sha: "53b918de6783cea4f55d001ed47686e2d6faca15" };
+const RECEIPT = (over = {}) => ({ at: "2026-10-11T18:00:00Z", status: "published", world_from: "aaaa0000", world_to: W_1011, refusal: null, detail: "9 published", ...over });
+const at = (iso) => Date.parse(iso);
+
+test("§11 the hour is the ruling's, named; the slots are the timer's own OnCalendar lines", () => {
+  assert.equal(SETTLEMENT_GRACE_MS, 60 * MINUTE);
+  assert.equal(CONFIG.settlement.graceMs, SETTLEMENT_GRACE_MS);
+  const OFFICE = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+  const unit = readFileSync(join(OFFICE, "deploy", CONFIG.settlement.unit), "utf8");
+  const hours = [...unit.matchAll(/^OnCalendar=\*-\*-\* (\d\d):00:00 UTC\s*$/gm)].map((m) => Number(m[1])).sort((a, b) => a - b);
+  assert.deepEqual(hours, [...SETTLEMENT_SLOTS_UTC], `${CONFIG.settlement.unit} fires at ${hours} UTC; the probe expects ${SETTLEMENT_SLOTS_UTC}`);
+  assert.equal(newestSettlementSlot(at("2026-10-11T19:14:00Z")), at("2026-10-11T18:00:00Z"));
+  assert.equal(newestSettlementSlot(at("2026-10-11T05:59:00Z")), at("2026-10-10T18:00:00Z"), "before 06:00 the newest slot is yesterday's 18:00");
+  assert.equal(newestSettlementSlot(at("2026-10-11T06:00:00Z")), at("2026-10-11T06:00:00Z"));
+});
+
+test("§11 REAL CASE 10-11 18:00Z: published 5d878f3c, newest still S102, 74 min on — DOWN, and the reason says what to do", () => {
+  const r = classifySettlement({
+    receipt: RECEIPT(), newestTag: S102, covered: false,
+    nowMs: at("2026-10-11T19:14:00Z"), writtenAtMs: at("2026-10-11T18:01:30Z"),
+  });
+  assert.equal(r.verdict, "DOWN");
+  assert.equal(r.reason, "the 18:00Z sweep published 5d878f3c at 18:01Z and no settlement tag covers it after 74 min (newest is S102 on 0cca7f2b): blocked, ours to unblock (blueprints SHIPPING.md § 9)");
+  assert.equal(r.detail.newest_tag, "S102");
+  assert.equal(r.detail.covered, false);
+  assert.ok(_BAD.has(r.verdict), "DOWN alarms, and /fleet barks on it");
+});
+
+test("§11 the same sweep inside the hour is OK: awaiting the blessing, with the minute it will bark", () => {
+  const r = classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: false, nowMs: at("2026-10-11T18:40:00Z") });
+  assert.equal(r.verdict, "OK");
+  assert.match(r.reason, /awaiting the blessing, 40 min since the sweep \(newest is S102 on 0cca7f2b; it barks at 19:00Z\)/);
+  // the hour exactly is still inside; a minute past is not
+  assert.equal(classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: false, nowMs: at("2026-10-11T19:00:00Z") }).verdict, "OK");
+  assert.equal(classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: false, nowMs: at("2026-10-11T19:01:00Z") }).verdict, "DOWN");
+});
+
+test("§11 REAL CASE 10-10 18:00Z: 33306f30 uncovered by S101 is DOWN overnight; S102 on a descendant covers it", () => {
+  const receipt = RECEIPT({ at: "2026-10-10T18:00:00Z", world_to: W_1010 });
+  const night = classifySettlement({ receipt, newestTag: S101, covered: false, nowMs: at("2026-10-10T23:00:00Z") });
+  assert.equal(night.verdict, "DOWN");
+  assert.match(night.reason, /published 33306f30 and no settlement tag covers it after 5h \(newest is S101 on 53b918de\)/);
+
+  // the tag is NOT the world's own commit — covered by descent (compare: ahead)
+  const morning = classifySettlement({ receipt, newestTag: S102, covered: true, nowMs: at("2026-10-11T05:59:00Z") });
+  assert.equal(morning.verdict, "OK");
+  assert.equal(morning.reason, "S102 covers the 18:00Z sweep (33306f30)");
+});
+
+test("§11 a tag ON the world covers it with no question asked — `covered` unread does not matter", () => {
+  const r = classifySettlement({ receipt: RECEIPT(), newestTag: { n: 103, sha: W_1011 }, covered: null, nowMs: at("2026-10-11T19:30:00Z") });
+  assert.equal(r.verdict, "OK");
+  assert.equal(r.reason, "S103 covers the 18:00Z sweep (5d878f3c)");
+  assert.equal(r.detail.covered, true);
+});
+
+test("§11 a refused, raced or starving sweep is DOWN an hour on, naming the slot, the status and the refusal's first line", () => {
+  const refused = RECEIPT({
+    status: "refused", world_to: "",
+    refusal: { cause: "lint: 2 errors in marks/foo.md\nsecond line never shown" },
+    detail: "sweep tripped: lint …",
+  });
+  const r = classifySettlement({ receipt: refused, newestTag: S102, covered: null, nowMs: at("2026-10-11T19:05:00Z") });
+  assert.equal(r.verdict, "DOWN");
+  assert.equal(r.reason, `the 18:00Z sweep ended "refused" and nothing has settled after 65 min: lint: 2 errors in marks/foo.md; blocked, ours to unblock (blueprints SHIPPING.md § 9)`);
+  assert.doesNotMatch(r.reason, /second line/);
+
+  // no classifier verdict: the report's own detail is the line
+  const race = classifySettlement({ receipt: RECEIPT({ status: "race", detail: "world main moved underneath the sweep — rerun" }), newestTag: S102, nowMs: at("2026-10-11T19:05:00Z") });
+  assert.equal(race.verdict, "DOWN");
+  assert.match(race.reason, /ended "race" .*: world main moved underneath the sweep — rerun;/);
+  assert.equal(classifySettlement({ receipt: RECEIPT({ status: "starving" }), newestTag: S102, nowMs: at("2026-10-11T19:05:00Z") }).verdict, "DOWN");
+
+  // a status nobody knows is not clean — it cannot answer "did it settle" yes
+  assert.equal(classifySettlement({ receipt: RECEIPT({ status: "weird" }), newestTag: S102, covered: true, nowMs: at("2026-10-11T19:05:00Z") }).verdict, "DOWN");
+
+  // inside the hour a refusal still has its rerun window
+  const early = classifySettlement({ receipt: refused, newestTag: S102, nowMs: at("2026-10-11T18:20:00Z") });
+  assert.equal(early.verdict, "OK");
+  assert.match(early.reason, /ended "refused" 20 min ago \(lint: 2 errors in marks\/foo\.md\); inside the 1h window for a rerun/);
+});
+
+// THE REAL SHAPE OF A QUIET SWEEP. The keeper tags publications, never quiet
+// crossings, and main always moves between sweeps — so a quiet sweep's world is
+// a DESCENDANT of the newest tag. Copied in shape from postmark-world between
+// S102 (0cca7f2b, `settlement: sweep 11 published`) and 5d878f3c: a crossing-
+// save, a PR merge, the registry re-derive. (The first version of this test
+// stood the quiet sweep ON the tag's own commit, which the world never does,
+// and so hid a probe that paged on every quiet sweep.)
+const commit = (sha, message) => ({ sha, commit: { message } });
+const PAST_S102 = [
+  commit("63114299aaaa", "crossing-save 243: 152 entities, 189 events"),
+  commit("b0db90f0aaaa", "Merge pull request #185 from postmark-town/w43/conflict-matrix\n\nconsent: …"),
+  commit("532655adaaaa", "settlement: household registry re-derived from the town at dcb5dbc89"),
+];
+const QUIET_HEAD = "532655adaaaa";
+const QUIET = (over = {}) => RECEIPT({ at: "2026-10-12T06:00:00Z", status: "quiet", world_from: "6cd9ef91aaaa", world_to: QUIET_HEAD, detail: "nothing eligible; the household registry was refreshed and published", ...over });
+
+test("§11 judgeQuietRange: a range of saves, merges and registry commits is covered; a sweep publication in it is held", () => {
+  assert.deepEqual(judgeQuietRange({ status: "ahead", total_commits: 3, commits: PAST_S102 }), { covered: true, held: null, error: null });
+  const withPub = [...PAST_S102.slice(0, 2), commit("5d878f3c55bf", "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed"), PAST_S102[2]];
+  assert.deepEqual(judgeQuietRange({ status: "ahead", total_commits: 4, commits: withPub }),
+    { covered: false, held: { sha: "5d878f3c55bf", subject: "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed" }, error: null });
+  assert.deepEqual(judgeQuietRange({ status: "identical" }), { covered: true, held: null, error: null });
+  assert.deepEqual(judgeQuietRange({ status: "behind", commits: [] }), { covered: true, held: null, error: null }, "a world behind the tag is blessed by it");
+  // unread is never a guess
+  assert.equal(judgeQuietRange({ status: "ahead", total_commits: 256, commits: PAST_S102 }).covered, null);
+  assert.match(judgeQuietRange({ status: "ahead", total_commits: 256, commits: PAST_S102 }).error, /256 commits lie past the tag and GitHub lists only 3/);
+  assert.equal(judgeQuietRange({ status: "ahead" }).covered, null);
+  assert.equal(judgeQuietRange(null).covered, null);
+  // what counts as a publication: the sweep's own subject with a nonzero count
+  assert.equal(isSweepPublication("settlement: sweep 6 published, 0 unpublished, 0 left drafted"), true);
+  assert.equal(isSweepPublication("settlement: sweep 0 published, 2 unpublished, 0 left drafted"), true, "an unpublication moves the record too");
+  assert.equal(isSweepPublication("settlement: household registry re-derived from the town at dcb5dbc89"), false);
+  assert.equal(isSweepPublication("crossing-save 243: 152 entities, 189 events"), false);
+});
+
+test("§11 a QUIET sweep on a world past the tag, with no publication in between, is OK — never a page", () => {
+  const { covered, held } = judgeQuietRange({ status: "ahead", total_commits: 3, commits: PAST_S102 });
+  const r = classifySettlement({ receipt: QUIET(), newestTag: S102, covered, held, nowMs: at("2026-10-12T09:00:00Z") });
+  assert.equal(r.verdict, "OK");
+  assert.equal(r.reason, "the 06:00Z sweep had nothing to publish, and no publication since S102 is unblessed (world at 532655ad)");
+  // and standing ON the tag is OK with no question asked
+  assert.equal(classifySettlement({ receipt: QUIET({ world_to: S102.sha }), newestTag: S102, nowMs: at("2026-10-12T09:00:00Z") }).verdict, "OK");
+});
+
+test("§11 a quiet morning does not clear a held night: a sweep publication past the tag is DOWN an hour on", () => {
+  const range = [...PAST_S102.slice(0, 2), commit("5d878f3c55bf", "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed"), PAST_S102[2]];
+  const { covered, held } = judgeQuietRange({ status: "ahead", total_commits: 4, commits: range });
+  const r = classifySettlement({ receipt: QUIET(), newestTag: S102, covered, held, nowMs: at("2026-10-12T07:10:00Z") });
+  assert.equal(r.verdict, "DOWN");
+  assert.equal(r.reason, `the 06:00Z sweep was quiet, standing on 532655ad, and 5d878f3c "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed" still has no settlement tag after 70 min (newest is S102 on 0cca7f2b): an earlier sweep's publication is still unblessed: blocked, ours to unblock (blueprints SHIPPING.md § 9)`);
+  assert.equal(r.detail.held.sha, "5d878f3c55bf");
+  // inside the hour it waits, naming what it waits on
+  const early = classifySettlement({ receipt: QUIET(), newestTag: S102, covered, held, nowMs: at("2026-10-12T06:30:00Z") });
+  assert.equal(early.verdict, "OK");
+  assert.match(early.reason, /5d878f3c "settlement: sweep 3 published.*" since S102 is awaiting the blessing, 30 min since the sweep \(it barks at 07:00Z\)/);
+  // a range GitHub will not list in full is unread: STALE past the hour
+  const long = judgeQuietRange({ status: "ahead", total_commits: 256, commits: range });
+  const s = classifySettlement({ receipt: QUIET(), newestTag: S102, covered: long.covered, coverError: long.error, nowMs: at("2026-10-12T07:10:00Z") });
+  assert.equal(s.verdict, "STALE");
+  assert.match(s.reason, /cannot verify the 06:00Z sweep's blessing for 70 min: .*did not list what lies between S102 \(0cca7f2b\) and it \(256 commits lie past the tag/);
+});
+
+test("§11 wired, quiet: the compare is asked base=tag head=world, unpaginated, once; a held publication pages", async () => {
+  const dir = tempDir("sentinel-settle-quiet-");
+  const receipt = join(dir, "settlement-auto.json");
+  _wf(receipt, JSON.stringify(QUIET({ at: "2026-08-25T06:00:01Z" })));
+  const cfg = { ...FIXTURE_CONFIG, settlement: { ...CONFIG.settlement, receipt } };
+  const urls = [];
+  const clean = stubFetch({ ...GREEN_TABLE, [`https://api.github.com/repos/postmark-town/postmark-world/compare/worldtip0000...${QUIET_HEAD}`]: { status: 200, body: JSON.stringify({ status: "ahead", total_commits: 3, commits: PAST_S102 }) } });
+  const t1 = await tick({ fetchImpl: async (u, o) => { urls.push(String(u)); return clean(u, o); }, exec: stubExec(), state: {}, nowMs: T0, config: cfg, readDisk: GREEN_DISK });
+  assert.equal(t1.probes.find((p) => p.key === "settlement").verdict, "OK");
+  assert.deepEqual(t1.alerts, [], "a quiet sweep on a moved, clean world says nothing");
+  assert.deepEqual(urls.filter((u) => u.includes("/compare/")), [`https://api.github.com/repos/postmark-town/postmark-world/compare/worldtip0000...${QUIET_HEAD}`]);
+  assert.deepEqual(t1.nextState.stamps.settlement, { world: QUIET_HEAD, tag_sha: "worldtip0000", mode: "quiet", covered: true });
+
+  const range = [commit("5d878f3c55bf", "settlement: sweep 3 published, 0 unpublished"), ...PAST_S102];
+  const heldBase = stubFetch({ ...GREEN_TABLE, [`https://api.github.com/repos/postmark-town/postmark-world/compare/worldtip0000...${QUIET_HEAD}`]: { status: 200, body: JSON.stringify({ status: "ahead", total_commits: 4, commits: range }) } });
+  let compares = 0;
+  const heldFetch = async (u, o) => { if (String(u).includes("/compare/")) compares++; return heldBase(u, o); };
+  const t2 = await tick({ fetchImpl: heldFetch, exec: stubExec(), state: {}, nowMs: T0, config: cfg, readDisk: GREEN_DISK });
+  const p2 = t2.probes.find((p) => p.key === "settlement");
+  assert.equal(p2.verdict, "DOWN");
+  assert.match(p2.reason, /5d878f3c "settlement: sweep 3 published, 0 unpublished" still has no settlement tag/);
+  assert.deepEqual(t2.alerts.map((a) => a.key), ["settlement"]);
+  // remembered WITH its held publication: the next tick names it without asking again
+  const t3 = await tick({ fetchImpl: heldFetch, exec: stubExec(), state: t2.nextState, nowMs: T0 + 10 * MINUTE, config: cfg, readDisk: GREEN_DISK });
+  assert.equal(compares, 1);
+  assert.match(t3.probes.find((p) => p.key === "settlement").reason, /5d878f3c "settlement: sweep 3 published/);
+  assert.deepEqual(t3.alerts, []);
+});
+
+test("§11 a slot with no receipt an hour on is DOWN; inside the hour the previous receipt still speaks", () => {
+  const morning = RECEIPT({ at: "2026-10-11T06:00:00Z", world_to: S102.sha });
+  const r = classifySettlement({ receipt: morning, newestTag: S102, covered: null, nowMs: at("2026-10-11T19:14:00Z") });
+  assert.equal(r.verdict, "DOWN");
+  assert.match(r.reason, /^no sweep receipt for the 18:00Z slot after 74 min: the newest receipt is still the 2026-10-11T06:00:00Z sweep \(published\)/);
+  assert.match(r.reason, /ours to unblock/);
+
+  const inside = classifySettlement({ receipt: morning, newestTag: S102, covered: null, nowMs: at("2026-10-11T18:30:00Z") });
+  assert.equal(inside.verdict, "OK", "the 18:00 sweep may still be running; the 06:00 one is covered");
+  assert.match(inside.reason, /S102 covers the 06:00Z sweep/);
+});
+
+test("§11 INSIDE the hour, unread is UNKNOWN and never OK: no receipt, no `at`, no tags, no world, or coverage GitHub would not answer", () => {
+  const now = at("2026-10-11T18:30:00Z");
+  const none = classifySettlement({ receipt: null, readError: "ENOENT", nowMs: now, path: "/srv/postmark-harbor/settlement-auto.json" });
+  assert.equal(none.verdict, "UNKNOWN");
+  assert.match(none.reason, /could not read \/srv\/postmark-harbor\/settlement-auto\.json \(ENOENT\)/);
+  assert.equal(classifySettlement({ receipt: RECEIPT({ at: "not a time" }), newestTag: S102, nowMs: now }).verdict, "UNKNOWN");
+  assert.equal(classifySettlement({ receipt: RECEIPT(), newestTag: null, tagError: "git ls-remote failed: timeout", nowMs: now }).verdict, "UNKNOWN");
+  assert.equal(classifySettlement({ receipt: RECEIPT({ world_to: "", world_from: "" }), newestTag: S102, nowMs: now }).verdict, "UNKNOWN");
+  const unasked = classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: null, coverError: "GET /compare -> HTTP 502", nowMs: now });
+  assert.equal(unasked.verdict, "UNKNOWN");
+  assert.match(unasked.reason, /cannot verify the 18:00Z sweep's blessing yet: .*GitHub did not say whether S102 \(0cca7f2b\) descends from it \(GET \/compare -> HTTP 502\)/);
+});
+
+test("§11 PAST the hour, silence is not possible: a missing or unreadable receipt is DOWN as the missing slot", () => {
+  const now = at("2026-10-11T19:14:00Z");
+  for (const [receipt, readError, why] of [
+    [null, "ENOENT", /could not read \/srv\/postmark-harbor\/settlement-auto\.json \(ENOENT\)/],
+    [null, "Unexpected token } in JSON", /\(Unexpected token \} in JSON\)/],
+    [RECEIPT({ at: "not a time" }), null, /carries no readable `at`/],
+  ]) {
+    const r = classifySettlement({ receipt, readError, newestTag: S102, nowMs: now, path: "/srv/postmark-harbor/settlement-auto.json" });
+    assert.equal(r.verdict, "DOWN", String(why));
+    assert.match(r.reason, /^no sweep receipt for the 18:00Z slot after 74 min: /);
+    assert.match(r.reason, why);
+    assert.match(r.reason, /ours to unblock/);
+    assert.ok(_BAD.has(r.verdict));
+  }
+  // the hour is the newest SLOT's: at 18:59 the 18:00 slot is still inside it
+  assert.equal(classifySettlement({ receipt: null, readError: "ENOENT", nowMs: at("2026-10-11T18:59:00Z") }).verdict, "UNKNOWN");
+});
+
+test("§11 PAST the hour, a sweep we cannot verify is STALE and names the error: tags unlisted, compare failed, no world", () => {
+  const now = at("2026-10-11T19:14:00Z");
+  const tags = classifySettlement({ receipt: RECEIPT(), newestTag: null, tagError: "git ls-remote failed: Could not resolve host: github.com", nowMs: now });
+  assert.equal(tags.verdict, "STALE");
+  assert.equal(tags.reason, "cannot verify the 18:00Z sweep's blessing for 74 min: could not list the world's settlement/S<n> tags (git ls-remote failed: Could not resolve host: github.com) to say whether anything covers 5d878f3c");
+
+  const cmp = classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: null, coverError: "GET /repos/postmark-town/postmark-world/compare/x...y -> HTTP 502", nowMs: now });
+  assert.equal(cmp.verdict, "STALE");
+  assert.match(cmp.reason, /^cannot verify the 18:00Z sweep's blessing for 74 min: the 18:00Z sweep published 5d878f3c, and GitHub did not say whether S102 \(0cca7f2b\) descends from it \(GET .* -> HTTP 502\)$/);
+
+  const noWorld = classifySettlement({ receipt: RECEIPT({ world_to: "", world_from: "" }), newestTag: S102, nowMs: now });
+  assert.equal(noWorld.verdict, "STALE");
+  assert.match(noWorld.reason, /names no world_to/);
+  for (const r of [tags, cmp, noWorld]) assert.ok(_BAD.has(r.verdict), "STALE alarms, and /fleet barks on it");
+});
+
+test("§11 wired: a dead remote past the hour reaches the board STALE with git's own error, and a missing receipt DOWN", async () => {
+  const dir = tempDir("sentinel-settle-dead-");
+  const receipt = join(dir, "settlement-auto.json");
+  _wf(receipt, JSON.stringify(RECEIPT({ at: "2026-08-25T06:00:01Z", world_to: "heldworld00" })));
+  const deadWorld = (bin, args) => {
+    if (args.some((a) => String(a).includes("postmark-world"))) throw new Error("fatal: unable to access 'https://github.com/postmark-town/postmark-world.git/': Could not resolve host");
+    return stubExec()(bin, args);
+  };
+  const t1 = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: deadWorld, state: {}, nowMs: T0, config: { ...FIXTURE_CONFIG, settlement: { ...CONFIG.settlement, receipt } }, readDisk: GREEN_DISK });
+  const p1 = t1.probes.find((p) => p.key === "settlement");
+  assert.equal(p1.verdict, "STALE");
+  assert.match(p1.reason, /cannot verify the 06:00Z sweep's blessing for 5h59m: could not list .*git ls-remote failed: fatal: unable to access .*Could not resolve host/);
+  assert.deepEqual(t1.alerts.map((a) => a.key), ["settlement"]);
+
+  const t2 = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: { ...FIXTURE_CONFIG, settlement: { ...CONFIG.settlement, receipt: join(dir, "never-written.json") } }, readDisk: GREEN_DISK });
+  const p2 = t2.probes.find((p) => p.key === "settlement");
+  assert.equal(p2.verdict, "DOWN");
+  assert.match(p2.reason, /^no sweep receipt for the 06:00Z slot after 6h: could not read .*never-written\.json \(ENOENT\)/);
+  assert.deepEqual(t2.alerts.map((a) => a.key), ["settlement"]);
+});
+
+test("§11 newestSettlementTag: newest by NUMBER, peeled, and null rather than throwing", () => {
+  const wire = () => [
+    "t99\trefs/tags/settlement/S99", "c99\trefs/tags/settlement/S99^{}",
+    "c102\trefs/tags/settlement/S102^{}", "t102\trefs/tags/settlement/S102",
+    "t10\trefs/tags/settlement/S10", "c10\trefs/tags/settlement/S10^{}",
+    "x\trefs/tags/settlement/S7-draft",
+  ].join("\n") + "\n";
+  assert.deepEqual(newestSettlementTag("https://x/w.git", { exec: wire }), { n: 102, tag: "settlement/S102", sha: "c102" },
+    "S102 beats S99 and S10 (text order would pick S99), and the peeled line wins even when it lists first");
+  assert.deepEqual(newestSettlementTag("https://x/w.git", { exec: () => "light\trefs/tags/settlement/S3\n" }), { n: 3, tag: "settlement/S3", sha: "light" }, "a lightweight tag's sha is its commit");
+  assert.equal(newestSettlementTag("https://x/w.git", { exec: () => "" }), null);
+  assert.equal(newestSettlementTag("https://x/w.git", { exec: () => { throw new Error("no network"); } }), null);
+});
+
+test("§11 wired: a held sweep reaches the board as `settlement`, asks GitHub ONCE per (world, tag) pair, and the bark says why", async () => {
+  const dir = tempDir("sentinel-settle-");
+  const receipt = join(dir, "settlement-auto.json");
+  // T0 is 2026-08-25T12:00Z; the 06:00Z sweep published a world S50 is behind.
+  _wf(receipt, JSON.stringify(RECEIPT({ at: "2026-08-25T06:00:01Z", world_to: "heldworld00" })));
+  const cfg = { ...FIXTURE_CONFIG, settlement: { ...CONFIG.settlement, receipt } };
+  let compares = 0;
+  const table = {
+    ...GREEN_TABLE,
+    "https://api.github.com/repos/postmark-town/postmark-world/compare/heldworld00...worldtip0000": { status: 200, body: JSON.stringify({ status: "behind" }) },
+  };
+  const base = stubFetch(table);
+  const fetchImpl = async (url, o) => { if (String(url).includes("/compare/")) compares++; return base(url, o); };
+
+  const t1 = await tick({ fetchImpl, exec: stubExec(), state: {}, nowMs: T0, config: cfg, readDisk: GREEN_DISK });
+  const probe = t1.probes.find((p) => p.key === "settlement");
+  assert.equal(probe.verdict, "DOWN");
+  assert.equal(probe.kind, "settlement");
+  assert.match(probe.reason, /the 06:00Z sweep published heldworl at \d\d:\d\dZ and no settlement tag covers it after 5h59m \(newest is S50 on worldtip\)/);
+  assert.deepEqual(t1.alerts.map((a) => a.key), ["settlement"], "a held settlement on an otherwise green town alerts, and nothing else does");
+  assert.deepEqual(t1.nextState.stamps.settlement, { world: "heldworld00", tag_sha: "worldtip0000", mode: "published", covered: false });
+  const board = composeBoard({ probes: t1.probes, nowIso: t1.nowIso, alerting: {} });
+  assert.equal(board.status, "DOWN");
+  assert.match(composeMessage({ alerts: t1.alerts, board, nowIso: t1.nowIso }), /DOWN — the settlement: the 06:00Z sweep published heldworl/);
+
+  // ten minutes on: same pair, remembered — no second compare, no second bark
+  const t2 = await tick({ fetchImpl, exec: stubExec(), state: t1.nextState, nowMs: T0 + 10 * MINUTE, config: cfg, readDisk: GREEN_DISK });
+  assert.equal(compares, 1, "whether a commit descends from another never changes; ask once");
+  assert.deepEqual(t2.alerts, []);
+
+  // the keeper blesses ON the world: covered by equality, recovered, still one compare
+  const t3 = await tick({ fetchImpl, exec: stubExec({ settleSha: "heldworld00" }), state: t2.nextState, nowMs: T0 + 20 * MINUTE, config: cfg, readDisk: GREEN_DISK });
+  assert.equal(t3.probes.find((p) => p.key === "settlement").reason, "S50 covers the 06:00Z sweep (heldworl)");
+  assert.deepEqual(t3.alerts.map((a) => `${a.key}:${a.alert.kind}`), ["settlement:recovered"]);
+  assert.equal(compares, 1);
 });

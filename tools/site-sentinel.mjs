@@ -47,7 +47,8 @@
 //    shares the address): one combined /actions/runs read for every workflow at
 //    once, and one commits?path= read for the daily's source. Every commit SHA
 //    it needs comes from `git ls-remote`, which is the git wire protocol and
-//    spends no REST budget at all.
+//    spends no REST budget at all. (§11 adds one compare call per NEW sweep-
+//    and-tag pair, remembered in its state, so a few a day, never one a tick.)
 //
 // 2. PROD DOES NOT BUILD FROM MAIN, so "deployed sha vs main tip" is not a
 //    staleness test — it is a permanent false alarm. deploy.yml's release lane
@@ -114,6 +115,17 @@
 //                 min, or none at all, is STALE: the watcher or the desktop has
 //                 stopped, and a silent watcher must not read as healthy meeps
 //                 (Darko 2026-10-10 13:27, POS-556).
+// 11. SETTLEMENT — the newest sweep receipt (/srv/postmark-harbor/settlement-
+//                 auto.json) settled within the hour: a publishing sweep whose
+//                 world the newest settlement/S<n> tag covers, peeled, by
+//                 equality or descent; a quiet sweep with no unblessed sweep
+//                 publication between that tag and its world. A refusal, a
+//                 publication no tag covers, or a
+//                 06:00/18:00 slot with no receipt, an hour on, is DOWN (Darko
+//                 2026-10-11: "it needs to bark"), and so is an unreadable
+//                 receipt; a blessing that cannot be verified an hour on is
+//                 STALE — past the hour, never silent. Tags over ls-remote; descent
+//                 by ONE remembered compare call per new (world, tag) pair.
 //
 // ── ONE ALARM ROUTE (POS-556) ───────────────────────────────────────────────
 //
@@ -173,6 +185,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 export const MINUTE = 60_000;
 export const HOUR = 60 * MINUTE;
+
+// §11 — the settlement. Here and not beside classifySettlement because CONFIG
+// below reads them, and a const is not readable before its line.
+/** The ruling's hour. Named because it is the number the founder said. */
+export const SETTLEMENT_GRACE_MS = 60 * MINUTE;
+/** postmark-settlement.timer's OnCalendar hours, UTC. The test reads the unit and refuses a mismatch. */
+export const SETTLEMENT_SLOTS_UTC = Object.freeze([6, 18]);
 
 export const CONFIG = {
   // Every door a reader actually opens. The API entry is GET /api/ and not
@@ -314,6 +333,19 @@ export const CONFIG = {
   // missed pushes plus one of ours. The record's own path and freshness are
   // the probe's; what counts as a sick meep is the watcher's (its `status`).
   meeps: { key: "meeps", label: "the meeps", path: "/srv/postmark-sentinel/meeps.json", staleAfterMs: 15 * MINUTE },
+
+  // §11 — the settlement. The receipt is the box's own file (owner meepo, which
+  // this runs as); the tags are the world's, read over the wire. `unit` is not
+  // decoration, exactly as in `watchers`: test/site-sentinel.test.mjs reads the
+  // timer and refuses slots that do not match its OnCalendar lines.
+  settlement: {
+    key: "settlement", label: "the settlement",
+    receipt: "/srv/postmark-harbor/settlement-auto.json",
+    worldRepo: { owner: "postmark-town", name: "postmark-world" },
+    unit: "postmark-settlement.timer",
+    slotsUtc: SETTLEMENT_SLOTS_UTC,
+    graceMs: SETTLEMENT_GRACE_MS,
+  },
 
   requestTimeoutMs: 20_000,
   // One reminder every twelve hours while a probe stays bad. Not per tick —
@@ -960,6 +992,278 @@ export function classifyMeeps({ raw = null, readError = null, nowMs, staleAfterM
   return { verdict: "STALE", reason: `the meeps record's status is ${JSON.stringify(rec.status ?? null)}, which this probe does not read — unread is never healthy`, detail };
 }
 
+// ── §11 the settlement: the sweep and its blessing ──────────────────────────
+//
+// THE RULING (Darko, 2026-10-11): "If the settlement that we expect has not
+// gone through an hour after its expected time … it needs to bark." A blocked
+// settlement is the town's top priority, and this file is the ONE alarm route,
+// so the bark is a probe here.
+//
+// THE INSTANCES. The 2026-10-10T18:00Z sweep published world 33306f30 and no
+// settlement tag covered it until S102 (on 0cca7f2b, a descendant) at about
+// 06:38Z the next morning — twelve hours with nothing ringing. The
+// 2026-10-11T18:00Z sweep published 5d878f3c and was held: an hour later the
+// newest tag was still S102. The roll-call's ALARM-unblessed (tools/box-
+// rollcall.mjs) asks a different question — how OLD is the newest tag — on the
+// operator round's clock; this asks the per-sweep question on the sentinel's
+// ten-minute one: did THE sweep we expected settle within the hour?
+//
+// WHAT "SETTLED" MEANS. The box's sweep (deploy/settlement-auto.sh, 06:00 and
+// 18:00 UTC, postmark-settlement.timer) writes ONE receipt, overwritten each
+// run, at /srv/postmark-harbor/settlement-auto.json. The keeper's blessing is
+// an annotated tag `settlement/S<N>` on postmark-world, normally cut by ~:40.
+// A later tag covers every earlier sweep, so only the NEWEST receipt and the
+// NEWEST tag (by number, never by text: S10 sorts before S9) matter, and the
+// sweep is settled when that tag's peeled commit IS the receipt's world_to or
+// descends from it.
+//
+// THE STATUSES are settlement-auto.sh's own `report` words: `published` and
+// `quiet` are the clean ones; `refused`, `race` and `starving` are
+// deploy/settlement-history.mjs's UNSETTLED set. A status this probe does not
+// know is NOT read as clean — the same law as classifySiteRefresh's, but louder,
+// because "nothing settled" is the ruling's whole question and an unknown word
+// cannot answer it yes.
+//
+// A QUIET SWEEP ASKS A DIFFERENT QUESTION. The keeper tags PUBLICATIONS — S80
+// to S103 are every one a `settlement: sweep N published, …` commit (plus the
+// by-hand S93) — and never a quiet crossing. And main always moves between
+// sweeps: the Pen's crossing-save (~00:05Z / 12:04Z), merged PRs, the sweep's
+// own "household registry re-derived" commit. So a quiet sweep's world_to is
+// almost never a tagged commit, it is a DESCENDANT of the newest tag, and
+// asking "does a tag cover it" would page on every quiet sweep. (The first
+// version of this probe did, and its quiet test hid it behind a fixture whose
+// world was the tag's own commit — a state postmark-world never reaches.)
+//
+// The quiet question is: between the newest tag and the world this sweep
+// stands on, is there a PUBLICATION nobody blessed? GitHub's compare, base =
+// the tag, head = world_to, lists that range (up to 250 commits); a commit
+// whose subject is `settlement: sweep …` with a nonzero count is a held
+// publication. None there: OK. One there: DOWN past the hour, exactly as for
+// the publishing sweep itself — a quiet morning must not clear a held night.
+// A range longer than GitHub lists, or no answer, is unread: STALE past the
+// hour. judgeQuietRange below is that reading, pure.
+//
+// THE CLOCK runs from the receipt's own `at` (the run's start stamp). Sixty
+// minutes is the keeper's ~:40 plus slack, and it is the ruling's number. Inside
+// it a held sweep is OK ("awaiting the blessing"); past it, DOWN. DOWN and not
+// STALE: the town is not behind, it is blocked, and the repair is a person
+// (blueprints SHIPPING.md § 9: ours to unblock, never the keeper's).
+//
+// PAST THE HOUR, SILENCE IS NOT POSSIBLE (coordinator, 2026-10-11). UNKNOWN
+// never alerts here and /fleet barks only on DOWN or STALE, so an unread input
+// that stayed UNKNOWN would let a blocked settlement sit silent for as long as
+// the input stayed unread. Inside the hour, unread is UNKNOWN — this file's
+// rule for an unread reference (classifyStamp, classifyDisk), and nothing is
+// overdue yet. Past it:
+//   - NO RECEIPT (missing, unreadable, unparseable, no `at`) is DOWN, the same
+//     sentence as the MISSING SLOT: a readable receipt whose `at` is older than
+//     a slot an hour gone means the slot did not run, did not finish, or died
+//     before writing — "the settlement we expect has not gone through" — and a
+//     receipt nobody can read is no evidence that it did.
+//   - A SWEEP WE CANNOT VERIFY (tags unlisted, the compare call failed, no
+//     world named) is STALE and names the error: the sweep may well be blessed,
+//     so DOWN would overstate it, but the blessing is overdue to be SEEN.
+//
+// PURE: the caller reads the file, the tags and GitHub's compare answer, so
+// every branch below is falsifiable with no box and no network.
+
+/** settlement-auto.sh's clean outcomes. Everything else, including an absent status, is not. */
+export const SETTLEMENT_CLEAN = new Set(["published", "quiet"]);
+
+/** The newest scheduled sweep slot at or before `nowMs`. */
+export function newestSettlementSlot(nowMs, hoursUtc = SETTLEMENT_SLOTS_UTC) {
+  const DAY = 24 * HOUR;
+  const day = Math.floor(nowMs / DAY) * DAY;
+  let best = null;
+  for (const d of [day, day - DAY]) {
+    for (const h of hoursUtc) {
+      const s = d + h * HOUR;
+      if (s <= nowMs && (best == null || s > best)) best = s;
+    }
+  }
+  return best;
+}
+
+const hhmmZ = (ms) => `${new Date(ms).toISOString().slice(11, 16)}Z`;
+const shortSha = (sha) => String(sha ?? "").slice(0, 8);
+const firstLine = (s) => String(s ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+// "74 min" while it reads as minutes; "12h38m" once minutes stop being a number a reader can hold.
+const minutesOrDuration = (ms) => (ms < 2 * HOUR ? `${Math.floor(ms / MINUTE)} min` : humanDuration(ms));
+
+const SHIPPING_9 = "blocked, ours to unblock (blueprints SHIPPING.md § 9)";
+
+/**
+ * @param {object|null} receipt      settlement-auto.json, parsed; null when unread
+ * @param {{n:number, sha:string}|null} newestTag  the highest-numbered settlement/S<n>, PEELED to its commit
+ * @param {boolean|null} covered     PUBLISHED: does newestTag.sha equal or descend from the world? QUIET: is
+ *                                   every publication past the tag blessed (judgeQuietRange)? null = unanswered
+ * @param {number|null} writtenAtMs  the receipt file's mtime — when the sweep finished — for the reason line only
+ * @param {string|null} tagError     why the tags could not be listed, when they could not
+ * @param {string|null} coverError   why GitHub's compare did not answer, when it did not
+ * @param {object|null} held         a quiet sweep's unblessed publication { sha, subject }, from judgeQuietRange
+ */
+export function classifySettlement({
+  receipt = null,
+  readError = null,
+  newestTag = null,
+  covered = null,
+  nowMs,
+  writtenAtMs = null,
+  tagError = null,
+  coverError = null,
+  held = null,
+  graceMs = SETTLEMENT_GRACE_MS,
+  slotsUtc = SETTLEMENT_SLOTS_UTC,
+  path = "the settlement receipt",
+} = {}) {
+  const slotMs = newestSettlementSlot(nowMs, slotsUtc);
+  const slotOverdue = slotMs != null && nowMs - slotMs > graceMs;
+
+  // NO READABLE RECEIPT. Past the newest slot's hour it is the missing-slot
+  // sentence, DOWN; inside it, UNKNOWN (see the header: silence is not
+  // possible past the hour, and nothing is overdue before it).
+  const unread = receipt == null || typeof receipt !== "object"
+    ? `could not read ${path}${readError ? ` (${String(readError).slice(0, 80)})` : ""}`
+    : !Number.isFinite(Date.parse(receipt.at ?? "")) ? `${path} carries no readable \`at\`, so it cannot say which sweep it is` : null;
+  if (unread) {
+    if (slotOverdue) {
+      return {
+        verdict: "DOWN",
+        reason: `no sweep receipt for the ${hhmmZ(slotMs)} slot after ${minutesOrDuration(nowMs - slotMs)}: ${unread}, and a receipt nobody can read is no evidence the sweep settled; ${SHIPPING_9}`,
+      };
+    }
+    return { verdict: "UNKNOWN", reason: `${unread}, so nothing can say whether the last sweep settled` };
+  }
+  const atMs = Date.parse(receipt.at);
+  const status = receipt.status ?? null;
+  const world = receipt.world_to || receipt.world_from || null;
+  const detail = {
+    at: receipt.at, status, world_to: world,
+    newest_tag: newestTag ? `S${newestTag.n}` : null, newest_tag_sha: newestTag?.sha ?? null,
+    covered: newestTag && world && newestTag.sha === world ? true : covered,
+  };
+  const sweep = `the ${hhmmZ(atMs)} sweep`;
+
+  // THE MISSING SLOT, first: it needs neither the tags nor the status, and a
+  // receipt from the slot before is not evidence about this one.
+  if (slotOverdue && atMs < slotMs) {
+    return {
+      verdict: "DOWN",
+      reason: `no sweep receipt for the ${hhmmZ(slotMs)} slot after ${minutesOrDuration(nowMs - slotMs)}: the newest receipt is still the ${receipt.at} sweep (${status ?? "no status"}). The timer did not fire, the sweep is still running, or it died before writing; ${SHIPPING_9}`,
+      detail,
+    };
+  }
+
+  const since = nowMs - atMs;
+  const late = since > graceMs;
+
+  if (!SETTLEMENT_CLEAN.has(status)) {
+    // The refusal's own first line — the classifier's `cause` when there is
+    // one, the report's `detail` otherwise — so the bark says WHAT refused.
+    const why = (firstLine(receipt.refusal?.cause) || firstLine(receipt.detail) || "no refusal was written").slice(0, 200);
+    const word = status == null ? "with no status" : `"${status}"`;
+    if (!late) {
+      return { verdict: "OK", reason: `${sweep} ended ${word} ${minutesOrDuration(since)} ago (${why}); inside the ${humanDuration(graceMs)} window for a rerun`, detail };
+    }
+    return { verdict: "DOWN", reason: `${sweep} ended ${word} and nothing has settled after ${minutesOrDuration(since)}: ${why}; ${SHIPPING_9}`, detail };
+  }
+
+  // A SWEEP WE CANNOT VERIFY: UNKNOWN inside the hour, STALE past it, and the
+  // error is in the sentence so the reader knows which instrument failed.
+  const unverifiable = (error) => (late
+    ? { verdict: "STALE", reason: `cannot verify ${sweep}'s blessing for ${minutesOrDuration(since)}: ${error}`, detail }
+    : { verdict: "UNKNOWN", reason: `cannot verify ${sweep}'s blessing yet: ${error}`, detail });
+
+  if (!world) {
+    return unverifiable(`the receipt reports "${status}" but names no world_to, so no tag can be checked against it`);
+  }
+  if (!newestTag || !Number.isInteger(newestTag.n) || !newestTag.sha) {
+    return unverifiable(`could not list the world's settlement/S<n> tags (${String(tagError ?? "no tag was listed").slice(0, 160)}) to say whether anything covers ${shortSha(world)}`);
+  }
+
+  const tag = `S${newestTag.n}`;
+  const newest = `newest is ${tag} on ${shortSha(newestTag.sha)}`;
+  const isCovered = newestTag.sha === world ? true : covered;
+
+  if (status === "quiet") {
+    // The quiet question (see the header): is a PUBLICATION between the newest
+    // tag and this world unblessed? `covered` answers it (judgeQuietRange), and
+    // `held` names the publication when there is one.
+    const what = `${sweep} was quiet, standing on ${shortSha(world)}`;
+    if (isCovered === true) {
+      return {
+        verdict: "OK",
+        reason: newestTag.sha === world
+          ? `${sweep} had nothing to publish, and ${tag} is the world it stood on (${shortSha(world)})`
+          : `${sweep} had nothing to publish, and no publication since ${tag} is unblessed (world at ${shortSha(world)})`,
+        detail,
+      };
+    }
+    if (isCovered == null) {
+      return unverifiable(`${what}, and GitHub did not list what lies between ${tag} (${shortSha(newestTag.sha)}) and it (${String(coverError ?? "not asked").slice(0, 160)})`);
+    }
+    const pub = held?.sha ? `${shortSha(held.sha)} "${String(held.subject ?? "").slice(0, 120)}"` : "a sweep publication";
+    const heldDetail = { ...detail, held: held ?? null };
+    if (!late) {
+      return { verdict: "OK", reason: `${what}; ${pub} since ${tag} is awaiting the blessing, ${minutesOrDuration(since)} since the sweep (it barks at ${hhmmZ(atMs + graceMs)})`, detail: heldDetail };
+    }
+    return {
+      verdict: "DOWN",
+      reason: `${what}, and ${pub} still has no settlement tag after ${minutesOrDuration(since)} (${newest}): an earlier sweep's publication is still unblessed: ${SHIPPING_9}`,
+      detail: heldDetail,
+    };
+  }
+
+  const what = `${sweep} published ${shortSha(world)}${Number.isFinite(writtenAtMs) ? ` at ${hhmmZ(writtenAtMs)}` : ""}`;
+  if (isCovered === true) {
+    return { verdict: "OK", reason: `${tag} covers ${sweep} (${shortSha(world)})`, detail };
+  }
+  if (isCovered == null) {
+    return unverifiable(`${what}, and GitHub did not say whether ${tag} (${shortSha(newestTag.sha)}) descends from it (${String(coverError ?? "not asked").slice(0, 160)})`);
+  }
+  if (!late) {
+    return { verdict: "OK", reason: `${what}; awaiting the blessing, ${minutesOrDuration(since)} since the sweep (${newest}; it barks at ${hhmmZ(atMs + graceMs)})`, detail };
+  }
+  return {
+    verdict: "DOWN",
+    reason: `${what} and no settlement tag covers it after ${minutesOrDuration(since)} (${newest}): ${SHIPPING_9}`,
+    detail,
+  };
+}
+
+/** A world commit the sweep writes when it PUBLISHED: `settlement: sweep 6 published, 0 unpublished, …`. */
+export function isSweepPublication(message) {
+  const s = firstLine(message);
+  return /^settlement: sweep\b/.test(s) && (s.match(/\d+/g) ?? []).some((n) => Number(n) > 0);
+}
+
+/**
+ * The quiet sweep's question, read off GitHub's compare with base = the newest
+ * tag's commit and head = the quiet sweep's world. PURE.
+ *   identical / behind  the world is the tag, or behind it: nothing unblessed.
+ *   ahead / diverged    `commits` is what the tag does not cover; any sweep
+ *                       publication among them is held.
+ * Unread — no list, a range longer than GitHub lists (250), a status not named
+ * here — is covered: null with the reason, never a guess.
+ *
+ * @returns {{covered: boolean|null, held: {sha:string, subject:string}|null, error: string|null}}
+ */
+export function judgeQuietRange(cmp) {
+  const st = cmp?.status;
+  if (st === "identical" || st === "behind") return { covered: true, held: null, error: null };
+  if (st !== "ahead" && st !== "diverged") return { covered: null, held: null, error: `the compare answered status ${JSON.stringify(st ?? null)}` };
+  const commits = cmp.commits;
+  if (!Array.isArray(commits)) return { covered: null, held: null, error: "the compare listed no commits" };
+  const total = Number.isInteger(cmp.total_commits) ? cmp.total_commits : commits.length;
+  if (total > commits.length) {
+    return { covered: null, held: null, error: `${total} commits lie past the tag and GitHub lists only ${commits.length}` };
+  }
+  const hit = commits.find((c) => isSweepPublication(c?.commit?.message));
+  return hit
+    ? { covered: false, held: { sha: hit.sha, subject: firstLine(hit.commit.message) }, error: null }
+    : { covered: true, held: null, error: null };
+}
+
 export const BAD = new Set(["DOWN", "STALE"]);
 
 /**
@@ -1129,6 +1433,34 @@ export function newestReleaseTag(repoUrl, { exec = execFileSync } = {}) {
     rows.sort((a, b) => a.tag.localeCompare(b.tag, undefined, { numeric: true }));
     return rows[rows.length - 1];
   } catch { return null; }
+}
+
+/**
+ * The newest `settlement/S<n>` blessing on the world, PEELED: { n, tag, sha }.
+ *
+ * Newest by NUMBER (S102 beats S99; as text S10 sorts before S9 — the same
+ * reason deploy/world2-refresh-clone.sh sorts with `sort -n`). Peeled for the
+ * annotated-tag reason newestReleaseTag gives: the keeper's tags are annotated,
+ * the wire lists the tag object AND `^{}`, and only the peeled line is the
+ * commit a sweep's world_to can be compared to. Null when git cannot list them
+ * or there are none — unread either way, which §11 reads as UNKNOWN.
+ */
+export function newestSettlementTag(repoUrl, { exec = execFileSync, onError = () => {} } = {}) {
+  try {
+    const out = String(exec("git", ["ls-remote", "--tags", repoUrl, "refs/tags/settlement/S*"], { encoding: "utf8", timeout: CONFIG.requestTimeoutMs }));
+    const byN = new Map();
+    for (const l of out.split("\n").filter(Boolean)) {
+      const [sha, ref] = l.split(/\s+/);
+      const m = /^refs\/tags\/settlement\/S(\d+)(\^\{\})?$/.exec(String(ref));
+      if (!m) continue;
+      const n = Number(m[1]);
+      const row = byN.get(n) ?? { n, tag: `settlement/S${n}`, sha: null };
+      if (m[2] || row.sha === null) row.sha = sha;
+      byN.set(n, row);
+    }
+    if (!byN.size) { onError("the world lists no settlement/S<n> tag"); return null; }
+    return byN.get(Math.max(...byN.keys()));
+  } catch (e) { onError(`git ls-remote failed: ${firstLine(e?.message ?? e)}`); return null; }
 }
 
 export async function ghJson(path, { fetchImpl = fetch, token = null } = {}) {
@@ -1376,6 +1708,55 @@ export async function tick({
     try { raw = readFileSync(config.meeps.path, "utf8"); } catch (e) { readError = e?.code ?? e?.message ?? String(e); }
     const mp = classifyMeeps({ raw, readError, nowMs, staleAfterMs: config.meeps.staleAfterMs, path: config.meeps.path });
     probes.push({ key: config.meeps.key, label: config.meeps.label, kind: "meeps", verdict: mp.verdict, reason: mp.reason, ...(mp.detail ? { detail: mp.detail } : {}) });
+  }
+
+  // §11 — the settlement. A local read of the sweep's receipt, the world's tags
+  // over ls-remote (no REST budget), and AT MOST ONE compare call per new
+  // (world, tag) pair: whether a commit descends from another never changes,
+  // so the answer is remembered in `stamps.settlement` and a held sweep costs
+  // one REST call, not one per tick. No call at all when the tag IS the world,
+  // or when the sweep did not end clean (its verdict does not need the answer).
+  if (config.settlement) {
+    const st = config.settlement;
+    let receipt = null, readError = null, writtenAtMs = null;
+    try {
+      receipt = JSON.parse(readFileSync(st.receipt, "utf8"));
+      writtenAtMs = statSync(st.receipt).mtimeMs;
+    } catch (e) { readError = e?.code ?? e?.message ?? String(e); }
+    const worldUrl = `https://github.com/${st.worldRepo.owner}/${st.worldRepo.name}.git`;
+    let tagError = null, coverError = null;
+    const newestTag = newestSettlementTag(worldUrl, { exec, onError: (m) => { tagError = m; } });
+    const world = receipt?.world_to || receipt?.world_from || null;
+    let covered = null, held = null;
+    if (world && newestTag?.sha && SETTLEMENT_CLEAN.has(receipt?.status)) {
+      // The two clean statuses ask two different questions (see §11's header),
+      // so the memory carries which one it answered.
+      const mode = receipt.status === "quiet" ? "quiet" : "published";
+      const memo = stamps.settlement;
+      if (newestTag.sha === world) covered = true;
+      else if (memo && memo.world === world && memo.tag_sha === newestTag.sha && memo.mode === mode && typeof memo.covered === "boolean") {
+        covered = memo.covered; held = memo.held ?? null;
+      } else {
+        const repo = `/repos/${st.worldRepo.owner}/${st.worldRepo.name}`;
+        try {
+          if (mode === "quiet") {
+            // base = the tag, head = the world: the range the tag does not
+            // cover. No per_page: unpaginated, GitHub lists up to 250 commits.
+            const q = judgeQuietRange(await ghJson(`${repo}/compare/${newestTag.sha}...${world}`, { fetchImpl, token }));
+            covered = q.covered; held = q.held; coverError = q.error;
+          } else {
+            const cmp = await ghJson(`${repo}/compare/${world}...${newestTag.sha}?per_page=1`, { fetchImpl, token });
+            // base = the world, head = the tag: `ahead` = the tag descends from it, `identical` = it is it.
+            covered = cmp?.status === "identical" || cmp?.status === "ahead" ? true
+              : cmp?.status === "behind" || cmp?.status === "diverged" ? false : null;
+            if (covered == null) coverError = `the compare answered status ${JSON.stringify(cmp?.status ?? null)}`;
+          }
+        } catch (e) { coverError = e.message; notes.push(`settlement coverage unread: ${e.message}`); }
+        if (typeof covered === "boolean") stamps.settlement = { world, tag_sha: newestTag.sha, mode, covered, ...(held ? { held } : {}) };
+      }
+    }
+    const se = classifySettlement({ receipt, readError, newestTag, covered, held, nowMs, writtenAtMs, tagError, coverError, graceMs: st.graceMs, slotsUtc: st.slotsUtc, path: st.receipt });
+    probes.push({ key: st.key, label: st.label, kind: "settlement", verdict: se.verdict, reason: se.reason, ...(se.detail ? { detail: se.detail } : {}) });
   }
 
   // the edges

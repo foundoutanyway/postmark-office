@@ -265,7 +265,7 @@ export async function houseBundle({ household = null } = {}, ctx = {}) {
 
   const out = {
     read: "house", household: house.slug,
-    name: house.rec.name ?? null, human: house.rec.human ?? null,
+    name: house.rec.name ?? null, // never `human` (POS-394): the house's display name only
     members_from: house.from,
     as_of: asOf, next_crossing: nextCrossingForDoorstep(nowMs),
     ashore,

@@ -47,6 +47,10 @@
 //
 // EXIT: 0 written · 1 the extract's pin.json is missing or not a JSON object (the
 // caller stops the publish: a pin that cannot name its floor must not ship) · 2 usage.
+// On the box the exit-1 path is not expected to be reachable: site main tracks a
+// pin.json of its own, so the extract tree always holds one even before
+// fetch-town rewrites it (Wright, POS-601, 2026-10-12; stated, not re-read here).
+// The stop stays for a tree where that stops being true.
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";

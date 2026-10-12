@@ -12,6 +12,13 @@
 // world's checker suite). Locally it runs through `node G:/Postmark/pool/run-heavy.mjs`.
 // A store that cannot start FAILS with the reason (embedded-store.mjs § NO_STORE).
 //
+// THE MISTS AT THEIR LAST KEYFRAME (POS-595). The stand-in's world has its Mists
+// schedule moved so the wall stands at its last front now (dev-target.mjs §
+// mistsAtLastKeyframe): to the wall, the crossing this runs at is one past the
+// schedule's end. Until 10-12 the rehearsal claimed fixed ground at x 30000,
+// which the wall has covered since crossing 244 (the door's 422); it now finds
+// its ground in the preflight, and this run claims, clears and settles there.
+//
 // In CI it runs under its own cap (.github/scripts/suite-lib.mjs § a file's own
 // cap): about 3× its measured CI time (169 s on 10-09 before the whole crossing
 // came in, past 180 s after). Raise it when the rehearsal's chain grows.
@@ -21,10 +28,12 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 
 import { localDevTarget } from "./helpers/dev-target.mjs";
-import { PROD_DB, runRehearsal, renderReport, targetFromFiles } from "../tools/dev-rehearsal.mjs";
+import { PROD_DB, groundOf, groundTakenIn, runRehearsal, renderReport, storeClients, targetFromFiles } from "../tools/dev-rehearsal.mjs";
+import { OVERLAP } from "../world2/tools/overlap.mjs";
+import { boxOf } from "../world2/tools/seed-import.mjs";
 
 let dev;
-before(async () => { dev = await localDevTarget(); }, { timeout: 20 * 60_000 });
+before(async () => { dev = await localDevTarget({ mistsAtLastKeyframe: true }); }, { timeout: 20 * 60_000 });
 after(async () => { await dev?.stop(); });
 
 const target = (extra = {}) => ({ ...targetFromFiles({ envFile: dev.envFile, rolesFile: dev.rolesFile, office: dev.officeBase, prodPubKey: dev.prodKey }), ...extra });
@@ -62,7 +71,9 @@ test("the preflight goes red when dev's key is prod's, and when the dev clone is
   assert.ok(pre.problems.some((p) => /tools\/stamp-pubkey\.pem is not the public half of dev's STAMP_KEY/.test(p)), pre.problems.join("; "));
 });
 
-test("one crossing, end to end, through the dev office's doors: green, every step read back from the store", async () => {
+let crossed = null;
+
+test("one crossing, end to end, through the dev office's doors, the Mists at their last keyframe: green, every step read back from the store", async () => {
   const lines = [];
   // the sandbox step reads CI's verdict for the carried sha; this stand-in hands it one, and
   // test/dev-rehearsal.test.mjs drives the real lookup's every answer
@@ -76,4 +87,24 @@ test("one crossing, end to end, through the dev office's doors: green, every ste
   const ran = r.steps.filter((s) => !s.pending).map((s) => s.id);
   assert.deepEqual(ran, ["preflight", "sign-in", "join", "resident", "letters", "crossing", "claim", "clearing", "settle", "bless", "clearing-rerun", "by-hand", "refused-alone", "stamp-sandbox"], text);
   assert.deepEqual(r.steps.filter((s) => s.pending).map((s) => s.id), [], "no step is pending (POS-356 landed in #427)");
+  // the ground the preflight found, inside the box the wall leaves at every keyframe (POS-595)
+  const ground = r.steps.find((s) => s.id === "preflight").notes.find((n) => n.startsWith("ground: "));
+  assert.match(ground ?? "", /^ground: the parcels at \(-?\d+, -?\d+\) and \(-?\d+, -?\d+\), inside the Mists' safe box x -3320\.\.4570, y -3320\.\.8420 \(clear at keyframes /, text);
+  crossed = r;
 }, { timeout: 30 * 60_000 });
+
+test("the store names the rehearsal's own standing parcels as covered ground, by the clearing's OVERLAP (POS-595)", async (t) => {
+  if (!crossed?.green) return t.skip("the end-to-end run above did not go green");
+  const s = await storeClients(target());
+  try {
+    const [row] = await s.q("clearing_job", "SELECT slug, geometry FROM marks WHERE kind = 'parcel' AND status = 'standing' AND slug = $1", [`rh-${crossed.run}-a/rh-${crossed.run}-ground`]);
+    assert.ok(row, "the rehearsal's parcel stands in the store");
+    const taken = groundTakenIn(s, OVERLAP, boxOf);
+    const own = /^the standing parcel "rh-[0-9a-z]+-[ab]\/rh-[0-9a-z]+-(ground|by-hand)"$/;
+    // the place it stands on: covered by it, or by the by-hand parcel beside it (one answer, LIMIT 1)
+    assert.match((await taken(groundOf(row.geometry.at, 25))) ?? "", own);
+    // a parcel's width east, sharing only an edge: still covered (the operator is inclusive)
+    assert.match((await taken(groundOf({ x: row.geometry.at.x + 25, y: row.geometry.at.y }, 25))) ?? "", own);
+    assert.equal(await taken(groundOf({ x: row.geometry.at.x + 26, y: row.geometry.at.y }, 25)), null);
+  } finally { await s.end(); }
+});

@@ -56,7 +56,8 @@ export async function ingestLaw(store, world) {
 /**
  * Build the stand-in. `db` is the store's database name (the guard reads it from
  * the env file this writes). `envOverrides` changes lines of the dev env file,
- * so a test can hand the rehearsal a misconfigured office.
+ * so a test can hand the rehearsal a misconfigured office. `mistsAtLastKeyframe`
+ * moves the world's Mists schedule so its last keyframe stands now (POS-595).
  */
 export async function localDevTarget({
   db = "w2_devsandbox_rehearsal",
@@ -67,6 +68,8 @@ export async function localDevTarget({
   boot = true,
   windowId = 240,
   worldSuite = false,
+  // POS-595: the world's Mists at their last keyframe from now on (below)
+  mistsAtLastKeyframe = false,
   // The local sandbox (tools/sandbox.mjs, POS-560) builds its seed here and keeps it:
   // `dir` is a folder of its own (kept by stop), `store` a database it made (not stopped).
   dir: keptDir = null,
@@ -90,6 +93,28 @@ export async function localDevTarget({
       pkg.scripts["test:candle"] = "node -e \"console.log('# the local stand-in skips the world checker suite (test/helpers/dev-target.mjs); the box runs it')\"";
       writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
       g(world, "commit", "-qam", "harness: the world checker suite skipped in the local stand-in");
+    }
+    // THE MISTS AT THEIR LAST KEYFRAME (POS-595). The town clock is the wall clock
+    // (src/crossings.mjs), so a rehearsal cannot be run at crossing 400. The same
+    // world is had by moving the schedule instead: every keyframe earlier by as
+    // many crossings as the last stands ahead of now, so the wall stands at its
+    // last front (and holds there) from this crossing on. The door reads the
+    // skeleton at the BLESSED ref (src/world-branches.mjs § publishedSkeleton), so
+    // the moved schedule is committed on main and blessed by a harness tag, the
+    // newest settlement; the rehearsal's own blessings follow it on main.
+    if (mistsAtLastKeyframe) {
+      const path = join(world, "WORLD", "skeleton.json");
+      const skeleton = JSON.parse(readFileSync(path, "utf8"));
+      const schedule = skeleton.mists?.schedule ?? [];
+      if (!schedule.length) throw new Error("the stand-in's world has no Mists schedule to move to its last keyframe");
+      const { currentCrossing } = await import("../../src/crossings.mjs");
+      const by = Math.max(0, schedule.at(-1).crossing - currentCrossing());
+      skeleton.mists.schedule = schedule.map((k) => ({ ...k, crossing: k.crossing - by }));
+      writeFileSync(path, JSON.stringify(skeleton, null, 2) + "\n");
+      g(world, "commit", "-qam", `harness: the Mists' schedule ${by} crossings earlier, so its last keyframe stands now`);
+      const newest = Math.max(0, ...g(world, "tag", "-l", "settlement/S*").split("\n").map((t) => Number(t.slice(12))).filter(Number.isInteger));
+      g(world, "tag", "-a", `settlement/S${newest + 1}`, "-m", `S${newest + 1} (the local stand-in's harness): the Mists at their last keyframe`);
+      log(`world: the Mists' last keyframe (crossing ${schedule.at(-1).crossing}) stands from crossing ${schedule.at(-1).crossing - by}, blessed as S${newest + 1}`);
     }
     log(`clones: town ${g(town, "rev-parse", "--short", "HEAD")}, world ${g(world, "rev-parse", "--short", "HEAD")}`);
 

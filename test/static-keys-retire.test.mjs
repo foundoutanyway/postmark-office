@@ -14,10 +14,11 @@
 //   § G  the file: failure, wrong read-back, missing, and --mirror-only
 //   § H  the import: partial, foreign-kind rollback, dry parity
 //   § I  the CLIs: exit codes, no key and no hash in any output
+//   § J  the door: a real office on the store answers a static bearer, then refuses the SAME bearer once retired
 
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -30,6 +31,9 @@ import { paperOnPool, paperworkPoolTypes, asPaper } from "../src/paperwork.mjs";
 import { staticLookup, importStaticKeys, RETIRED_KIND } from "../src/static-keys.mjs";
 import { planRetire, retireStaticKey, mirrorOnly, LOCK_TIMEOUT_MS } from "../src/static-keys-retire.mjs";
 import { startStore } from "./helpers/embedded-store.mjs";
+import { indexStore } from "./helpers/office-under-test.mjs";
+import { fixtureDb } from "./fixture.mjs";
+import { bootOnFreePort } from "./spawn-office.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TMP = mkdtempSync(join(tmpdir(), "postmark-static-retire-"));
@@ -556,4 +560,49 @@ test("§ I the CLIs: exit codes, and no key or hash in any output", async () => 
   assert.match(clash.stdout, /outcome: rolled_back/);
 
   assertNoSecret(said.join("\n"), ["sk-wren", "sk-moss", "sk-extra", "sk-clash"], "in a CLI's output");
+});
+
+// ── § J the door ────────────────────────────────────────────────────────────
+
+test("§ J a booted office on the store: the static bearer authenticates, the SAME bearer is refused 401 once retired, its replacement still works", async () => {
+  const dbPath = join(TMP, "j-fixture.db");
+  fixtureDb(dbPath).close();
+  const ix = await indexStore(dbPath, { db: "retire_door", own: true });
+  CLEANUP.push(() => ix.stop());
+  const jpool = new pg.Pool({ connectionString: ix.store.url("office_api"), max: 4, types: paperworkPoolTypes(pg) });
+  CLEANUP.push(() => jpool.end());
+  const jpaper = paperOnPool(jpool);
+  const spec = "sk-door-wren=doorhouse:dwren;sk-door-cover=doorhouse:dwren,dmoss";
+  await importStaticKeys(jpaper, spec);
+  // a store-switched office opens the file only if it exists, so the mirror's file is made first
+  const oauthDb = fileDb("j");
+  await seedFile(oauthDb, spec);
+  let said = "";
+  const office = await bootOnFreePort((port) => { const c = spawn(process.execPath, [join(ROOT, "src", "server.mjs"),
+    "--port", String(port), "--db", dbPath, "--oauth-db", oauthDb, "--roles-db", join(TMP, "j-roles.db")], {
+    env: { ...process.env, ...ix.env, OFFICE_PAPERWORK_STORE: "1", OFFICE_READ_WORKERS: "0", WORLD_GRAPH_NONE: "1", OFFICE_KEYS: "",
+      TOWN_CLONE: join(TMP, "j-no-clone"), WORLD_CLONE: join(TMP, "j-no-world-clone"), TOWN_PUSH: "" },
+    stdio: ["ignore", "pipe", "pipe"],
+  }); c.stderr.on("data", (x) => { said += String(x); }); return c; });
+  CLEANUP.push(async () => office.child.kill());
+  const me = async (key) => {
+    const r = await fetch(`http://127.0.0.1:${office.port}/me`, { headers: { authorization: `Bearer ${key}` } });
+    return { status: r.status, challenge: r.headers.get("www-authenticate"), body: await r.text() };
+  };
+
+  const before = await me("sk-door-wren");
+  assert.equal(before.status, 200, `the live static bearer authenticates: ${before.body.slice(0, 200)}\n${said.slice(-800)}`);
+  assert.deepEqual(JSON.parse(before.body).handles.includes("dwren"), true);
+  assert.equal((await me("sk-door-cover")).status, 200, "and so does the covering key");
+
+  const out = await retireStaticKey(jpool, { household: "doorhouse", handle: "dwren", file: oauthDb });
+  assert.equal(out.status, "retired", out.reason ?? out.message);
+
+  const after = await me("sk-door-wren");
+  assert.equal(after.status, 401, `the SAME bearer is refused once retired: ${after.body.slice(0, 200)}`);
+  assert.ok(after.challenge, "refused with the sign-in challenge, as an unknown key is");
+  const cover = await me("sk-door-cover");
+  assert.equal(cover.status, 200, "the replacement still works");
+  assert.equal(JSON.parse(cover.body).handles.includes("dwren"), true, "and still speaks for the handle");
+  assertNoSecret(after.body + cover.body + said, ["sk-door-wren", "sk-door-cover"], "by the office");
 });

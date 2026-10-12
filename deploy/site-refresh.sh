@@ -300,6 +300,11 @@ die() { report failed "$1"; echo "[site-refresh] FAILED: $1" >&2; exit 1; }
 on_err() { local rc=$?; report failed "the run stopped unexpectedly at line $1 (exit $rc) — see journalctl -u postmark-site-refresh"; echo "[site-refresh] FAILED at line $1 (exit $rc)" >&2; exit 1; }
 trap 'on_err $LINENO' ERR
 
+# PREFLIGHT (POS-601): the pin helper travels beside this script. Missing, every
+# publish would stop at the pin step, so say so at the top of every tick, by name,
+# before any fetch or build is spent.
+[ -f "$SELF_DIR/site-refresh-pin.mjs" ] || die "the pin helper is missing ($SELF_DIR/site-refresh-pin.mjs): install it beside site-refresh.sh (INSTALL step 2)"
+
 # ── SINGLE-FLIGHT ───────────────────────────────────────────────────────────
 # Non-blocking on purpose. A second trigger arriving mid-build must STAND DOWN,
 # not queue: a queued build would start against inputs the running one has
@@ -634,6 +639,7 @@ build_once() {
   # makes world_installed null with a note; it never becomes the floor. If the
   # extract left no readable pin, the publish stops here and the standing release
   # keeps serving: a pin that cannot name its floor must not ship.
+  [ -f "$SELF_DIR/site-refresh-pin.mjs" ] || die "the pin helper is missing ($SELF_DIR/site-refresh-pin.mjs)"
   node "$SELF_DIR/site-refresh-pin.mjs" \
     --extract "$SITE/public/atelier/postmark/data/pin.json" \
     --lock "$BUILD/package-lock.json" \

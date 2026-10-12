@@ -411,7 +411,8 @@ grep -q "\"town_sha\": \"$FINAL_TOWN\"" "$(readlink -f "$WEBROOT")/build.json" \
 
 head_ "10 · A FAILED BUILD PUBLISHES NOTHING — the last good release keeps serving"
 STANDING="$(readlink -f "$WEBROOT")"
-PIN_STANDING_SUM="$(sha256sum < "$STANDING/data/pin.json")"
+[ -f "$STANDING/data/pin.json" ] && ok "a standing pin.json exists to compare against" || bad "no standing pin.json at $STANDING/data/pin.json, so the byte check below could pass vacuously"
+PIN_STANDING_SUM="$(sha256sum < "$STANDING/data/pin.json" 2>/dev/null)"
 echo "crossing 4" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
 git -C "$TOWN_SRC" commit -qam "yet more"
 cat > "$SANDBOX/bin/npm" <<'EOF'
@@ -426,7 +427,7 @@ chmod +x "$SANDBOX/bin/npm"
 run
 check "exit 1, loudly" "$RC" "1"
 check "the webroot still points at the last good build" "$(readlink -f "$WEBROOT")" "$STANDING"
-check "and the standing pin.json is byte-for-byte what it was" "$(sha256sum < "$STANDING/data/pin.json")" "$PIN_STANDING_SUM"
+[ -f "$STANDING/data/pin.json" ] && check "and the standing pin.json is byte-for-byte what it was" "$(sha256sum < "$STANDING/data/pin.json")" "$PIN_STANDING_SUM" || bad "the standing pin.json is gone after the failed build"
 [ -s "$WEBROOT/index.html" ] && ok "which is still serving bytes" || bad "the floor stopped serving"
 grep -q '"status": "failed"' "$REPORT" && ok "and the board says failed" || bad "board: $(cat "$REPORT")"
 # and the state file was NOT advanced, so the next tick retries rather than
@@ -464,14 +465,30 @@ jget "$PIN" notes | grep -q "could not be read" && ok "and the pin says the lock
 
 # A PIN THAT CANNOT NAME ITS FLOOR DOES NOT SHIP: the extract wrote none, the publish stops, the standing release serves on.
 STANDING="$(readlink -f "$WEBROOT")"
-PIN_SUM_BEFORE="$(sha256sum < "$PIN")"
+[ -f "$PIN" ] && ok "a published pin.json exists before the failing tick" || bad "no published pin.json before the failing tick, so the byte check below could pass vacuously"
+PIN_SUM_BEFORE="$(sha256sum < "$PIN" 2>/dev/null)"
 echo "crossing 9" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
 git -C "$TOWN_SRC" commit -qam "a tick whose extract writes no pin"
 run SELFTEST_NO_PIN=1
 check "no pin from the extract: exit 1, loudly" "$RC" "1"
 echo "$OUT" | grep -q "the world pin could not be written" && ok "and it says why" || bad "no pin failure line: $OUT"
 check "the webroot still points at the standing release" "$(readlink -f "$WEBROOT")" "$STANDING"
-check "whose pin.json is byte-for-byte what it was" "$(sha256sum < "$PIN")" "$PIN_SUM_BEFORE"
+[ -f "$PIN" ] && check "whose pin.json is byte-for-byte what it was" "$(sha256sum < "$PIN")" "$PIN_SUM_BEFORE" || bad "the published pin.json is gone after the failing tick"
+
+# THE HELPER MISSING: a copy of the script with no site-refresh-pin.mjs beside it
+# dies by NAME at the preflight, before any build, and publishes nothing.
+mkdir -p "$SANDBOX/lonely"
+cp "$SCRIPT" "$SANDBOX/lonely/site-refresh.sh"
+SCRIPT_KEEP="$SCRIPT"; SCRIPT="$SANDBOX/lonely/site-refresh.sh"
+STANDING="$(readlink -f "$WEBROOT")"
+echo "crossing 10" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
+git -C "$TOWN_SRC" commit -qam "a tick on a box missing the helper"
+run
+SCRIPT="$SCRIPT_KEEP"
+check "the helper missing: exit 1" "$RC" "1"
+echo "$OUT" | grep -q "the pin helper is missing" && ok "and it names the helper, not the extract" || bad "no helper-missing line: $OUT"
+echo "$OUT" | grep -q "pass 1 —" && bad "it started a build before saying the helper is missing" || ok "before any build was started"
+check "the webroot still points at the standing release" "$(readlink -f "$WEBROOT")" "$STANDING"
 
 # ═══════════════════════════════════════════════════════════════════════════
 

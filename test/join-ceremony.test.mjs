@@ -530,7 +530,8 @@ test("collectingDrain writes the files and hands back the paths, committing noth
     assert.equal(r.ran, true);
     assert.equal(r.commit, null, "the caller holds the pen, not the drain");
     assert.equal(paths.length, 2, "and it hands back both paths to be staged beside the caller's own");
-    assert.equal(readFileSync(join(clone, REGISTRY_PATH), "utf8"), HOUSEHOLDS_RAW);
+    // POS-394: the drain writes the PUBLIC render, computed from the fixture's own rows
+    assert.equal(readFileSync(join(clone, REGISTRY_PATH), "utf8"), renderPublicRegistry(rowsFromRegistry(JSON.parse(HOUSEHOLDS_RAW), JSON.parse(PINS_RAW))).households);
     assert.equal(readFileSync(join(clone, PINS_PATH), "utf8"), PINS_RAW);
   });
 });

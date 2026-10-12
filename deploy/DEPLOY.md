@@ -779,8 +779,84 @@ unset ENTRY
 
 Without the switch and `--oauth-db`, the import writes the checkout's own
 `oauth.db` and the key answers as anonymous on prod. The import never revokes,
-so the other rows are untouched. Removing a static key is deleting its row;
-there is no verb for it yet.
+so the other rows are untouched. To remove one, see "Retiring a static key"
+below: deleting the row by hand is not enough, because a later import writes it
+back from `OFFICE_KEYS`.
+
+**Retiring a static key** (POS-604). One verb, by household and handle. It takes
+no key and no hash, on the command line or in the environment, and prints none.
+It needs the store switch like the import (`OFFICE_PAPERWORK_STORE=1`,
+`WORLD2_PG=1`, `WORLD2_PG_URL`), and runs as meepo with the office's own env file
+loaded, naming the office's own file:
+
+```sh
+# the dry run first: advisory, writes nothing, binds nothing
+sudo bash -c 'set -a; . /etc/postmark-office.env; set +a; cd <the staged tip> && exec runuser -u meepo -- node tools/static-keys-retire.mjs --household <slug> --handle <h> --dry --oauth-db /srv/postmark-office/oauth.db'
+# then the same line without --dry
+sudo bash -c 'set -a; . /etc/postmark-office.env; set +a; cd <the staged tip> && exec runuser -u meepo -- node tools/static-keys-retire.mjs --household <slug> --handle <h> --oauth-db /srv/postmark-office/oauth.db'
+```
+
+What it does, and what it will not:
+
+- It retires exactly one `static` row whose handles are exactly `[<h>]`. No match,
+  two exact matches (ambiguous), or only a row that holds `<h>` among other
+  handles (widened) are refused and write nothing.
+- ANOTHER working key must still cover THIS household and handle: another
+  `static` row of the household that holds the handle, or a live human
+  household key of the account the registry pins the handle to, where the
+  registry also shows that account belongs to this household and the handle is
+  its resident. Anything it cannot prove (the registry unreadable, a household
+  string that is not a registry slug, an expired key) refuses. It never falls
+  back to the login index the office uses at request time, so it can refuse a
+  cover that would have worked.
+- In ONE Postgres transaction it takes `LOCK TABLE oauth_tokens IN SHARE ROW
+  EXCLUSIVE MODE` (2 s `lock_timeout`), rereads the selector and the cover, deletes
+  the row (the delete must remove exactly one) and writes a `retired` row on the
+  same hash. That mode makes every other WRITER of `oauth_tokens` (a mint, a
+  rotation, the sweep, an import) wait while readers (bearer lookups) go on
+  answering. Nothing but the database runs while it is held; the test run
+  measured 8.5 ms on a synthetic store, which is a measurement of that run and
+  not a promise. If the table is busy for the whole 2 s, nothing was changed:
+  exit 6, run it again.
+- Then, and only then, it replays the retirement into `oauth.db` (the temporary
+  mirror, `paperwork.mjs` ⚑) in its own transaction and reads it back. **A
+  missing file, a failed write or a wrong read-back is NOT a success**: exit 4,
+  "STORE COMMITTED ... the file is NOT verified", and the exact command to
+  repair it. Do not roll the office back to the file until that is repaired: the
+  file would still hold the live key. The repair writes nothing in the store:
+
+```sh
+... node tools/static-keys-retire.mjs --household <slug> --handle <h> --mirror-only --oauth-db /srv/postmark-office/oauth.db
+```
+
+  `--mirror-only` reads the recorded retirements for that household and handle,
+  never a `static` row (a new key for the same household and handle is counted
+  and left alone), and refuses when none is recorded. A plain rerun with no
+  static row left does not repair anything; it says so and names this command.
+- Exit status: 0 retired and the file verified (or repaired); 1 refused, nothing
+  written; 2 cannot run (usage, no store switch); 4 STORE COMMITTED, file not
+  verified; 5 COMMIT not acknowledged, so the store may or may not hold it (check
+  with `--dry`, then `--mirror-only` if it is recorded); 6 table busy, nothing
+  changed.
+- There is no un-retire. A household that needs a key again is issued a NEW key
+  (a new hash), which the retired row does not touch.
+
+**The import after a retirement.** A `retired` row keeps the key's hash, its
+household, handles and gh_id (no secret), so `tools/static-keys-import.mjs`
+refuses an `OFFICE_KEYS` entry for that hash BY NAME (`household:handles`) and
+imports the rest. Its first line says which of three things happened: `complete`
+(exit 0), `partial` (the rest committed; N entries refused as retired; exit 3),
+or `rolled_back` (a key of another kind, `access`, `refresh` or `household`,
+owns a hash, so NOTHING was written, even if a retired entry is also named; exit 1).
+
+**What this does not cover.** A key deleted by hand BEFORE this verb existed has
+no row, so it has no hash to refuse and no selector to find: nothing here can
+tombstone it. Take its entry out of whatever `OFFICE_KEYS` text an import reads
+(including a backup copy of the env file) before the import runs. Production
+retirements, and shredding the backup copy that still holds every key, are the
+owner's. When the mirror is deleted with `oauth.db` and `roles.db`, this tool
+loses its file step in the same change; until then its exit 4 is the honest
+answer for a missing file.
 
 **Rollback.**
 

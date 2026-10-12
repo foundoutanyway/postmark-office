@@ -155,6 +155,7 @@ test("§ 3 the import: dry writes nothing, a re-run changes nothing, an edit rep
   const count = () => db.prepare("SELECT count(*) AS n FROM tokens WHERE kind = 'static'").get().n;
   const dry = await importStaticKeys(db, SPEC, { dry: true });
   assert.deepEqual([dry.added, dry.replaced, dry.unchanged, dry.refused], [TOKENS.length, 0, 0, 0]);
+  assert.deepEqual([dry.outcome, dry.retired_refused, dry.retired], ["complete", 0, []], "POS-604: nothing retired, a plain complete");
   assert.equal(count(), 0, "a dry run writes nothing");
   await importStaticKeys(db, SPEC);
   const again = await importStaticKeys(db, SPEC);
@@ -177,6 +178,7 @@ test("§ 3b a key whose hash belongs to another kind of token refuses the whole 
     .run(sha("collides"), 9e9, 1);
   const out = await importStaticKeys(db, `${SCOPED}=keemin:wright;collides=keemin:wright`);
   assert.equal(out.refused, 1);
+  assert.equal(out.outcome, "rolled_back", "POS-604: a foreign kind is a full rollback, and says so");
   assert.equal(db.prepare("SELECT count(*) AS n FROM tokens WHERE kind = 'static'").get().n, 0, "nothing at all was written");
   assert.equal(db.prepare("SELECT kind FROM tokens WHERE token_hash = ?").get(sha("collides")).kind, "access", "and the other token is untouched");
 });

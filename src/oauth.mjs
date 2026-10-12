@@ -109,7 +109,9 @@ export function oauthSchema(db) {
     try { db.exec(`ALTER TABLE tokens ADD COLUMN ${col}`); } catch { /* already there */ }
   // A static key's own household and handles (POS-352, kind 'static'): the
   // operator's row names them rather than resolving them from a gh_id
-  // (static-keys.mjs says why). The store's columns are 070.
+  // (static-keys.mjs says why). The store's columns are 070. A retired static
+  // key leaves a row of kind 'retired' on the same hash (POS-604); no reader
+  // here matches it, and the sweep skips it (NULL expires).
   for (const col of ["household TEXT", "handles TEXT"])
     try { db.exec(`ALTER TABLE tokens ADD COLUMN ${col}`); } catch { /* already there */ }
   // Additive migration for boxes whose berths table predates the web of towns

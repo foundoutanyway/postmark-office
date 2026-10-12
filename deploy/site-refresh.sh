@@ -236,6 +236,7 @@ KEEP="${SITE_REFRESH_KEEP:-5}"
 MAX_PASSES="${SITE_REFRESH_MAX_PASSES:-3}"
 
 TOWN="$ROOT/town"          # our own town clone — never the office's, never locked
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # where this script and its helpers live (POS-601)
 SITE="$ROOT/site"          # the extract tree: site @ origin/main, runs the extractors
 BUILD="$ROOT/build"        # the build tree: a worktree of SITE, detached at the tag
 RELEASES="$ROOT/releases"
@@ -441,9 +442,11 @@ build_once() {
   # so every BOX build — which is every prod build — kept writing `code_ref: null`
   # with its own note saying so. Same two values the stamp step below passes, so
   # the two files cannot disagree about which ref and which lane built the site.
-  # (What pin.json CANNOT say is which world the BUILD tree compiled: it reads
-  # this extract tree's lockfile, i.e. site main's floor, and the build tree may
-  # have advanced past it. /build.json's world_sha is that answer — see the stamp.)
+  # (What this extract-tree pin.json cannot say is which world the BUILD tree
+  # compiled: it reads this extract tree's lockfile, i.e. site main's floor, and
+  # the build tree may have advanced past it. POS-601: the publish step below
+  # keeps this file's floor fields and re-derives world_installed from the BUILD
+  # tree, the same answer /build.json's world_sha gives — see "the pin".)
   ( cd "$SITE" && POSTMARK_API="$API" PUBLIC_CHANNEL=release BUILD_CODE_REF="$TAG" node tools/fetch-town.mjs --town "$TOWN" ) \
     || die "fetch-town.mjs tripped"
   say "extract: approved renditions"
@@ -613,6 +616,25 @@ build_once() {
   fi
 
   [ -d "$BUILD/dist-town" ] || die "the build produced no dist-town/"
+
+  # ── the pin: the floor from the extract, the installed world from the build ─
+  #
+  # POS-601. fetch-town.mjs ran in the EXTRACT tree (site main), so the pin.json it
+  # wrote says `world_installed` = site main's floor, read from that tree's own
+  # lockfile, whatever the resolver then installed in the BUILD tree. /build.json
+  # (above) reads the BUILD tree and is right; the pin was not. Running the site's
+  # whole writer here would swap the floor fields for the build's, so this changes
+  # only the installed half (deploy/site-refresh-pin.mjs says how and why), reading
+  # the SAME file build.json's world_sha comes from: the build tree's
+  # package-lock.json, AFTER the install/re-lock above. An unreadable lockfile
+  # makes world_installed null with a note; it never becomes the floor. If the
+  # extract left no readable pin, the publish stops here and the standing release
+  # keeps serving: a pin that cannot name its floor must not ship.
+  node "$SELF_DIR/site-refresh-pin.mjs" \
+    --extract "$SITE/public/atelier/postmark/data/pin.json" \
+    --lock "$BUILD/package-lock.json" \
+    --out "$BUILD/dist-town/data/pin.json" \
+    || die "the world pin could not be written (the extract's pin.json is missing or unreadable)"
 
   # ── publish: a whole new release dir, then one rename ─────────────────────
   # A RELEASE DIR IS NEVER REUSED, and that is what makes the swap below atomic

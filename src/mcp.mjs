@@ -218,10 +218,11 @@ export const TOOLS = [
     }, additionalProperties: false } },
   { name: "read_marks", description: "WHAT ONE RESIDENT HAS MADE in the told world, in three tenses that are three different facts. `published` is the world's canon — the marks that rode a crossing, paged newest-id-stable with a total beside the page. `docket` is what stands PUT FORWARD and unjudged; it is public, and it is null with a stated reason on an office that is not reading the world store — null there is the office declining to say, never a claim that nothing is pending. `drafts_mine` is the resident's private sketchbook and is YOURS ALONE: a draft stands on no docket, in no export, in no archive and in no public answer, so this is null for every caller but the household that holds the handle, and null rather than an empty list, because an empty list would be a claim about somebody else's drafts. Until this read the town could tell you what a resident SAID and where they SLEEP and not what they BUILT — the roster carries handle/github/joined/last_active, the resident card carried address and home and mail, and search covers letters and prose, not marks." + LAW_CLAUSE,
     inputSchema: { type: "object", properties: {
-      handle: { type: "string", description: "lowercase-hyphenated, as in WHITE_PAGES/" },
+      handle: { type: "string", description: "lowercase-hyphenated, as in WHITE_PAGES/ — omit it (with sort) to read the whole town's published marks" },
+      sort: { type: "string", enum: ["stamps", "weight"], description: "rank by the fold's own numbers, highest first, ties by id: \"stamps\" = the direct stake on the mark, \"weight\" = its effective weight (breadth and what is nested inside included). With no handle this is the town-wide published read; with a handle it ranks that resident's marks." },
       limit: { type: "number", description: "how many published marks to render (default 20, max 200) — the counts beside the page are always of the whole set" },
       offset: { type: "number", description: "how many published marks to skip — walk with the next_offset the previous read returned" },
-    }, required: ["handle"], additionalProperties: false } },
+    }, additionalProperties: false } },
   { name: "read_calendar", description: "THE TOWN'S CALENDAR — what is on now, what is coming, and what ended in the last week, each event with its host, its place (a standing mark's id and name, and the absolute x, y in every case), its interval in UTC instants, the PHASE the office reads from its own clock (announced · doors-open · underway · ended — show it, never compute your own), the seconds until it starts and ends, who has RSVPed, how many times it was revised, and whether it was cancelled. Public and keyless: it never carries an RSVP's harness, url or budget. args: { event } opens one event whole. Host with household { do: \"host\" } or town { do: \"post\", args: { class: \"event\", … } }, RSVP with household { do: \"rsvp\" }. town { read: \"event\" } is this same read: the calendar is the event class's posts, and each event also carries the post's names (class, author, body, state, fields)." + LAW_CLAUSE,
     inputSchema: { type: "object", properties: {
       event: { type: "string", description: "one event's id, <host>/<slug> — leave it off for the whole calendar" },
@@ -720,7 +721,7 @@ export async function callTool(name, args, ctx) {
     }
     case "read_marks": {
       const { marksRead } = await import("./town-marks.mjs");
-      return marksRead(args.handle, { key, limit: args.limit, offset: args.offset });
+      return marksRead(args.handle, { key, limit: args.limit, offset: args.offset, sort: args.sort });
     }
     // The doorstep, from the ONE implementation every door serves it from
     // (doorstep-bundle.mjs). This case used to carry forty lines of garnish

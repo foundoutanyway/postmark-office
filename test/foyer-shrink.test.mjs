@@ -935,6 +935,23 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //
   // Both skins move identically: none of the four is abridged on the connector.
   //
+  // ⚠ AND RE-CAPTURED AN ELEVENTH TIME, 2026-10-12 (office#492, WLD-9), because
+  // the PR moved the world pin, b8581dc9 -> ddc8cdd2 (postmark-world#191's
+  // merge), exactly as the tenth note says a pin move must. First the code was
+  // cleared: a capture at the PR's head with the OLD pin was byte-identical to
+  // the golden (0 paths moved). Then the diff was run leaf by leaf at the new
+  // pin BEFORE the capture: 1039 paths before, 1043 after, NONE removed, and
+  // all of it the world's own data at the pin:
+  //   `stances.ground` names 72 marks where it named 70 (added
+  //   rei/the-frame-for-pidgeys-lanternstep-plate, rei/the-leaf-pressing-slate);
+  //   `stances.awaiting[0]`, spark-the-builder/the-datum-mark, reads its
+  //   amend in S102 (extent 1x1 -> 8x8, its date 10-08 -> 10-11).
+  //
+  // Measured from the file:
+  //
+  //   full  21848 -> 21924 (+76, +0.35%) = stances +76
+  //   slim  19341 -> 19417 (+76, +0.39%) = stances +76
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,

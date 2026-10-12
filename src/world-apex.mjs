@@ -327,6 +327,41 @@ export function spineWithVehicles(geometricIds = [], occupied = [], classOf = ()
   return out;
 }
 
+/**
+ * THE `within` A RESIDENT READS, with the vessel they are aboard (WLD-11, town #3394).
+ *
+ * The geometric spine holds the marks whose footprint holds the standpoint. A
+ * vessel's mark stands where it is berthed, and a rider's feet are at the hull
+ * wherever she is, so a passenger under way was in `within` of nothing, while the
+ * walk read said "aboard" and a plain exit (which takes the innermost thing in
+ * `within`) could not find her. `apexSpineIds` already adds the vehicles you occupy
+ * to the spine a GRANT is asked against; this is the same union for the spine you
+ * are TOLD. Occupancy is the ledger's own derivation (`occupiedMarksOf`), the class
+ * gate is the same `vehicle` class, a mark already in the spine is not repeated,
+ * and the vessel is appended innermost (the rider is inside it).
+ *
+ * Pure over (spine, occupied, markOf) so the union itself can be falsified.
+ */
+async function markLookup() {
+  try {
+    const byId = new Map(((await worldStateRaw())?.marks ?? []).map((m) => [m.id, m]));
+    return (id) => byId.get(id) ?? null;
+  } catch { return () => null; }
+}
+
+export function withinWithVehicles(spine = [], occupied = [], markOf = () => null) {
+  const out = [...spine];
+  const have = new Set(out.map((m) => m.id));
+  for (const id of occupied) {
+    if (!id || have.has(id)) continue;
+    const mark = markOf(id);
+    if (!mark || String(mark.class ?? "") !== VEHICLE_CLASS) continue;
+    have.add(id);
+    out.push({ id, by: mark.by, tier: mark.tier, body: mark.body, extentM: Math.max(mark.extent?.w ?? 0, mark.extent?.h ?? 0) });
+  }
+  return out;
+}
+
 /** The three channels' spine for one caller, with the vehicle union applied. */
 async function apexSpineIds(db, spine, args, key) {
   const geometric = (spine ?? []).map((m) => m.id);
@@ -2093,7 +2128,12 @@ async function apexRead(args, key, ctx = {}) {
   const seen = await worldEyes(args, key);
   if (seen?.error) return seen;
 
-  const spine = oriented.you?.within ?? [];
+  // WLD-11: the geometric spine, plus the vessel an embodied caller is aboard.
+  const geometric = oriented.you?.within ?? [];
+  const occupied = oriented.standpoint?.stance === "embodied" ? await occupiedMarksOf(standingHandle(args, key)) : [];
+  const spine = occupied.length
+    ? withinWithVehicles(geometric, occupied, await markLookup())
+    : geometric;
   const nearby = seen.objects ?? [];
   // POS-551: the air at the standpoint, in the engine's words; null (and so
   // absent below) whenever the engine tells none.

@@ -80,8 +80,11 @@ mkdir -p "$SITE_SRC/tools/lib" "$SITE_SRC/public/atelier/postmark" "$SITE_SRC/sr
 echo "placeholder" > "$SITE_SRC/public/atelier/postmark/.keep"
 echo "placeholder" > "$SITE_SRC/src/data/postmark/.keep"
 echo "placeholder" > "$SITE_SRC/public/renditions/.keep"
-cat > "$SITE_SRC/package.json" <<'EOF'
-{ "name": "fake-site", "version": "0.0.0", "private": true, "scripts": { "build": "true" } }
+# The site's package.json ASKS for the floor, as the real one does (POS-601): the
+# extract tree's pin reads this spec, so world_pin and world_spec are the floor F.
+cat > "$SITE_SRC/package.json" <<EOF
+{ "name": "fake-site", "version": "0.0.0", "private": true, "scripts": { "build": "true" },
+  "dependencies": { "postmark-world": "github:keeminlee/postmark-world#$WORLD_FLOOR" } }
 EOF
 cat > "$SITE_SRC/package-lock.json" <<EOF
 { "name": "fake-site", "version": "0.0.0", "lockfileVersion": 3, "requires": true, "packages": {
@@ -98,8 +101,25 @@ writeFileSync("public/atelier/postmark/doorstep.md",
 console.log("stub extract-town ran");
 EOF
 cat > "$SITE_SRC/tools/fetch-town.mjs" <<'EOF'
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 writeFileSync("src/data/postmark/stats.json", JSON.stringify({ api: process.env.POSTMARK_API ?? null }));
+// The site's pin writer (tools/lib/world-pin-publish.mjs), reduced to its two reads: the floor from
+// THIS tree's package.json and "installed" from THIS tree's package-lock.json. In the extract tree
+// both are site main's floor, which is the defect POS-601 closes. SELFTEST_NO_PIN=1 writes none.
+// (POS-601's own fixture, under the selftest's temp fake site, from fixed literals.)
+if (!process.env.SELFTEST_NO_PIN) {
+  const sha = (x) => /#([0-9a-f]{7,40})$/i.exec(String(x ?? ""))?.[1]?.toLowerCase() ?? null;
+  const spec = JSON.parse(readFileSync("package.json", "utf8")).dependencies?.["postmark-world"] ?? null;
+  let resolved = null;
+  try { resolved = JSON.parse(readFileSync("package-lock.json", "utf8")).packages?.["node_modules/postmark-world"]?.resolved ?? null; } catch {}
+  mkdirSync("public/atelier/postmark/data", { recursive: true });
+  writeFileSync("public/atelier/postmark/data/pin.json", JSON.stringify({
+    what: "stub pin", world_pin: sha(spec), world_installed: sha(resolved), world_installed_from: "package-lock.json",
+    world_spec: spec, channel: process.env.PUBLIC_CHANNEL ?? null, code_ref: process.env.BUILD_CODE_REF ?? null,
+    built_at: "2026-01-01T00:00:00.000Z",
+    notes: ["stub extract note about the installed copy in package-lock.json", "stub extract note kept: code_ref comes from the lane"],
+  }, null, 1) + "\n");
+}
 EOF
 cat > "$SITE_SRC/tools/sync-renditions.mjs" <<'EOF'
 import { writeFileSync } from "node:fs";
@@ -120,9 +140,12 @@ console.log(JSON.stringify({
 }));
 EOF
 cat > "$SITE_SRC/tools/build-stamp.mjs" <<'EOF'
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 mkdirSync("dist-town", { recursive: true });
+let worldSha = null; // like build-stamp.mjs: this tree's package-lock.json, never the extract tree's floor
+try { worldSha = /#([0-9a-f]{7,40})$/i.exec(String(JSON.parse(readFileSync("package-lock.json", "utf8")).packages?.["node_modules/postmark-world"]?.resolved ?? ""))?.[1]?.toLowerCase() ?? null; } catch {}
 writeFileSync("dist-town/build.json", JSON.stringify({
+  world_sha: worldSha,
   code_ref: process.env.BUILD_CODE_REF ?? null,
   town_data_sha: process.env.BUILD_TOWN_DATA_SHA ?? null,
   town_sha: process.env.BUILD_TOWN_SHA ?? null,
@@ -162,7 +185,11 @@ esac
 exit 0
 EOF
 chmod +x "$SANDBOX/bin/npm"
+cp "$SANDBOX/bin/npm" "$SANDBOX/npm.default"   # § 11 puts the default shim back after §§ 9-10 swap it
 export PATH="$SANDBOX/bin:$PATH"
+
+# One field out of a JSON file, as text: "<null>" for null/absent, "<unreadable>" for a file that is not JSON.
+jget() { node -e 'let j;try{j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{process.stdout.write("<unreadable>");process.exit(0)}const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],j);process.stdout.write(v===null||v===undefined?"<null>":typeof v==="string"?v:JSON.stringify(v))' "$1" "$2"; }
 
 run() { # extra env... -> stdout+stderr, exit code in $RC
   set +e
@@ -289,6 +316,55 @@ grep -q "$WORLD_S47" "$INSTALLED" 2>/dev/null \
   && bad "the advanced world OUTLIVED the hold — prod would still be serving S47" \
   || ok "and the advanced world is gone from disk"
 
+head_ "7b · THE PIN SAYS WHAT BUILD INSTALLED, NOT THE FLOOR (POS-601)"
+# THE DEFECT. fetch-town runs in the EXTRACT tree (site main), so its pin.json says
+# world_installed = the floor even when the BUILD tree's resolver advanced and the
+# page compiled against another world. /build.json (the BUILD tree's lockfile) was
+# right and pin.json was not. The stubs below DISCRIMINATE: the floor F and the
+# advanced world B are different shas, the stub extract pin really says installed=F,
+# the stub stamp really says world_sha=B, and only the publish step can make the
+# published pin agree with the stamp while keeping the floor fields.
+PIN="$WEBROOT/data/pin.json"
+EXT="$ROOT/site/public/atelier/postmark/data/pin.json"
+[ "$WORLD_FLOOR" != "$WORLD_S47" ] && ok "the instrument can tell them apart: floor F and advanced B are different shas" || bad "F and B are the same sha, so nothing below discriminates"
+
+echo "crossing 6" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
+git -C "$TOWN_SRC" commit -qam "the pin tick, advance"
+run SELFTEST_PIN_DECISION=advance SELFTEST_PIN_SHA="$WORLD_S47" SELFTEST_PIN_SETTLEMENT=47
+check "exit 0" "$RC" "0"
+check "the EXTRACT tree's own pin still says installed = the floor (the defect's source, reproduced by the stub)" "$(jget "$EXT" world_installed)" "$WORLD_FLOOR"
+check "the stamp says the BUILD compiled B" "$(jget "$WEBROOT/build.json" world_sha)" "$WORLD_S47"
+check "PUBLISHED world_pin is the floor F" "$(jget "$PIN" world_pin)" "$WORLD_FLOOR"
+check "PUBLISHED world_installed is what BUILD installed, B" "$(jget "$PIN" world_installed)" "$WORLD_S47"
+check "and it equals build.json's world_sha" "$(jget "$PIN" world_installed)" "$(jget "$WEBROOT/build.json" world_sha)"
+check "the floor spec is preserved" "$(jget "$PIN" world_spec)" "github:keeminlee/postmark-world#$WORLD_FLOOR"
+check "the lane is preserved" "$(jget "$PIN" channel)" "release"
+check "and so is code_ref, which is the stamp's" "$(jget "$PIN" code_ref)" "$(jget "$WEBROOT/build.json" code_ref)"
+check "the extract's built_at is kept" "$(jget "$PIN" built_at)" "2026-01-01T00:00:00.000Z"
+jget "$PIN" notes | grep -q "stub extract note about the installed copy" && bad "a note about the extract tree's installed reading survived: it would describe the floor as installed" || ok "the extract's note about ITS installed copy is gone"
+jget "$PIN" notes | grep -q "stub extract note kept" && ok "a note that is not about installed is kept" || bad "an unrelated note was dropped: $(jget "$PIN" notes)"
+jget "$PIN" notes | grep -q "the build installed" && ok "and the pin says the floor and the installed world differ" || bad "no note that they differ: $(jget "$PIN" notes)"
+jget "$PIN" notes | grep -q "BUILD tree's package-lock.json" && ok "and where world_installed came from" || bad "no provenance note: $(jget "$PIN" notes)"
+
+# THE STEADY STATE: the same advance decision again (the box's ordinary tick). The
+# re-lock keeps the BUILD lockfile naming B, so the pin must keep saying B.
+echo "crossing 7" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
+git -C "$TOWN_SRC" commit -qam "the pin tick, the same advance"
+run SELFTEST_PIN_DECISION=advance SELFTEST_PIN_SHA="$WORLD_S47" SELFTEST_PIN_SETTLEMENT=47
+check "exit 0" "$RC" "0"
+check "repeated advance to the same B: world_installed is still B" "$(jget "$PIN" world_installed)" "$WORLD_S47"
+check "and world_pin is still the floor" "$(jget "$PIN" world_pin)" "$WORLD_FLOOR"
+
+# HOLD: the installed world IS the floor, and the pin says so without claiming a difference.
+echo "crossing 8" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
+git -C "$TOWN_SRC" commit -qam "the pin tick, hold"
+run SELFTEST_PIN_DECISION=hold
+check "exit 0" "$RC" "0"
+check "hold: world_installed is the floor F" "$(jget "$PIN" world_installed)" "$WORLD_FLOOR"
+check "hold: and equals build.json's world_sha" "$(jget "$PIN" world_installed)" "$(jget "$WEBROOT/build.json" world_sha)"
+check "hold: world_pin is F too" "$(jget "$PIN" world_pin)" "$WORLD_FLOOR"
+jget "$PIN" notes | grep -q "the build installed" && bad "a hold that installed the floor still claims a difference: $(jget "$PIN" notes)" || ok "and says nothing about a difference"
+
 head_ "8 · SINGLE-FLIGHT: a second trigger mid-build STANDS DOWN, it does not queue"
 # The defect: two 30-minute timers stacking behind one slow build is how a box
 # eats itself, and a queued build starts against inputs the running one already
@@ -335,6 +411,8 @@ grep -q "\"town_sha\": \"$FINAL_TOWN\"" "$(readlink -f "$WEBROOT")/build.json" \
 
 head_ "10 · A FAILED BUILD PUBLISHES NOTHING — the last good release keeps serving"
 STANDING="$(readlink -f "$WEBROOT")"
+[ -f "$STANDING/data/pin.json" ] && ok "a standing pin.json exists to compare against" || bad "no standing pin.json at $STANDING/data/pin.json, so the byte check below could pass vacuously"
+PIN_STANDING_SUM="$(sha256sum < "$STANDING/data/pin.json" 2>/dev/null)"
 echo "crossing 4" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
 git -C "$TOWN_SRC" commit -qam "yet more"
 cat > "$SANDBOX/bin/npm" <<'EOF'
@@ -349,11 +427,68 @@ chmod +x "$SANDBOX/bin/npm"
 run
 check "exit 1, loudly" "$RC" "1"
 check "the webroot still points at the last good build" "$(readlink -f "$WEBROOT")" "$STANDING"
+[ -f "$STANDING/data/pin.json" ] && check "and the standing pin.json is byte-for-byte what it was" "$(sha256sum < "$STANDING/data/pin.json")" "$PIN_STANDING_SUM" || bad "the standing pin.json is gone after the failed build"
 [ -s "$WEBROOT/index.html" ] && ok "which is still serving bytes" || bad "the floor stopped serving"
 grep -q '"status": "failed"' "$REPORT" && ok "and the board says failed" || bad "board: $(cat "$REPORT")"
 # and the state file was NOT advanced, so the next tick retries rather than
 # believing it already built this town
 grep -q "\"town_sha\": \"$FINAL_TOWN\"" "$ROOT/state.json" && ok "the state still names the last SUCCESSFUL build, so the next tick retries" || bad "state advanced past a failed build"
+
+head_ "11 · AN UNKNOWN INSTALLED SOURCE NEVER CLAIMS THE FLOOR, AND A PIN FAILURE PUBLISHES NOTHING (POS-601)"
+cp "$SANDBOX/npm.default" "$SANDBOX/bin/npm"
+LOCK_WITH_FLOOR="$(cat "$SITE_SRC/package-lock.json")"
+# A release whose lockfile holds no postmark-world entry, then main names the floor again: the
+# EXTRACT tree still has F (so a floor fallback would be tempting), the BUILD tree cannot say.
+printf '%s\n' '{ "name": "fake-site", "version": "0.0.0", "lockfileVersion": 3, "requires": true, "packages": {} }' > "$SITE_SRC/package-lock.json"
+git -C "$SITE_SRC" commit -qam "a release whose lockfile names no world"
+git -C "$SITE_SRC" tag -a release/2026-w37 -m "cut"
+printf '%s\n' "$LOCK_WITH_FLOOR" > "$SITE_SRC/package-lock.json"
+git -C "$SITE_SRC" commit -qam "main names the floor again"
+run
+check "exit 0 (the build is not stopped by a lockfile that cannot say)" "$RC" "0"
+check "the extract's pin still says installed = F (the tempting wrong answer)" "$(jget "$EXT" world_installed)" "$WORLD_FLOOR"
+check "PUBLISHED world_installed is null, not the floor" "$(jget "$PIN" world_installed)" "<null>"
+[ "$(jget "$PIN" world_installed)" != "$WORLD_FLOOR" ] && ok "and in particular it is not F" || bad "THE FLOOR WAS CLAIMED AS INSTALLED"
+check "world_pin is still the floor" "$(jget "$PIN" world_pin)" "$WORLD_FLOOR"
+jget "$PIN" notes | grep -q "holds no postmark-world entry" && jget "$PIN" notes | grep -q "NOT substituted" && ok "and the pin says why, and that the floor was not substituted" || bad "no honest note: $(jget "$PIN" notes)"
+check "build.json agrees that nothing is known" "$(jget "$WEBROOT/build.json" world_sha)" "<null>"
+
+printf '%s\n' '{ this is not json' > "$SITE_SRC/package-lock.json"
+git -C "$SITE_SRC" commit -qam "a release whose lockfile is unreadable"
+git -C "$SITE_SRC" tag -a release/2026-w38 -m "cut"
+printf '%s\n' "$LOCK_WITH_FLOOR" > "$SITE_SRC/package-lock.json"
+git -C "$SITE_SRC" commit -qam "main names the floor again, again"
+run
+check "exit 0" "$RC" "0"
+check "an UNREADABLE build lockfile: world_installed is null" "$(jget "$PIN" world_installed)" "<null>"
+jget "$PIN" notes | grep -q "could not be read" && ok "and the pin says the lockfile could not be read" || bad "no unreadable note: $(jget "$PIN" notes)"
+
+# A PIN THAT CANNOT NAME ITS FLOOR DOES NOT SHIP: the extract wrote none, the publish stops, the standing release serves on.
+STANDING="$(readlink -f "$WEBROOT")"
+[ -f "$PIN" ] && ok "a published pin.json exists before the failing tick" || bad "no published pin.json before the failing tick, so the byte check below could pass vacuously"
+PIN_SUM_BEFORE="$(sha256sum < "$PIN" 2>/dev/null)"
+echo "crossing 9" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
+git -C "$TOWN_SRC" commit -qam "a tick whose extract writes no pin"
+run SELFTEST_NO_PIN=1
+check "no pin from the extract: exit 1, loudly" "$RC" "1"
+echo "$OUT" | grep -q "the world pin could not be written" && ok "and it says why" || bad "no pin failure line: $OUT"
+check "the webroot still points at the standing release" "$(readlink -f "$WEBROOT")" "$STANDING"
+[ -f "$PIN" ] && check "whose pin.json is byte-for-byte what it was" "$(sha256sum < "$PIN")" "$PIN_SUM_BEFORE" || bad "the published pin.json is gone after the failing tick"
+
+# THE HELPER MISSING: a copy of the script with no site-refresh-pin.mjs beside it
+# dies by NAME at the preflight, before any build, and publishes nothing.
+mkdir -p "$SANDBOX/lonely"
+cp "$SCRIPT" "$SANDBOX/lonely/site-refresh.sh"
+SCRIPT_KEEP="$SCRIPT"; SCRIPT="$SANDBOX/lonely/site-refresh.sh"
+STANDING="$(readlink -f "$WEBROOT")"
+echo "crossing 10" >> "$TOWN_SRC/WHITE_PAGES/mail-ledger.md"
+git -C "$TOWN_SRC" commit -qam "a tick on a box missing the helper"
+run
+SCRIPT="$SCRIPT_KEEP"
+check "the helper missing: exit 1" "$RC" "1"
+echo "$OUT" | grep -q "the pin helper is missing" && ok "and it names the helper, not the extract" || bad "no helper-missing line: $OUT"
+echo "$OUT" | grep -q "pass 1 —" && bad "it started a build before saying the helper is missing" || ok "before any build was started"
+check "the webroot still points at the standing release" "$(readlink -f "$WEBROOT")" "$STANDING"
 
 # ═══════════════════════════════════════════════════════════════════════════
 

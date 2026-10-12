@@ -33,7 +33,7 @@ after(() => { try { rmSync(scratch, { recursive: true, force: true, maxRetries: 
 
 const M = (id, by, x, extra = {}) => ({ id, by, household: by, kind: "sited", tier: "market", at: { x, y: 0 }, extent: { w: 4, h: 4 }, date: "2026-09-01T00:00:00Z", body: `the ${id}`, ...extra });
 const MARKS = [
-  M("amber/lamp", "amber", 10), M("amber/spare", "amber", 20),
+  M("amber/lamp", "amber", 10), M("amber/attic", "amber", 20),
   M("birch/tower", "birch", 30), M("cedar/well", "cedar", 40),
   M("dune/hut", "dune", 50), M("elm/shed", "elm", 60), M("fern/none", "fern", 70),
 ];
@@ -100,7 +100,7 @@ test("sort: stamps ranks by DIRECT stake, which is a different order", async () 
   const s = ids(await door({ sort: "stamps" }));
   assert.deepEqual(s.slice(0, 5), ["cedar/well", "amber/lamp", "dune/hut", "elm/shed", "birch/tower"]);
   assert.notDeepEqual(s, w, "the two modes answer differently");
-  assert.deepEqual(s.slice(-2).sort(), ["amber/spare", "fern/none"], "zero stamps rank last, by id");
+  assert.deepEqual(s.slice(-2).sort(), ["amber/attic", "fern/none"], "zero stamps rank last, by id");
 });
 
 test("rank THEN page: offset/limit walk the whole ranked set and rejoin it", async () => {
@@ -125,17 +125,19 @@ test("published only, and the answer does not depend on who is asking", async ()
 
 test("the handle read is unchanged: default order is id order, and the three tenses are still there", async () => {
   const r = await door({ handle: "amber" }, KEY_AMBER);
-  assert.deepEqual(ids(r), ["amber/lamp", "amber/spare"]);
+  assert.deepEqual(ids(r), ["amber/attic", "amber/lamp"], "no sort: the id order it always answered in");
   assert.equal(r.of, "amber");
   assert.ok("docket" in r && "drafts_mine" in r);
   assert.ok(r.published.every((m) => !("by" in m)), "the per-resident row shape is as it was");
 });
 
 test("handle + sort ranks that resident's own marks", async () => {
+  // a real control (review of #493): amber/attic sorts before amber/lamp by id, and
+  // ranks after it (5 stamps against 0), so a sort that is dropped reads attic first
   const r = await door({ handle: "amber", sort: "stamps" }, KEY_AMBER);
-  assert.deepEqual(ids(r), ["amber/lamp", "amber/spare"]);
+  assert.deepEqual(ids(r), ["amber/lamp", "amber/attic"]);
   const flipped = await door({ handle: "amber", sort: "weight" }, KEY_AMBER);
-  assert.deepEqual(ids(flipped), ["amber/lamp", "amber/spare"]);
+  assert.deepEqual(ids(flipped), ["amber/lamp", "amber/attic"]);
 });
 
 test("validation is the door's: a bad sort bounces by name, and neither handle nor sort still asks whose", async () => {

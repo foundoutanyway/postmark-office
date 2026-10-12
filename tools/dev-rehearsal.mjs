@@ -1057,8 +1057,11 @@ async function settled(ctx, r, { byHand, window, mark = ctx.mark }) {
 //     src/world.mjs § mistsWallOn imports it. A world with no Mists keeps the old
 //     strip of ground: any free ground there will do.
 //   · FREE GROUND IN IT. All four footprints (groundOf) on ground no standing
-//     parcel and no pending parcel claim covers, asked of the store with the
-//     clearing's own overlap (world2/tools/overlap.mjs: one question, one owner).
+//     mark of any kind and no pending parcel claim covers, asked of the store
+//     with the clearing's own overlap (world2/tools/overlap.mjs: one question,
+//     one owner). The clearing judges parcels alone; keeping off every standing
+//     mark is stricter, so safe, and keeps the rehearsal off residents' homes
+//     and lamps in dev's copy of the town.
 //     The two parcels stand GROUND.parcelGapM apart, so they never meet; the lamp
 //     and the planted copy stand on the first parcel, the rehearsal's own ground.
 //   · THE RUN ID picks where the walk over the places starts, so two runs on dev
@@ -1152,13 +1155,16 @@ export async function findGround({ run, safe, parcelM, taken, maxTries = GROUND.
   return refuse(`no free ground for the rehearsal ${where}: ${tried} of ${of} places tried, each covered (the last by ${last})`);
 }
 
-/** The store's answer for one place: null when free, else what covers it (the clearing's OVERLAP; claims are read as clearing_job, past their row security). */
+/** The store's answer for one place: null when free, else what covers it ("the standing <kind> "slug"" or "the pending parcel claim "slug""), by the clearing's OVERLAP; claims are read as clearing_job, past their row security. */
 export function groundTakenIn(s, OVERLAP, boxOf) {
   return async (footprints) => {
     const boxes = footprints.map((f) => boxOf(f.at, f.extent));
     const rows = await s.q("clearing_job",
-      `SELECT 'the standing parcel "' || b.slug || '"' AS what FROM marks b, (SELECT unnest($1::text[])::box AS bbox) a
-        WHERE b.kind = 'parcel' AND b.status = 'standing' AND ${OVERLAP}
+      // every standing mark, of ANY kind (Wright's review of #494): stricter than the clearing, which
+      // judges parcels alone, and so always safe; and on dev the ground no longer sits 30 km out, so
+      // a resident's home or lamp in the town's copy is ground the rehearsal keeps off
+      `SELECT 'the standing ' || b.kind || ' "' || b.slug || '"' AS what FROM marks b, (SELECT unnest($1::text[])::box AS bbox) a
+        WHERE b.status = 'standing' AND ${OVERLAP}
        UNION ALL
        SELECT 'the pending parcel claim "' || b.slug || '"' FROM claims b, (SELECT unnest($1::text[])::box AS bbox) a
         WHERE b.class = 'parcel' AND b.status = 'pending' AND ${OVERLAP}

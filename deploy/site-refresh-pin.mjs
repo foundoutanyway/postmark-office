@@ -28,6 +28,17 @@
 //                                    installed sha came from and whether it differs
 //                                    from the floor
 //
+// LOCKFILE ONLY, ON PURPOSE, AND NOT IDENTICAL TO THE STAMP. The site's stamper
+// (postmark-site tools/build-stamp.mjs § readWorldSha) reads package-lock.json
+// first and then FALLS BACK to node_modules/postmark-world/package.json
+// (_resolved, else gitHead). This tool does not take that fallback: it reads the
+// build tree's lockfile and nothing else. On the ordinary path (the resolver
+// installed and re-locked, or npm ci installed from the lock) the two agree. On
+// the rare path where the lockfile names no sha but the installed package does,
+// build.json can name a sha while pin.json says null with its reason. That null
+// is honest (this file did not read the installed package); it is a documented
+// difference, not a claim that nothing is installed (Wright, POS-601, 2026-10-12).
+//
 // IT NEVER FALLS BACK TO THE FLOOR. If the build tree's lockfile cannot say which
 // world it installed (unreadable, no postmark-world entry, or a `resolved` that
 // names no sha) then `world_installed` is null with a note that says so. An
@@ -72,7 +83,7 @@ const ABOUT_INSTALLED = /package-lock\.json|node_modules|installed|compiled agai
 const kept = (Array.isArray(pin.notes) ? pin.notes : []).filter((n) => typeof n === "string" && !ABOUT_INSTALLED.test(n));
 const notes = [...kept];
 if (got.sha) {
-  notes.push("world_installed was read from the BUILD tree's package-lock.json after the world-pin resolver ran (deploy/site-refresh.sh): the world this build compiled. world_pin and world_spec are site main's floor, read by the extract tree.");
+  notes.push("world_installed was read from the BUILD tree's package-lock.json after the build tree's install step (deploy/site-refresh.sh): the world this build compiled. world_pin and world_spec are site main's floor, read by the extract tree.");
   if (floor && floor !== got.sha)
     notes.push(`the floor (world_pin) is ${floor.slice(0, 12)} and the build installed ${got.sha.slice(0, 12)} — the build compiled against the installed one`);
 } else {

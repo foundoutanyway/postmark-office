@@ -14,6 +14,7 @@
 //   § G  the file: failure, wrong read-back, missing, and --mirror-only
 //   § H  the import: partial, foreign-kind rollback, dry parity
 //   § I  the CLIs: exit codes, no key and no hash in any output
+//   § K  Wright's review folds: the statement bound, the key's facts and created, the file's busy wait, the resident cover
 //   § J  the door: a real office on the store answers a static bearer, then refuses the SAME bearer once retired
 
 import test, { after } from "node:test";
@@ -29,7 +30,7 @@ import { DatabaseSync } from "node:sqlite";
 import { oauthSchema } from "../src/oauth.mjs";
 import { paperOnPool, paperworkPoolTypes, asPaper } from "../src/paperwork.mjs";
 import { staticLookup, importStaticKeys, RETIRED_KIND } from "../src/static-keys.mjs";
-import { planRetire, retireStaticKey, mirrorOnly, LOCK_TIMEOUT_MS } from "../src/static-keys-retire.mjs";
+import { planRetire, retireStaticKey, mirrorOnly, LOCK_TIMEOUT_MS, STATEMENT_TIMEOUT_MS } from "../src/static-keys-retire.mjs";
 import { startStore } from "./helpers/embedded-store.mjs";
 import { indexStore } from "./helpers/office-under-test.mjs";
 import { fixtureDb } from "./fixture.mjs";
@@ -72,9 +73,9 @@ async function fresh(handles = ["wren", "moss"], { pinTo = undefined, resident =
   return { slug, ghId, login: `login-${n}`, h: (x) => `${x}-${n}` };
 }
 
-const mintedCover = (ghId, { expires = NOW + 86400, kind = "household", heldBy = null } = {}) =>
-  pool.query("INSERT INTO oauth_tokens (token_hash, kind, gh_id, gh_login, client_id, expires, created, held_by) VALUES ($1, $2, $3, 'x', NULL, $4, $5, $6)",
-    [sha(`minted-${ghId}-${kind}-${expires}-${heldBy}`), kind, ghId, expires, NOW, heldBy]);
+const mintedCover = (ghId, { expires = NOW + 86400, kind = "household", heldBy = null, claimedHandle = null } = {}) =>
+  pool.query("INSERT INTO oauth_tokens (token_hash, kind, gh_id, gh_login, client_id, expires, created, held_by, claimed_handle) VALUES ($1, $2, $3, 'x', NULL, $4, $5, $6, $7)",
+    [sha(`minted-${ghId}-${kind}-${expires}-${heldBy}-${claimedHandle}`), kind, ghId, expires, NOW, heldBy, claimedHandle]);
 
 const importSpec = (spec, opts) => importStaticKeys(paper, spec, opts);
 const snapshot = async () => (await pool.query(
@@ -605,4 +606,104 @@ test("§ J a booted office on the store: the static bearer authenticates, the SA
   assert.equal(cover.status, 200, "the replacement still works");
   assert.equal(JSON.parse(cover.body).handles.includes("dwren"), true, "and still speaks for the handle");
   assertNoSecret(after.body + cover.body + said, ["sk-door-wren", "sk-door-cover"], "by the office");
+});
+
+// ── § K Wright's review folds (POS-604, 2026-10-12) ─────────────────────────
+
+test("§ K1 a statement that outlasts the bound while the table is locked: cancelled, rolled back, nothing written", async () => {
+  assert.equal(STATEMENT_TIMEOUT_MS, 5000, "the shipped bound is the ruled 5 s");
+  const w = await threeKeys();
+  const file = fileDb();
+  await seedFile(file, w.spec);
+  const before = [await snapshot(), fileRows(file)];
+  const out = await retireStaticKey(pool, { household: w.slug, handle: w.wren, file, statementTimeoutMs: 300,
+    hooks: { beforeDelete: (c) => c.query("SELECT pg_sleep(2)") } });
+  assert.equal(out.status, "refused");
+  assert.equal(out.timed_out, true);
+  assert.match(out.reason, /outlasted the 300 ms bound \(statement_timeout\).*nothing was written/);
+  assert.deepEqual([await snapshot(), fileRows(file)], before, "store and file untouched");
+  assert.equal(await resolves("sk-wren"), true);
+  // and the lock is gone with it: a plain retire right after succeeds
+  assert.equal((await retireStaticKey(pool, { household: w.slug, handle: w.wren, file })).status, "retired");
+});
+
+test("§ K2 dry, apply and the tombstone carry the key's own created, whether it has a gh_id, and what is left", async () => {
+  const w = await threeKeys();
+  const file = fileDb();
+  await seedFile(file, w.spec);
+  const orig = Number((await pool.query("SELECT created FROM oauth_tokens WHERE token_hash = $1", [sha("sk-wren")])).rows[0].created);
+  const iso = new Date(orig * 1000).toISOString();
+  const dry = await planRetire(pool, { household: w.slug, handle: w.wren, file });
+  assert.deepEqual([dry.target_created, dry.target_has_gh_id, dry.household_static_keys_now, dry.household_static_keys_left], [iso, false, 2, 1]);
+  const later = orig + 3600; // the retirement happens an hour after the import (inside the cover key's life)
+  const out = await retireStaticKey(pool, { household: w.slug, handle: w.wren, file, now: later });
+  assert.equal(out.status, "retired", out.reason ?? out.message);
+  assert.deepEqual([out.target_created, out.target_has_gh_id, out.household_static_keys_left], [iso, false, 1]);
+  assert.equal(out.retired_at, new Date(later * 1000).toISOString(), "the retirement's own instant is in the receipt");
+  const tomb = (await pool.query("SELECT created FROM oauth_tokens WHERE token_hash = $1", [sha("sk-wren")])).rows[0];
+  assert.equal(Number(tomb.created), orig, "the tombstone keeps the key's own created, not the retirement's");
+  const db = new DatabaseSync(file, { readOnly: true });
+  try { assert.equal(Number(db.prepare("SELECT created FROM tokens WHERE token_hash = ?").get(sha("sk-wren")).created), orig, "and so does the file"); }
+  finally { db.close(); }
+  assertNoSecret([dry, out], ["sk-wren", "sk-moss"], "in the receipts");
+  // a key pinned to a gh_id says so (nonsecret: present or not, never the id's owner)
+  const p = await fresh(["wren"]);
+  await importSpec(`sk-pinned=${p.slug}#${p.ghId}:${p.h("wren")};sk-cover=${p.slug}:${p.h("wren")},extra`);
+  assert.equal((await planRetire(pool, { household: p.slug, handle: p.h("wren") })).target_has_gh_id, true);
+});
+
+test("§ K3 the file's busy wait: a writer holding oauth.db for under 2 s is waited out, not failed", async () => {
+  const w = await threeKeys();
+  const file = fileDb();
+  await seedFile(file, w.spec);
+  // another process holds the file's write lock for 800 ms (DatabaseSync is synchronous, so it must be another process)
+  const holder = spawn(process.execPath, ["-e", `
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(process.argv[1]);
+    db.exec("BEGIN IMMEDIATE"); console.log("locked");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 800);
+    db.exec("COMMIT"); db.close();`, file], { stdio: ["ignore", "pipe", "inherit"] });
+  await new Promise((ok, no) => { holder.stdout.on("data", (d) => { if (String(d).includes("locked")) ok(); }); holder.on("exit", () => no(new Error("the holder exited before locking"))); });
+  const out = await retireStaticKey(pool, { household: w.slug, handle: w.wren, file });
+  await new Promise((ok) => (holder.exitCode !== null ? ok() : holder.on("exit", ok)));
+  assert.equal(out.status, "retired", `waited out the holder: ${out.message ?? out.reason}`);
+  assert.equal(fileKind(file, "sk-wren"), "retired");
+});
+
+test("§ K4 a resident-held key covers ONLY the exact claimed handle, with the registry's proof and a live expiry", async () => {
+  // positive: claimed for exactly this handle, the pinned account, live
+  let w = await threeKeys({ cover: false });
+  await mintedCover(w.ghId, { heldBy: "resident", claimedHandle: w.wren });
+  const mintedBefore = await minted();
+  const ok = await retireStaticKey(pool, { household: w.slug, handle: w.wren, file: fileDb() });
+  assert.equal(ok.status, "retired", ok.reason ?? ok.message);
+  assert.match(ok.cover, /resident-held household key claimed for exactly this handle/);
+  assert.deepEqual(await minted(), mintedBefore, "the minted rows are byte-identical");
+  // negatives, each on a fresh house, each writing nothing
+  const refusedWith = async (setup, why) => {
+    const h = await setup();
+    const before = await snapshot();
+    const out = await retireStaticKey(pool, { household: h.slug, handle: h.wren });
+    assert.equal(out.status, "refused", `${why}: ${JSON.stringify(out)}`);
+    assert.match(out.reason, /no other working key/, why);
+    assert.deepEqual(await snapshot(), before, `${why}: nothing written`);
+  };
+  await refusedWith(async () => { const h = await threeKeys({ cover: false }); await mintedCover(h.ghId, { heldBy: "resident", claimedHandle: h.moss }); return h; },
+    "a resident key claimed for ANOTHER handle of the same house");
+  await refusedWith(async () => { const h = await threeKeys({ cover: false }); await mintedCover(h.ghId, { heldBy: "resident", claimedHandle: h.wren, expires: NOW - 5 }); return h; },
+    "the exact claim, expired");
+  await refusedWith(async () => { const h = await threeKeys({ cover: false }); await mintedCover(h.ghId, { heldBy: "resident", claimedHandle: null }); return h; },
+    "a resident key with no claimed handle");
+  await refusedWith(async () => {
+    const h = await fresh(["wren"], { pinTo: 222 });
+    await importSpec(`sk-wren=${h.slug}:${h.h("wren")}`);
+    await mintedCover(222, { heldBy: "resident", claimedHandle: h.h("wren") });
+    return { ...h, wren: h.h("wren") };
+  }, "the exact claim, but the registry pins the handle to an account that is not this house's");
+  await refusedWith(async () => {
+    const h = await fresh(["wren"], { resident: ["someone-else"] });
+    await importSpec(`sk-wren=${h.slug}:${h.h("wren")}`);
+    await mintedCover(h.ghId, { heldBy: "resident", claimedHandle: h.h("wren") });
+    return { ...h, wren: h.h("wren") };
+  }, "the exact claim, but the registry does not list the handle as the house's resident");
 });

@@ -78,11 +78,15 @@ function report(out) {
   switch (out.status) {
     case "dry":
       console.log(`DRY RUN, nothing written. ${where}: would retire 1 static key (cover: ${out.cover}, ${out.cover_count} standing).`);
+      console.log(`  the key: imported ${out.target_created ?? "at an unrecorded time"}, ${out.target_has_gh_id ? "pinned to a gh_id" : "no gh_id"}; static keys in this household: ${out.household_static_keys_now} now, ${out.household_static_keys_left} after`);
       console.log(`  file ${FILE}: ${out.file}`);
       if (out.retired_recorded) console.log(`  ${out.retired_recorded} earlier retirement${out.retired_recorded === 1 ? "" : "s"} already recorded for this selector.`);
       console.log("  advisory only: the real run decides again, under locks.");
       break;
-    case "retired": console.log(`${out.message} (cover: ${out.cover}; oauth_tokens was write-locked for ${out.lock_held_ms} ms)`); break;
+    case "retired":
+      console.log(`${out.message} (cover: ${out.cover}; oauth_tokens was write-locked for ${out.lock_held_ms} ms)`);
+      console.log(`  the key: imported ${out.target_created ?? "at an unrecorded time"} (the tombstone keeps that), ${out.target_has_gh_id ? "pinned to a gh_id" : "no gh_id"}; retired ${out.retired_at}; static keys left in this household: ${out.household_static_keys_left}`);
+      break;
     case "repaired": console.log(out.message); break;
     case "refused":
       console.error(`static-keys-retire: refused ${where}: ${out.reason}. ${out.dry ? "(dry run)" : "Nothing was written to the store."}`);

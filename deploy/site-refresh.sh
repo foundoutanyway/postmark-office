@@ -143,8 +143,12 @@
 #   sudo mkdir -p /srv/postmark-site-refresh /srv/postmark-harbor
 #   sudo chown meepo /srv/postmark-site-refresh /srv/postmark-harbor
 #
-#   # 2. the script itself
+#   # 2. the script itself, AND its helper beside it: the script runs
+#   #    "$SELF_DIR/site-refresh-pin.mjs" (POS-601) from its own directory, and
+#   #    without it every publish stops at "the world pin could not be written"
+#   #    (the standing release keeps serving). The office deploy carries both.
 #   sudo install -o meepo -m 755 deploy/site-refresh.sh /srv/postmark-office/deploy/site-refresh.sh
+#   sudo install -o meepo -m 644 deploy/site-refresh-pin.mjs /srv/postmark-office/deploy/site-refresh-pin.mjs
 #
 #   # 3. meepo must be able to swap the link in /var/www (it owns nothing there today)
 #   sudo chown meepo /var/www           # or: setfacl -m u:meepo:rwx /var/www

@@ -74,6 +74,7 @@ import { CLEARING_TAKES_THE_CANDLE } from "./candle-lock.mjs";
 // written here as claims of their own. See step 5.7 and step 6.
 import { carryPlan, carrySentence } from "./carry.mjs";
 import { boxOf } from "./seed-import.mjs";
+import { OVERLAP } from "./overlap.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (n) => { const i = process.argv.indexOf(n); return i === -1 ? null : process.argv[i + 1]; };
@@ -108,9 +109,10 @@ await client.connect();
 
 const q = (text, args = []) => client.query(text, args);
 
-// bbox overlap in SQL: the same operator the marks exclusion constraint uses,
-// so the clearing and the constraint can never disagree about "overlaps".
-const OVERLAP = "a.bbox && b.bbox";
+// bbox overlap in SQL (OVERLAP, overlap.mjs): the same operator the marks
+// exclusion constraint uses, so the clearing and the constraint can never
+// disagree about "overlaps". It lives in its own file so the dev rehearsal's
+// free-ground search asks the same question (POS-595).
 
 try {
   await q("BEGIN");

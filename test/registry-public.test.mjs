@@ -78,6 +78,11 @@ test("§ 1 the projection drops the human KEY and nothing else, in order, and ne
   assert.equal(pub.households["lantern-row"].name, "Lantern Row");
   assert.deepEqual(pub.households["lantern-row"].residents, ["postmaster", "wick"]);
   assert.equal("name" in pub.households["unnamed-hall"], false, "a house with no display name gets none invented, and no human in its place");
+  // a null human, beside a consent-like opaque marker: the human KEY goes regardless of its value, every other key stays
+  assert.deepEqual(publicHouse({ name: "Tidewater", human: null, human_shown: "opaque-marker-1", residents: ["a"] }),
+    { name: "Tidewater", human_shown: "opaque-marker-1", residents: ["a"] }, "a null human is still dropped as a key; the marker is kept as given");
+  assert.deepEqual(publicHouse({ human: PRIVATE_SENTINEL, human_shown: "opaque-marker-2", name: "Tidewater" }),
+    { human_shown: "opaque-marker-2", name: "Tidewater" }, "a marker never turns the human back on");
   assert.equal(publicHouse(null), null);
   assert.equal(publicRegistry(null), null);
 });

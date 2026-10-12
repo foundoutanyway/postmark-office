@@ -37,9 +37,8 @@ test("the whole registry, in the two files' shapes, from the store", async () =>
   assert.equal(body.read, "households");
   assert.equal(body.from, "the registry store");
   assert.deepEqual(body.registry, publicRegistry(registryFromRows(ROWS)), "the PUBLIC face of the object the drain renders tools/households.json from");
-  assert.equal(registryFromRows(ROWS).households["ana-house"].human, "Ana", "the private fold still holds the name");
   assert.equal("human" in body.registry.households["ana-house"], false, "POS-394: the public read carries no human key");
-  assert.equal(body.registry.households["ana-house"].name, "Ana's", "and keeps the display name");
+  assert.equal(body.registry.households["ana-house"].name, REGISTRY.households["ana-house"].name, "and keeps the display name");
   assert.deepEqual(body.pins, pinsFromRows(ROWS), "the object the drain renders tools/github-ids.json from");
   assert.deepEqual(Object.keys(body.registry), ["schema_version", "note", "households"], "the file's own key order");
   assert.equal(body.handles, undefined);

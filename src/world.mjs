@@ -2090,7 +2090,12 @@ export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
   // thickness nobody was comparing against a second source.
   //
   // world2-serve.mjs:570 has always had the right form. This is the older twin.
-  const r = verbs.openYourEyes({ x: at.x, y: at.y, name: args.name }, w, { crossing });
+  // THE ACTING RESIDENT RIDES IN THE OPTIONS (WLD-9, formerly POS-528): the bare read
+  // carries the selected resident's own home outside the 12-mark telling budget, and
+  // the engine can only do that if it is told who is acting. `choice.handle` is the
+  // handle chooseStandpoint SELECTED (an embodied read only; a spectator's x/y has
+  // none), never `args.name` and never a key's first handle.
+  const r = verbs.openYourEyes({ x: at.x, y: at.y, name: args.name }, w, { crossing, actor: choice.handle ?? null });
   // tell is a lazy thunk on the verb's return — render it here so the JSON
   // skin carries the prose (a function would vanish in serialization).
   const engineTelling = typeof r.tell === "function" ? r.tell() : r.tell ?? null;

@@ -298,7 +298,9 @@ export function planRegistryJoin(registry, { handle, household, ghId, ghLogin, s
       rec.residents = residents;
       return { slug: byAccount, action: "chosen", already: true, from: byAccount, to,
         formerly: [...own.formerly], vouched: true, addedAccount: false,
-        houseLine: houseLineOf(registry, byAccount), name: rec.name ?? rec.human ?? byAccount,
+        // the house's display name, else its slug: NEVER its private human (POS-394), because
+        // plan.name is printed into the public join PR and the caller's answer
+        houseLine: houseLineOf(registry, byAccount), name: rec.name ?? byAccount,
         registry: next, siblings };
     }
     const formerly = [...(own.formerly ?? []), byAccount];
@@ -331,7 +333,7 @@ export function planRegistryJoin(registry, { handle, household, ghId, ghLogin, s
     const known = (rec.accounts ?? []).some((a) => accountMatches(a, ghId, ghLogin));
     if (!known) rec.accounts = [...(rec.accounts ?? []), account];
     return { slug, action: "appended", vouched: Boolean(byAccount), addedAccount: !known,
-      houseLine: houseLineOf(registry, slug), name: rec.name ?? rec.human ?? slug,
+      houseLine: houseLineOf(registry, slug), name: rec.name ?? slug, // never rec.human (POS-394; see above)
       registry: next, siblings: (rec.residents ?? []).filter((h) => h !== handle) };
   }
 

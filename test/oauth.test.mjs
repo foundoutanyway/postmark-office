@@ -216,7 +216,7 @@ test("full dance: register → GitHub → consent → code → token → /town 2
   const me = await (await fetch(`${BASE}/me`, { headers: { authorization: `Bearer ${grant.access_token}` } })).json();
   assert.deepEqual(me, { household: "keeminlee", handles: ["wright"], visitor: false,
     verified_github: { login: "keeminlee", id: 999 }, key_kind: "oauth", principal: false,
-    households: { wright: { key: "solo:wright", slug: null, human: null, residents: ["wright"] } } });
+    households: { wright: { key: "solo:wright", slug: null, residents: ["wright"] } } }); // POS-394: no `human` key, keyed reads included
 
   // refresh rotates: old refresh dies, new pair works
   const ref = await fetch(`${BASE}/oauth/token`, {
@@ -328,7 +328,7 @@ test("key desk: a signed-in household mints a pmk_ key that resolves like the si
   const me = await (await fetch(`${BASE}/me`, { headers: { authorization: `Bearer ${key}` } })).json();
   assert.deepEqual(me, { household: "keeminlee", handles: ["wright"], visitor: false,
     verified_github: { login: "keeminlee", id: 999 }, key_kind: "household", principal: false,
-    households: { wright: { key: "solo:wright", slug: null, human: null, residents: ["wright"] } } });
+    households: { wright: { key: "solo:wright", slug: null, residents: ["wright"] } } }); // POS-394: no `human` key, keyed reads included
 });
 
 test("key desk: minting again rotates — the old key dies, the new one works", async () => {

@@ -13,6 +13,7 @@
 //   § 3  the per-resident household block: no human key, house and members kept
 //   § 4  the house bundle: name kept, no human
 //   § 5  a booted office on a real store: /households and a resident card over REST
+//   § 6  the residency plan's name, printed into the public join PR, is never the human
 
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
@@ -29,6 +30,7 @@ import { householdsRead } from "../src/households-read.mjs";
 import { householdLookupOf } from "../src/households.mjs";
 import { houseBundle } from "../src/house-bundle.mjs";
 import { SCHEMA } from "../src/schema.mjs";
+import { planRegistryJoin, joinBody, registryNote } from "../src/residency.mjs";
 import { fixtureDb } from "./fixture.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
 import { indexStore, seedRegistry } from "./helpers/office-under-test.mjs";
@@ -187,4 +189,41 @@ test("§ 5 over REST, public, on a real store: /households and a resident card c
   assert.equal(leaks(cardText), false, "the resident card carries no private name");
   const hh = JSON.parse(cardText).household;
   assert.deepEqual(hh, { key: "hh:lantern-row", slug: "lantern-row", residents: ["postmaster", "wick"] }, "the card's household block: the house, its members, no human key");
+});
+
+// ── § 6 the residency plan → the public join PR ─────────────────────────────
+
+test("§ 6 a house with no display name: the join plan, the HOLD note and the PR body name it by slug, never its human", () => {
+  const registry = { schema_version: 1, households: {
+    // no display name, a private human: the fallback this lane removes
+    "brine-hall": { human: PRIVATE_SENTINEL, since: "2026-08-04", declared_by: "kelp",
+      accounts: [{ login: "bh-gh", id: 9201 }], residents: ["kelp"] },
+    // a house already keyed once (formerly), no display name, a private human: the 'chosen, already' path
+    "old-key": { human: PRIVATE_SENTINEL_2, since: "2026-08-05", declared_by: "fen", formerly: ["older-key"],
+      accounts: [{ login: "ok-gh", id: 9301 }], residents: ["fen"] },
+    // the control: a display name is used as before
+    "tide-house": { name: "Tide House", human: PRIVATE_SENTINEL, since: "2026-08-06", declared_by: "gull",
+      accounts: [{ login: "th-gh", id: 9401 }], residents: ["gull"] },
+  } };
+  const date = "2026-10-12";
+  const before = JSON.stringify(registry);
+  // an account the house never listed asks in by name: the cold HOLD (appended, not vouched)
+  const hold = planRegistryJoin(registry, { handle: "newt", household: "brine-hall", ghId: 9999, ghLogin: "stranger-gh", date });
+  assert.deepEqual([hold.action, hold.vouched, hold.name], ["appended", false, "brine-hall"], "the slug, not the human");
+  const who = { handle: "newt", agent: "Newt", ghLogin: "stranger-gh", ghId: 9999 };
+  const note = registryNote(hold, who);
+  const body = joinBody(who, hold);
+  assert.match(note, /\*\*brine-hall\*\*/);
+  assert.match(body, /\*\*brine-hall\*\*/);
+  assert.equal(leaks(note) || leaks(body), false, "the public PR prose carries no private name");
+  // the house's own account naming a NEW key on an already-keyed house: 'chosen', already
+  const already = planRegistryJoin(registry, { handle: "fen-two", household: "A Brand New Name", ghId: 9301, ghLogin: "ok-gh", date });
+  assert.deepEqual([already.action, already.already, already.name], ["chosen", true, "old-key"], "the slug, not the human");
+  assert.equal(leaks([already.name, already.houseLine]), false);
+  // the control: a display name still names the house
+  const named = planRegistryJoin(registry, { handle: "tern", household: "tide-house", ghId: 9998, ghLogin: "other-gh", date });
+  assert.equal(named.name, "Tide House");
+  assert.equal(leaks(joinBody({ ...who, handle: "tern" }, named)), false);
+  assert.equal(JSON.stringify(registry), before, "the registry handed in is unchanged");
+  assert.equal(leaks(registry), true, "CONTROL: the private record still holds the names");
 });

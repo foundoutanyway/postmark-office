@@ -759,9 +759,9 @@ export function letterList(db, opts = {}) {
 // ~13 MB. Two filters let it read only what moved:
 //
 //   ?digests=1  each letter as { id, digest } and nothing else, up to 1000 a
-//               page. The digest is the sha256 of the very columns the full
-//               answer is built from (letterDigest), so two equal digests are
-//               two equal `full=1` answers.
+//               page. The digest is the sha256 of the letter's `full=1` answer
+//               itself (letterDigest), so two equal digests are two equal
+//               answers, whether the row moved or the office's shaping did.
 //   ?ids=a,b,c  only those letters (up to 200), with every other filter as usual.
 //
 // The reader keeps last pass's digests and asks `full=1&ids=` for the ids that
@@ -772,8 +772,9 @@ export function letterList(db, opts = {}) {
 export const LETTER_DIGEST_PAGE = 1000;
 export const LETTER_IDS_MAX = 200;
 export const letterPageCap = (opts) => (opts.digests ? LETTER_DIGEST_PAGE : 200);
+const fullLetter = (r) => ({ ...JSON.parse(r.json), ...excerpt(r) });
 export const letterDigest = (r) => createHash("sha256")
-  .update(JSON.stringify([r.id, r.from_h, r.to_h, r.date, r.thread, r.delivered_at ?? null, r.json]), "utf8")
+  .update(JSON.stringify(fullLetter(r)), "utf8")
   .digest("hex").slice(0, 32);
 
 /** letterList's answer for a region that names nobody. Shared with the store's twin. */
@@ -787,7 +788,7 @@ export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
  */
 export function letterListPage({ total, rows, limit, offset, full, digests, asOf }) {
   const shape = digests ? (r) => ({ id: r.id, digest: letterDigest(r) })
-    : full ? (r) => ({ ...JSON.parse(r.json), ...excerpt(r) }) : excerpt;
+    : full ? fullLetter : excerpt;
   const next = offset + rows.length;
   const complete = next >= total;
   return {

@@ -27,6 +27,7 @@
 //   POSTMARK_OAUTH_GITHUB_CLIENT_SECRET
 //   GITHUB_AUTH_URL / GITHUB_TOKEN_URL / GITHUB_API_URL   (test overrides)
 
+import { readBody as readBodyCapped, isBodyTooLarge, refuseTooLarge } from "./body.mjs";
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes } from "node:crypto";
 import { asPaper } from "./paperwork.mjs";
@@ -681,12 +682,9 @@ const html = (res, code, body) => {
 
 // ── request helpers ──────────────────────────────────────────────────────────
 
-const readBody = (req) => new Promise((resolveBody, reject) => {
-  let raw = "";
-  req.on("data", (c) => { raw += c; if (raw.length > 100_000) req.destroy(); });
-  req.on("end", () => resolveBody(raw));
-  req.on("error", reject);
-});
+// 100 000 BYTES, read by src/body.mjs (POS-526): split characters kept, an
+// oversize form answered 413 by handleOauth below, never a reset.
+const readBody = (req) => readBodyCapped(req, 100_000);
 
 const parseForm = (raw, contentType) => {
   if ((contentType ?? "").includes("application/json")) { try { return JSON.parse(raw || "{}"); } catch { return {}; } }
@@ -1238,6 +1236,10 @@ export async function handleOauth(req, res, ctx) {
   try {
     return await handleOauthRoute(req, res, ctx);
   } catch (e) {
+    // An oversize form is answered in OAuth's own shape on EVERY oauth path, a
+    // browser's included: a 413, never the browser page's 500 (POS-526).
+    if (isBodyTooLarge(e) && !res.headersSent)
+      return refuseTooLarge(res, () => oerr(res, 413, "invalid_request", `${e.defect}: ${e.hint}`));
     if (res.headersSent || !browserFacing(req)) throw e;
     // The store's pins could not be read (POS-343): say so, by name.
     if (e instanceof SignInUnreadable)

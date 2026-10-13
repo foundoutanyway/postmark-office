@@ -446,7 +446,9 @@ build_once() {
 
   # sync-atlas.yml's three steps, its order, its arguments.
   say "extract: the checkout-coupled half (media, atlas, daily, works, doorstep bundles)"
-  ( cd "$SITE" && GH_TOKEN="${GH_TOKEN:-}" POSTMARK_CROSSING="$crossing" node tools/extract-town.mjs --town "$TOWN" ) \
+  # POSTMARK_API named here, not inherited from the unit: the doorsteps are
+  # read from the same office the rest of the pass reads (2026-10-13).
+  ( cd "$SITE" && GH_TOKEN="${GH_TOKEN:-}" POSTMARK_API="$API" POSTMARK_CROSSING="$crossing" node tools/extract-town.mjs --town "$TOWN" ) \
     || die "extract-town.mjs tripped"
   say "extract: the API-fed half"
   # fetch-town.mjs also writes /data/pin.json (the site's tools/lib/world-pin-publish.mjs),
@@ -460,7 +462,9 @@ build_once() {
   # the build tree may have advanced past it. POS-601: the publish step below
   # keeps this file's floor fields and re-derives world_installed from the BUILD
   # tree, the same answer /build.json's world_sha gives — see "the pin".)
-  ( cd "$SITE" && POSTMARK_API="$API" PUBLIC_CHANNEL=release BUILD_CODE_REF="$TAG" node tools/fetch-town.mjs --town "$TOWN" ) \
+  # The letter cache lives beside the clones, outside the extract tree that is
+  # reset every pass: the next pass reads only the letters that moved.
+  ( cd "$SITE" && POSTMARK_API="$API" POSTMARK_LETTER_CACHE="$ROOT/letter-cache.json" PUBLIC_CHANNEL=release BUILD_CODE_REF="$TAG" node tools/fetch-town.mjs --town "$TOWN" ) \
     || die "fetch-town.mjs tripped"
   say "extract: approved renditions"
   ( cd "$SITE" && node tools/sync-renditions.mjs --town "$TOWN" ) \

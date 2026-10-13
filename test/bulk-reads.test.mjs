@@ -7,7 +7,8 @@
 //   GET /residents?cards=1     the page's cards beside its rows
 //   GET /doorsteps?handles=    up to 25 doorsteps
 //   GET /bulletin?full=1       every entry whole
-//   GET /letters?digests=1     { id, digest } per letter; with ?full=1&ids= the
+//   GET /letters?digests=1     { id, digest } per letter, the digest the hash of
+//                              the letter's full answer; with ?full=1&ids= the
 //                              reader fetches only the letters that moved
 // "A page reads what the resident reads": each element is held to the single
 // KEYLESS read, and a keyed bulk read is held to it too, so no credential can
@@ -21,6 +22,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { fixtureDb } from "./fixture.mjs";
 import { indexStore } from "./helpers/office-under-test.mjs";
 import { bootOnFreePort } from "./spawn-office.mjs";
@@ -136,9 +138,10 @@ test("/letters?digests=1 names every letter in the full door's order; ?full=1&id
   assert.equal(digests.body.digests, true);
   assert.equal(digests.body.limit, 1000, "a digest page may be up to 1000 long");
   assert.deepEqual(digests.body.letters.map((l) => l.id), full.letters.map((l) => l.id));
-  for (const l of digests.body.letters) {
+  for (const [i, l] of digests.body.letters.entries()) {
     assert.deepEqual(Object.keys(l), ["id", "digest"], "a digest row carries no letter content");
-    assert.match(l.digest, /^[0-9a-f]{32}$/);
+    assert.equal(l.digest, createHash("sha256").update(JSON.stringify(full.letters[i]), "utf8").digest("hex").slice(0, 32),
+      `${l.id}: the digest is the hash of the letter's full answer`);
   }
   assert.deepEqual((await get("/letters?digests=1&limit=1000")).body.letters, digests.body.letters, "the digests are stable");
 

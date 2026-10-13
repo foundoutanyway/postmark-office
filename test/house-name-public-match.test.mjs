@@ -15,6 +15,7 @@ import { resolveHouse, VIA } from "../src/household-deriver.mjs";
 import { houseForName, houseForAccount, planRegistryJoin } from "../src/residency.mjs";
 import { conformance } from "../src/declare.mjs";
 import { REFUSALS } from "../src/ceremony.mjs";
+import { rowsFromRegistry, renderRegistry, renderPublicRegistry } from "../src/registry-rows.mjs";
 
 const SENTINEL = "Private Sentinel Qzrv";          // copper-gate's private human
 const COLLIDER = "Brass Hollow";                   // low-field's private human, and brass-hollow's PUBLIC name
@@ -31,9 +32,10 @@ const STRANGER = { ghId: 5555, ghLogin: "stranger-gh", household: "stranger-gh",
 const NO_RESIDENTS = { hasResident: () => false };
 const CARD = "I keep the ledger of small kindnesses for a person who forgets them. Write to me about one you remember.";
 const declare = (household, registry) => {
-  try { conformance({ household, handle: "pos609-newcomer", card: CARD, agent: "Newcomer" }, { db: NO_RESIDENTS, registry, clone: null, key: STRANGER }); return null; }
-  catch (e) { return e; }
+  try { return { ok: conformance({ household, handle: "pos609-newcomer", card: CARD, agent: "Newcomer" }, { db: NO_RESIDENTS, registry, clone: null, key: STRANGER }) }; }
+  catch (e) { return { err: e }; }
 };
+const mentions = (v, ...words) => words.some((w) => JSON.stringify(v ?? null).toLowerCase().includes(w.toLowerCase()));
 
 test("the name road: key and public name find the house; the private human finds nothing", () => {
   const reg = REG();
@@ -69,6 +71,8 @@ test("residency: a join that types a house's private human does not claim that h
   assert.ok(plan?.registry, "the join still plans (a house of its own words), it is not dropped");
   assert.notEqual(plan.slug, "copper-gate", "the private name routed no claim onto copper-gate");
   assert.notEqual(plan.action, "appended", "nothing was appended to an existing house");
+  assert.equal(mentions({ slug: plan.slug, houseLine: plan.houseLine, name: plan.name, siblings: plan.siblings }, "copper-gate", "Copper Gate", "tansy"), false,
+    "what the join prints (slug, house line, name, siblings) does not disclose the house");
   const cg = plan.registry.households["copper-gate"];
   assert.deepEqual(cg.residents, ["tansy"], "copper-gate gained no resident");
   assert.deepEqual(cg.accounts, [{ login: "cg-gh", id: 9701 }], "copper-gate gained no account");
@@ -82,17 +86,31 @@ test("residency: a join that types a house's private human does not claim that h
   assert.equal(claim.vouched, false);
 });
 
-test("declaration: a house's private human is not TAKEN; its key and public name are", () => {
+test("declaration: a house's private human is not TAKEN — the declaration goes on to its own new slug", () => {
   const reg = REG();
   const before = JSON.stringify(reg);
-  for (const spelled of [SENTINEL, "private-sentinel-qzrv"]) {
-    const e = declare(spelled, reg);
-    assert.notEqual(e?.refusal, REFUSALS.TAKEN, `"${spelled}" is not refused as taken`);
-    assert.ok(!String(e?.message ?? "").includes("copper-gate") && !String(e?.detail ?? "").includes("copper-gate"), "no refusal points at the house");
+  for (const spelled of [SENTINEL, "private-sentinel-qzrv", "private.sentinel.qzrv", "  PRIVATE sentinel QZRV "]) {
+    const { ok, err } = declare(spelled, reg);
+    assert.equal(err, undefined, `"${spelled}" passes the gate (got: ${err?.field} ${err?.refusal === REFUSALS.TAKEN ? "TAKEN" : ""})`);
+    assert.equal(ok.slug, "private-sentinel-qzrv", `"${spelled}" plans its OWN new house`);
+    assert.equal(ok.handle, "pos609-newcomer");
+    assert.equal(mentions(ok, "copper-gate", "Copper Gate"), false, "nothing in the plan points at the house");
   }
-  for (const spelled of ["Copper Gate", "copper-gate", COLLIDER]) {
-    const e = declare(spelled, reg);
-    assert.equal(e?.refusal, REFUSALS.TAKEN, `CONTROL: "${spelled}" is taken`);
+  for (const spelled of ["Copper Gate", "copper-gate", "  COPPER gate ", COLLIDER, "brass-hollow"]) {
+    assert.equal(declare(spelled, reg).err?.refusal, REFUSALS.TAKEN, `CONTROL: the public "${spelled}" is taken`);
   }
   assert.equal(JSON.stringify(reg), before, "the registry handed in is unchanged");
+});
+
+test("not a word blacklist: a PUBLIC name equal to the sentinel text still matches, and is still TAKEN", () => {
+  const reg = REG();
+  reg.households["sentinel-hall"] = { name: SENTINEL, accounts: [{ login: "sh-gh", id: 9704 }], residents: ["moss"], since: "2026-08-17" };
+  assert.equal(houseForName(reg, SENTINEL), "sentinel-hall", "the public name finds its own house (not copper-gate, whose human it is)");
+  assert.equal(declare(SENTINEL, reg).err?.refusal, REFUSALS.TAKEN, "and a declaration of it is TAKEN, by the public name");
+});
+
+test("the private drain fold still carries the human; the public render does not", () => {
+  const rows = rowsFromRegistry(REG(), {});
+  assert.ok(renderRegistry(rows).households.includes(SENTINEL), "the private render keeps the human");
+  assert.equal(renderPublicRegistry(rows).households.includes(SENTINEL), false, "the public render leaves it out (POS-394, unchanged)");
 });

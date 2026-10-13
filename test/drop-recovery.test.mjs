@@ -61,7 +61,7 @@ const file = (actId, status = "pending") => owner(async (c) => {
                  VALUES (300, 'sited', 'sbx-cy', $1, $2, 'One Test Comets, set down here.', '{"at":{"x":0,"y":0},"extent":{"w":1,"h":1}}', '((0,0),(1,1))', 1, $3, $4)`,
     [HH, status, JSON.stringify({ class: "candy", label: LABEL, dropped: `act:${actId}` }), slug]);
 });
-const unitActs = () => owner(async (c) => (await c.query("SELECT id::text, class, action, actor, household, nonce, payload FROM acts WHERE action LIKE 'units:%' ORDER BY id")).rows);
+const unitActs = () => owner(async (c) => (await c.query("SELECT id::text, class, action, actor, household, nonce, payload FROM acts WHERE action LIKE 'units:%' ORDER BY acts.id")).rows);
 const undos = async (actId) => (await unitActs()).filter((a) => a.action === UNIT_ACTION.dropUndone && a.payload.undoes === String(actId));
 const heldBy = async (h) => totalOf(foldUnits(await unitActs()), h);
 
@@ -382,4 +382,57 @@ test("B · [source pin, not a run] the hold lane's whole-thing carry check reads
   const fn = src.slice(src.indexOf("async function carryForThings("), src.indexOf("async function unitsHeldBy("));
   const flight = fn.indexOf("await inFlightFor(who"), rows = fn.indexOf("await storeHoldingRows()");
   assert.ok(flight > 0 && rows > 0 && flight < rows, "out first, held second");
+});
+
+// ── correction C: the drop's ORIGINAL household, not the dropper's present one ─
+
+test("C · two houses, two drops: a private draft filed under the OLD house keeps its drop filed after Cy moves; the new house's orphan alone comes back; out counts only it", { skip }, async () => {
+  await seed();
+  await owner((c) => c.query("UPDATE households SET slug = 'sbx-old-house', residents = ARRAY['sbx-cy','sbx-zed'], declared_by = 'sbx-zed' WHERE slug = 'sbx-cy'"));
+  const OLD = "hh:sbx-old-house", NEW = "hh:sbx-new-house";
+  const dropIn = (hh) => owner(async (c) => (await c.query(
+    `INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now() - interval '30 minutes', 300.1, 'sbx-cy', 'units:drop', 'sbx-cy', 'holding', $1, $2) RETURNING id::text`,
+    [JSON.stringify({ units: true, moves: [{ from: "sbx-cy", to: null, label: LABEL, n: 1 }], label: LABEL }), hh])).rows[0].id);
+  await give("sbx-cy", 3);
+  const old = await dropIn(OLD);
+  await owner((c) => c.query(`INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, bbox, stake, data, slug)
+     VALUES (300, 'sited', 'sbx-cy', $1, 'draft', 'Filed in the old house.', '{"at":{"x":0,"y":0},"extent":{"w":1,"h":1}}', '((0,0),(1,1))', 0, $2, 'sbx-cy/old-house-candy')`,
+    [OLD, JSON.stringify({ class: "candy", label: LABEL, dropped: `act:${old}` })]));
+  await owner(async (c) => {
+    await c.query("UPDATE households SET residents = ARRAY['sbx-zed'] WHERE slug = 'sbx-old-house'");
+    await c.query("INSERT INTO households (slug, ord, name, residents, since, declared_by) VALUES ('sbx-new-house', 1, 'New', ARRAY['sbx-cy'], '2026-08-02', 'sbx-cy')");
+  });
+  const { actHouseholdFor } = await import("../src/world2-claims.mjs");
+  assert.equal(await office((c) => actHouseholdFor(c, { actor: "sbx-cy" })), NEW, "Cy now resolves to the new house");
+  const orphan = await dropIn(NEW);
+  const out = await office(async (c) => { await c.query("BEGIN READ ONLY"); try { return await dropsStillOut(c, "sbx-cy"); } finally { await c.query("COMMIT"); } });
+  assert.equal(out, 1, "the old house's filed drop is not out; the new house's orphan is");
+  const r = await office((c) => recoverOrphanDrops(c, {}));
+  assert.deepEqual(r.restored.map((x) => x.act), [orphan]);
+  assert.deepEqual(r.filed.map((f) => [f.act, f.slug, f.status]), [[old, "sbx-cy/old-house-candy", "draft"]]);
+  const [u] = await undos(orphan);
+  assert.equal(u.household, NEW, "the undo keeps its own drop's original household");
+  assert.deepEqual(await undos(old), []);
+  assert.equal(await heldBy("sbx-cy"), 2, "3 − 2 set down + 1 back: the filed one stays on the ground");
+});
+
+test("C · the door's compensation guard, run in the pen's own transaction, sees the old house's private draft too", { skip }, async () => {
+  await seed();
+  await owner((c) => c.query("UPDATE households SET slug = 'sbx-old-house' WHERE slug = 'sbx-cy'"));
+  const OLD = "hh:sbx-old-house";
+  const id = await owner(async (c) => (await c.query(
+    `INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), 300.1, 'sbx-cy', 'units:drop', 'sbx-cy', 'holding', $1, $2) RETURNING id::text`,
+    [JSON.stringify({ units: true, moves: [{ from: "sbx-cy", to: null, label: LABEL, n: 1 }], label: LABEL }), OLD])).rows[0].id);
+  await owner(async (c) => {
+    await c.query(`INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, bbox, stake, data, slug)
+       VALUES (300, 'sited', 'sbx-cy', $1, 'draft', 'Filed.', '{"at":{"x":0,"y":0},"extent":{"w":1,"h":1}}', '((0,0),(1,1))', 0, $2, 'sbx-cy/kept')`,
+      [OLD, JSON.stringify({ class: "candy", label: LABEL, dropped: `act:${id}` })]);
+    await c.query("UPDATE households SET residents = ARRAY['sbx-zed'] WHERE slug = 'sbx-old-house'");
+    await c.query("INSERT INTO households (slug, ord, name, residents, since, declared_by) VALUES ('sbx-new-house', 1, 'New', ARRAY['sbx-cy'], '2026-08-02', 'sbx-cy')");
+  });
+  const e = await office(async (c) => {
+    await c.query("BEGIN");
+    try { await dropUndoGuard({ actId: id })(c); return null; } catch (x) { return x; } finally { await c.query("ROLLBACK"); }
+  });
+  assert.deepEqual(e?.filed && [e.filed.slug, e.filed.status], ["sbx-cy/kept", "draft"], e?.message);
 });

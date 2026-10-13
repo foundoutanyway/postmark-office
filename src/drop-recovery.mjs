@@ -65,30 +65,43 @@ const MARK_ACT_SQL = `
      AND payload->>'dropped' = $1 AND actor = $2 AND payload->>'label' = $3
    ORDER BY id LIMIT 1`;
 
-/** Declare the dropper's household for this transaction, so its private drafts are visible to the checks. */
-async function declareDropperHousehold(client, actor) {
-  const [{ actHouseholdFor }, { sessionKeysVia, sessionKeyString }] = await Promise.all([
-    import("./world2-claims.mjs"), import("./household-deriver.mjs")]);
-  const hh = await actHouseholdFor(client, { actor });
-  if (hh == null) return;
-  const keys = await sessionKeysVia(client, hh).catch(() => [hh]);
-  await client.query("SELECT set_config('app.household', $1, true)", [hh]);
-  await client.query("SELECT set_config('app.household_keys', $1, true)", [sessionKeyString(keys) ?? hh]);
+// THE DROP'S OWN HOUSEHOLD (Bevel's follow-up review, C). A private draft is
+// visible only under its household's spellings (007/024 row policy). The house
+// to declare is the one the DROP was recorded under — `acts.household` on the
+// committed drop, append-only — never the dropper's present membership, which
+// can have moved since and would hide the draft and refund a filed unit. Nor a
+// caller's word: the guard reads the drop act itself.
+const DROP_ROW_SQL = `SELECT actor, household, payload FROM acts WHERE id = $1::bigint AND action = $2 AND class = 'holding'`;
+
+/** Declare `household` (and its known spellings) for this transaction. */
+async function declareHousehold(client, household) {
+  if (household == null || household === "") return;
+  const { sessionKeysVia, sessionKeyString } = await import("./household-deriver.mjs");
+  const keys = await sessionKeysVia(client, household).catch(() => []);
+  const all = [...new Set([String(household), ...keys])];
+  await client.query("SELECT set_config('app.household', $1, true)", [String(household)]);
+  await client.query("SELECT set_config('app.household_keys', $1, true)", [sessionKeyString(all)]);
 }
 
 /**
- * Inside a transaction: is this drop's mark filed? A claim whose own record
- * names this drop act (CLAIM_SQL) in ANY status — the dropper's household is
- * declared first, so a private draft is seen too — or a mark act whose payload
- * names it. Answers `{ slug, claim, status }` (the slug the mark ACTUALLY has)
- * or null.
+ * Inside a transaction: is this drop's mark filed? The drop act is read first
+ * — its actor, label and ORIGINAL household are the record's, not the
+ * caller's — and that household is declared, so a private draft filed there is
+ * seen. Then a claim whose own record names this drop act (CLAIM_SQL) in ANY
+ * status, or a mark act whose payload names it. Answers `{ slug, claim, status }`
+ * (the slug the mark ACTUALLY has) or null. A drop id that is not a drop act
+ * answers null for nothing — it throws, since nothing should be undone for it.
  */
-export async function filedMarkOf(client, { actId, actor, label }) {
+export async function filedMarkOf(client, { actId }) {
+  const { rows: [d] } = await client.query(DROP_ROW_SQL, [String(actId), UNIT_ACTION.drop]);
+  if (!d) throw bounce(404, `act ${actId} is not a set-down`, "only a units:drop act has a mark to look for. Nothing was recorded.");
+  const p = typeof d.payload === "string" ? JSON.parse(d.payload) : (d.payload ?? {});
+  const actor = String(d.actor), label = String(p.label ?? p.moves?.[0]?.label ?? "");
   const ref = `act:${String(actId)}`;
-  await declareDropperHousehold(client, actor);
-  const { rows: [c] } = await client.query(CLAIM_SQL, [ref, String(actor), String(label)]);
+  await declareHousehold(client, d.household);
+  const { rows: [c] } = await client.query(CLAIM_SQL, [ref, actor, label]);
   if (c) return { slug: c.slug, claim: c.id, status: c.status };
-  const { rows: [a] } = await client.query(MARK_ACT_SQL, [ref, String(actor), String(label)]);
+  const { rows: [a] } = await client.query(MARK_ACT_SQL, [ref, actor, label]);
   return a ? { slug: a.object, mark_act: a.id, status: "acted" } : null;
 }
 
@@ -114,7 +127,7 @@ export const dropUndoGuard = ({ actId, actor, label }) => async (client) => {
   await client.query(LOCK_SQL, [dropLockKey(actId)]);
   const { rows: undone } = await client.query(UNDONE_SQL, [UNIT_ACTION.dropUndone, String(actId)]);
   if (undone.length) throw bounce(409, `the set-down of act ${actId} is already undone`, "the unit is already back. Nothing was recorded.", { undoneAlready: String(undone[0].id) });
-  const filed = await filedMarkOf(client, { actId, actor, label });
+  const filed = await filedMarkOf(client, { actId });
   if (filed) throw bounce(409, `the set-down of act ${actId} was filed as ${filed.slug} (${filed.status})`,
     "its mark committed, so the unit is on the ground, not back in hands. Nothing was recorded.", { filed });
 };
@@ -188,7 +201,7 @@ export async function recoverOrphanDrops(client, { now = Date.now(), crossing = 
 const LABEL_OF_DROP = `COALESCE(d.payload->>'label', d.payload->'moves'->0->>'label')`;
 const STILL_OUT_SQL = `
   SELECT count(*)::int AS n FROM acts d
-   WHERE d.class = 'holding' AND d.action = $1 AND d.actor = $2
+   WHERE d.class = 'holding' AND d.action = $1 AND d.actor = $2 AND d.household IS NOT DISTINCT FROM $4
      AND NOT EXISTS (SELECT 1 FROM acts u WHERE u.action = $3 AND u.payload->>'undoes' = d.id::text)
      AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.data->>'dropped' = 'act:' || d.id::text
                        AND c.claimant = d.actor AND c.data->>'label' = ${LABEL_OF_DROP})
@@ -204,7 +217,16 @@ const STILL_OUT_SQL = `
  * process, this does not.
  */
 export async function dropsStillOut(client, actor) {
-  await declareDropperHousehold(client, actor);
-  const { rows: [r] } = await client.query(STILL_OUT_SQL, [UNIT_ACTION.drop, String(actor), UNIT_ACTION.dropUndone]);
-  return r?.n ?? 0;
+  // one count per ORIGINAL household the dropper's drops were recorded under,
+  // each read with exactly that house declared (C) — a newer membership does
+  // not hide an older house's private draft, and no read sees two houses at once
+  const { rows: houses } = await client.query(
+    `SELECT DISTINCT household FROM acts WHERE class = 'holding' AND action = $1 AND actor = $2`, [UNIT_ACTION.drop, String(actor)]);
+  let n = 0;
+  for (const { household } of houses) {
+    await declareHousehold(client, household);
+    const { rows: [r] } = await client.query(STILL_OUT_SQL, [UNIT_ACTION.drop, String(actor), UNIT_ACTION.dropUndone, household]);
+    n += r?.n ?? 0;
+  }
+  return n;
 }

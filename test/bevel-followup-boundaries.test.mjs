@@ -1,3 +1,6 @@
+// bevel-followup-boundaries.test.mjs — Bevel's follow-up FIRST REVIEW probes, carried VERBATIM from
+// /tmp/bevel-wld27-fu-r2-egnmpb4o/test/bevel-followup-boundaries.test.mjs (round 2, 2026-10-13T04:47Z: the fifth, the original-household private claim, red at 487a1acf).
+// Corrections A (the dropped-act reference), B (out read before held), C (the drop's own household).
 // bevel-followup-boundaries.test.mjs — Bevel's follow-up FIRST REVIEW (2026-10-13T04:20Z) probes,
 // carried VERBATIM from /tmp/bevel-wld27-fu-1pdkiln2/test/bevel-followup-boundaries.test.mjs (red at 9896d619: 98 tests, 95 pass, 3 fail).
 // Corrections A (the dropped-act reference) and B (out read before held).
@@ -30,13 +33,13 @@ async function seed() {
 const give = (to, n) => owner(c => c.query(
   "INSERT INTO acts (at,crossing,actor,action,object,class,payload,household) VALUES (now()-interval '1 day',300,'the-town','units:give',$1,'holding',$2,'the-town')",
   [to, JSON.stringify({ units: true, moves: [{ from: null, to, label: LABEL, n }] })]));
-const drop = () => owner(async c => (await c.query(
+const drop = (household = HH) => owner(async c => (await c.query(
   "INSERT INTO acts (at,crossing,actor,action,object,class,payload,household) VALUES (now()-interval '30 minutes',300.1,$1,'units:drop',$1,'holding',$2,$3) RETURNING id::text",
-  [ACTOR, JSON.stringify({ units: true, label: LABEL, moves: [{ from: ACTOR, to: null, label: LABEL, n: 1 }] }), HH])).rows[0].id);
-const claim = (slug, data) => owner(c => c.query(
+  [ACTOR, JSON.stringify({ units: true, label: LABEL, moves: [{ from: ACTOR, to: null, label: LABEL, n: 1 }] }), household])).rows[0].id);
+const claim = (slug, data, household = HH) => owner(c => c.query(
   `INSERT INTO claims (window_id,class,claimant,household,status,body,geometry,bbox,stake,data,slug)
    VALUES (300,'sited',$1,$2,'draft','Synthetic review claim.','{"at":{"x":3,"y":4},"extent":{"w":1,"h":1}}','((2.5,3.5),(3.5,4.5))',0,$3,$4)`,
-  [ACTOR, HH, JSON.stringify(data), slug]));
+  [ACTOR, household, JSON.stringify(data), slug]));
 const rows = () => owner(async c => (await c.query("SELECT id::text,class,action,actor,household,payload FROM acts WHERE action LIKE 'units:%' ORDER BY acts.id")).rows);
 const held = async () => totalOf(foldUnits(await rows()), ACTOR);
 
@@ -85,4 +88,56 @@ test('Bevel F0: tick recovery between unit snapshot and durable-out query cannot
   const actual = await held();
   assert.equal(actual, 24, `current authoritative carry must stay24; actual${actual}, response${JSON.stringify(result)}, error${error?.message}`);
   assert.equal(error?.code, 409, `the additional take must refuse at the now-full cap; caught ${error?.message}, result ${JSON.stringify(result)}`);
+});
+
+test('Bevel B: conservative double-count refuses once, then a fresh retry fits without losing recovery', { skip }, async () => {
+  await seed(); await give(ACTOR, 23); await drop(); await give(CHEST, 5);
+  if (!pool) { const { default: pg } = await import('pg'); pool = new pg.Pool({ connectionString: store.url('office_api') }); }
+  Object.assign(process.env, RECORD_ON); __setPoolForTest(pool);
+  const classes = new Map(Object.entries({
+    mark: { extends: null, dials: {} }, thing: { extends: 'mark', dials: { carry_cap: 24 } },
+    consumable: { extends: 'thing', dials: {} }, chest: { extends: 'thing', dials: { capacity: 30, welcome: true } },
+    candy: { extends: 'consumable', dials: {}, labels: [{ label: LABEL, name: 'Synthetic comets', creator: 'sbx-ana' }] },
+  }));
+  let first = true;
+  const deps = {
+    classes: () => classViewOf({ classes }), readRows: async () => ({ units: await rows(), attachments: [] }),
+    markById: async id => id === CHEST ? { id, by: 'sbx-ana', class: 'chest', capacity: 30 } : null,
+    reachTake: async () => ({}), householdOf: null,
+    dropsOut: async h => {
+      const out = await office(async c => { await c.query('BEGIN READ ONLY'); try { return await dropsStillOut(c, h); } finally { await c.query('COMMIT'); } });
+      if (first) {
+        first = false; assert.equal(out, 1);
+        assert.equal((await office(c => recoverOrphanDrops(c, {}))).restored.length, 1);
+      }
+      return out;
+    },
+    append: (e, opts = {}) => appendActFlipped(null, { ...e, writtenAt: new Date().toISOString() }, opts),
+    stamp: async () => ({ at: null, witnesses: null }), crossing: () => currentCrossing(), household: () => HH,
+  };
+  const key = { handles: new Set([ACTOR]) };
+  await assert.rejects(callUnits('take', { from: CHEST, count: 1 }, key, ACTOR, deps), e => e.code === 409);
+  assert.equal(await held(), 23, 'the unit was recovered but the otherwise-fitting take conservatively wrote nothing');
+  const retry = await callUnits('take', { from: CHEST, count: 1 }, key, ACTOR, deps);
+  assert.equal(await held(), 24);
+  assert.equal(retry.holds.count, 24, 'fresh retry restores useful capacity and truthful success receipt');
+});
+
+test('Bevel F0: original household private claim still excludes refund after the actor changes household', { skip }, async () => {
+  await seed();
+  await owner(c => c.query("UPDATE households SET slug='sbx-old-group', name='Old synthetic group', declared_by='sbx-other', residents=ARRAY['sbx-cy','sbx-other'] WHERE slug='sbx-cy'"));
+  const { actHouseholdFor } = await import('../src/world2-claims.mjs');
+  assert.equal(await office(c => actHouseholdFor(c, { actor: ACTOR })), 'hh:sbx-old-group');
+  await give(ACTOR, 1); const id = await drop('hh:sbx-old-group');
+  await claim(`${ACTOR}/old-group-candy`, { class: 'candy', label: LABEL, dropped: `act:${id}` }, 'hh:sbx-old-group');
+  await owner(async c => {
+    await c.query("UPDATE households SET residents=ARRAY['sbx-other'] WHERE slug='sbx-old-group'");
+    await c.query("INSERT INTO households (slug,ord,name,residents,since,declared_by) VALUES ('sbx-new-group',1,'New synthetic group',ARRAY['sbx-cy'],'2026-08-02','sbx-cy')");
+  });
+  assert.equal(await office(c => actHouseholdFor(c, { actor: ACTOR })), 'hh:sbx-new-group', 'probe really moved household resolution');
+  const out = await office(async c => { await c.query('BEGIN READ ONLY'); try { return await dropsStillOut(c, ACTOR); } finally { await c.query('COMMIT'); } });
+  const r = await office(c => recoverOrphanDrops(c, {}));
+  assert.deepEqual(r.restored, [], `a private claim for the exact act in its original household must not disappear behind current-household RLS (durable out wrongly ${out})`);
+  assert.equal(out, 0, 'a filed old-household unit is not a pending carry reservation');
+  assert.equal(await held(), 0, 'the claimed unit must not also return to the relocated actor');
 });

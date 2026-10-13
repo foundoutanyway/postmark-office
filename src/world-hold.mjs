@@ -12,7 +12,7 @@
 // resident, and children ride their parent's frame." It cannot be built, and
 // the reason is law rather than a gap:
 //
-//   AN ENTITY HAS NO GEOMETRIC PARENT, EVER (LOGOS/kinds.md, restated at
+//   AN ENTITY HAS NO GEOMETRIC PARENT, EVER (LOGOS/lifetimes.md, restated at
 //   dynamic-store.mjs § entities and dynamic-entities.mjs law 2). The entities
 //   table has no parent column and never will. A resident is not a mark, has no
 //   directory in WORLD/marks/, and cannot be a carrier — carriers are marks

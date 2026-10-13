@@ -160,8 +160,12 @@ export async function forecastMists({ engine, skeleton, footprints = [], nowMs =
  * marks reached within the schedule. A world that IS there and cannot be read
  * answers `unavailable` — unknown is never empty.
  */
+let depsForTest = null;
+/** A test's world (the doorstep doors build their own context, so their tests reach it here). */
+export function __setMistsDepsForTest(d) { depsForTest = d; }
+
 export async function householdMistsForecast(handle, { nowMs = Date.now(), deps = null } = {}) {
-  const d = deps ?? await liveDeps();
+  const d = deps ?? depsForTest ?? await liveDeps();
   if (!d.pointed()) return null;
   const block = (body) => ({ serves: "world.mists", args: { handle }, ...body });
   let marks, skeleton, residents;

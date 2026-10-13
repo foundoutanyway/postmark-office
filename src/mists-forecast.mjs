@@ -163,6 +163,52 @@ export function coverage(poly, box, discs = []) {
   return { covered: true };
 }
 
+/**
+ * Is the SEGMENT a→b inside `box` ∪ `discs`, every point of it? Exact: the
+ * box clips it to one parameter interval (Liang–Barsky), each disc to another
+ * (the chord's two roots); the segment is covered when their union covers
+ * [0, 1]. Answers like `coverage`, the witness the middle of the first gap.
+ * (Bevel's second review, C: the door admits a mark with only a width or only
+ * a height — a footprint with no area — and its whole length is asked.)
+ */
+export function segmentCoverage(a, b, box, discs = []) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const spans = [];
+  if (box && box.minX <= box.maxX && box.minY <= box.maxY) {
+    let t0 = 0, t1 = 1, ok = true;
+    for (const [pp, q] of [[-dx, a.x - box.minX], [dx, box.maxX - a.x], [-dy, a.y - box.minY], [dy, box.maxY - a.y]]) {
+      if (pp === 0) { if (q < 0) { ok = false; break; } continue; }
+      const t = q / pp;
+      if (pp < 0) { if (t > t1) { ok = false; break; } if (t > t0) t0 = t; }
+      else { if (t < t0) { ok = false; break; } if (t < t1) t1 = t; }
+    }
+    if (ok && t0 <= t1) spans.push([t0, t1]);
+  }
+  const A = dx * dx + dy * dy;
+  for (const d of discs) {
+    if (!(d.r > 0)) continue;
+    const fx = a.x - d.x, fy = a.y - d.y;
+    if (A === 0) { if (fx * fx + fy * fy <= d.r * d.r) spans.push([0, 1]); continue; }
+    const B = 2 * (fx * dx + fy * dy), C = fx * fx + fy * fy - d.r * d.r, disc = B * B - 4 * A * C;
+    if (disc < 0) continue;
+    const sq = Math.sqrt(disc), t0 = Math.max(0, (-B - sq) / (2 * A)), t1 = Math.min(1, (-B + sq) / (2 * A));
+    if (t0 <= t1) spans.push([t0, t1]);
+  }
+  spans.sort((p, q) => p[0] - q[0]);
+  let at = 0;
+  for (const [t0, t1] of spans) {
+    if (t0 > at + EPS) break;
+    if (t1 > at) at = t1;
+  }
+  if (at >= 1 - EPS) return { covered: true };
+  const next = spans.find(([t0]) => t0 > at + EPS);
+  const t = (at + Math.min(1, next ? next[0] : 1)) / 2;
+  return { covered: false, witness: { x: a.x + t * dx, y: a.y + t * dy } };
+}
+
+/** The ring's area (shoelace). */
+const areaOf = (ring) => Math.abs(ring.reduce((sum, p, i) => { const q = ring[(i + 1) % ring.length]; return sum + p.x * q.y - q.x * p.y; }, 0)) / 2;
+
 /** The engine's clear ground at state `m`, drawn in by `inset` metres: the box and the clearing discs. */
 const clearGround = (m, inset = 0) => {
   const c = m?.clear;
@@ -180,27 +226,33 @@ const clearGround = (m, inset = 0) => {
  * the engine disagrees with the geometry, so the caller says unavailable.
  */
 export function footprintState(eng, m, poly) {
-  // a mark that is one point (or a pair) has no area: the engine answers each point itself
   const pts = ringOf(poly);
-  if (pts.length < 3) {
-    let st = "clear";
-    for (const p of pts) {
-      const h = eng.mistsHere(p, m);
-      if (h.inWall) return "wall";
-      if (Number(m.fringeM) > 0 && h.wallM < m.fringeM) st = "fringe";
-    }
-    return st;
+  if (!pts.length) return "clear";
+  // WHAT SHAPE THE GROUND IS (Bevel's second review, C). One point: the engine
+  // answers it. No area — a line, or a ring folded flat (a box with no width or
+  // no height, which the door admits) — every side is asked along its whole
+  // length. Otherwise the area is asked whole (§ coverage).
+  const distinct = pts.filter((p, i) => pts.findIndex((q) => q.x === p.x && q.y === p.y) === i);
+  if (distinct.length === 1) {
+    const h = eng.mistsHere(distinct[0], m);
+    return h.inWall ? "wall" : Number(m.fringeM) > 0 && h.wallM < m.fringeM ? "fringe" : "clear";
   }
-  const wall = clearGround(m, 0);
-  const w = coverage(poly, wall.box, wall.discs);
+  const span = Math.max(...pts.map((p) => Math.abs(p.x)), ...pts.map((p) => Math.abs(p.y)), 1);
+  const flat = pts.length < 3 || areaOf(pts) <= EPS * span * span;
+  const sides = flat ? pts.map((p, i) => [p, pts[(i + 1) % pts.length]]).filter(([a, b]) => a.x !== b.x || a.y !== b.y) : null;
+  const leaves = (ground) => {
+    if (!flat) return coverage(pts, ground.box, ground.discs);
+    for (const [a, b] of sides) { const c = segmentCoverage(a, b, ground.box, ground.discs); if (!c.covered) return c; }
+    return { covered: true };
+  };
+  const w = leaves(clearGround(m, 0));
   if (!w.covered) {
     if (!eng.mistsHere(w.witness, m).inWall) throw new Error(`the engine does not put (${w.witness.x}, ${w.witness.y}) in the wall`);
     return "wall";
   }
   const F = Number(m.fringeM);
   if (!(F > 0)) return "clear";
-  const deep = clearGround(m, F);
-  const f = coverage(poly, deep.box, deep.discs);
+  const f = leaves(clearGround(m, F));
   if (!f.covered) {
     const h = eng.mistsHere(f.witness, m);
     if (h.inWall || !(h.wallM < F)) throw new Error(`the engine does not put (${f.witness.x}, ${f.witness.y}) in the fringe`);

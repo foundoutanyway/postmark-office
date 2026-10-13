@@ -329,6 +329,56 @@ test("THE HOUSEHOLD, SAID: a registry that should answer and cannot is unavailab
   assert.match((await householdMistsForecast("mira", { nowMs: at(300), deps: deps({ ringOf: async (m) => { if (m.id === "ola/east-mill") throw new Error("dial unread"); return groundRingOf(m); } }) })).unavailable, /the ground of ola\/east-mill could not be read \(dial unread\)/);
 });
 
+// ── Bevel's second review (2026-10-13T06:18Z): footprints with no area ─────
+// The two tests below this note are carried VERBATIM from
+// /tmp/bevel-wld38-r2-v6ackvoc/test/mists-forecast.test.mjs (red at 6ee3f335).
+
+test("Bevel: a line segment with clear endpoints can cross a wall gap", { skip }, () => {
+  const mists = { border_m: { minX: 10, minY: -100, maxX: 100, maxY: 100 }, fringe_m: 0,
+    clearings_m: [{ x: 0, y: 0, r_m: 10 }], schedule: [{ crossing: 300, front_m: 0 }, { crossing: 301, front_m: 0 }] };
+  const mark = { at: { x: 10, y: 1.5 }, extent: { w: 2, h: 0 } };
+  const state = eng.mistsAt(300, mists);
+  assert.equal(eng.mistsHere({ x: 9, y: 1.5 }, state).inWall, false);
+  assert.equal(eng.mistsHere({ x: 11, y: 1.5 }, state).inWall, false);
+  assert.equal(eng.mistsHere({ x: 9.99, y: 1.5 }, state).inWall, true);
+  assert.equal(footprintState(eng, state, groundRingOf(mark)), "wall", "the full admitted line, not only endpoints, must be checked");
+});
+
+test("Bevel: an admitted zero-width sited mark still warns about the wall", { skip }, async () => {
+  const mark = { slug: "line-in-wall", kind: "sited", by: "mira", at: { x: 900, y: 160 }, extent: { w: 0, h: 10 }, body: "a thin vertical mark" };
+  assert.equal(eng.mistsHere(mark.at, eng.mistsAt(307, MISTS)).inWall, true);
+  const out = await leave(mark, { mistsCrossing: 307 });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(written("mira/line-in-wall"), 1, "the real door admits and writes this footprint");
+  assert.equal(out.mists?.wall?.now, true, `admitted mark in wall must warn, not silently clear: ${JSON.stringify(out)}`);
+});
+
+const { segmentCoverage } = await import("../src/mists-forecast.mjs");
+
+test("LINES · a line wholly inside the clear ground is clear; one touching a clearing's rim from inside is clear; one leaving the box mid-way is walled at its true crossing", { skip }, () => {
+  const m300 = eng.mistsAt(300, MISTS);
+  assert.equal(footprintState(eng, m300, groundRingOf(box("mira/a-fence", "mira", 0, 0, 200, 0))), "clear", "a fence across the middle of town");
+  // a chord of the glade: its ends lie ON the rim (clear: the engine counts the rim), its middle deep inside
+  const chord = [{ x: -950, y: -120 }, { x: -950, y: 120 }];
+  const g = eng.mistsAt(300, MISTS).clearings[0];
+  assert.equal(Math.hypot(chord[0].x - g.x, chord[0].y - g.y), g.r);
+  assert.equal(eng.mistsHere(chord[0], m300).inWall, false, "the rim is clear");
+  // a fence from x 600 to 720 on the east: the same arithmetic as the east shed's edge
+  assert.deepEqual(reachOf(eng, MISTS, groundRingOf(box("mira/east-fence", "mira", 660, 0, 120, 0)), 300), { fringe: 304, wall: 306 });
+  assert.deepEqual(reachOf(eng, MISTS, groundRingOf(box("mira/north-post", "mira", 0, 0, 0, 1900)), 300), { fringe: 300, wall: 302 }, "a zero-width mark reaching to y = ±950: in the fringe at once (50 m from the side); at 301 the side stands AT 950 (the edge is clear), and at 302 it is past it");
+});
+
+test("LINES · the segment test is exact: the slit's witness is the engine's wall; a segment tangent to a disc and otherwise in the box is covered", { skip }, () => {
+  const mists = { border_m: { minX: 10, minY: -100, maxX: 100, maxY: 100 }, fringe_m: 0, clearings_m: [{ id: "c", x: 0, y: 0, r_m: 10 }],
+    schedule: [{ crossing: 300, front_m: 0 }, { crossing: 301, front_m: 0 }] };
+  const m = eng.mistsAt(300, mists);
+  const c = segmentCoverage({ x: 9, y: 1.5 }, { x: 11, y: 1.5 }, m.clear, m.clearings);
+  assert.equal(c.covered, false);
+  assert.equal(eng.mistsHere(c.witness, m).inWall, true, `witness ${JSON.stringify(c.witness)}`);
+  assert.equal(segmentCoverage({ x: 10, y: 0 }, { x: 50, y: 0 }, m.clear, m.clearings).covered, true, "from the disc's rim point (10,0), which is also the box's edge, into the box");
+  assert.equal(segmentCoverage({ x: -5, y: 0 }, { x: 5, y: 0 }, m.clear, m.clearings).covered, true, "inside the disc");
+});
+
 // LAST in the file: it changes the bottled world's skeleton
 test("PLACEMENT · a season the engine cannot read reaches the RECEIPT as mists-forecast-unavailable, and the mark is still written", { skip }, async () => {
   const { border_m: _b, ...noBorder } = MISTS;

@@ -39,7 +39,19 @@
 
 import { __setPoolForTest as __setActsPool } from "../src/world2-acts.mjs";
 import { __setPoolForTest as __setPenPool } from "../src/world2-pen.mjs";
-import { __clearHouseCache } from "../src/household-deriver.mjs";
+import { __clearHouseCache, resolveHouse } from "../src/household-deriver.mjs";
+import { registryFromRows, pinsFromRows } from "../src/registry-rows.mjs";
+
+/** The `identities` view's `handle, household` over seeded registry rows, by handle. */
+function identitiesOf(households, pins) {
+  const rows = { households, pins, meta: [] };
+  const registry = registryFromRows(rows), pinned = pinsFromRows(rows);
+  const handles = new Set([...households.flatMap((h) => h.residents ?? []), ...pins.map((p) => p.handle)]);
+  return [...handles].sort().map((handle) => {
+    const { slug } = resolveHouse(handle, registry, pinned);
+    return { handle, household: slug ? `hh:${slug}` : `solo:${handle}` };
+  });
+}
 
 /** The env that says "this office IS pointed at the record". */
 export const RECORD_ON = Object.freeze({ WORLD2_PG: "1", WORLD2_PG_URL: "postgres://acts-pen-stub/none" });
@@ -286,6 +298,14 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
     // window. No clearing runs against a stub, so it is granted at once.
     if (/^SELECT pg_advisory_xact_lock_shared\(/i.test(q)) return { rows: [{}], rowCount: 1 };
 
+    // `identities`, the registry's VIEW (055, POS-350), over the same seeded
+    // rows: every listed resident and every pinned handle, housed by the office's
+    // one deriver (resolveHouse), which test/identities-from-the-registry.test.mjs
+    // holds equal to the view on a real Postgres.
+    if (/^SELECT handle, household FROM identities/i.test(q)) {
+      const rows = identitiesOf(households, pins);
+      return { rows, rowCount: rows.length };
+    }
     // The registry, as `registry-store.mjs`'s three fixed SELECTs ask for it.
     if (/FROM households/i.test(q)) return { rows: households.map((r) => ({ ...r })), rowCount: households.length };
     if (/FROM household_pins/i.test(q)) return { rows: pins.map((r) => ({ ...r })), rowCount: pins.length };

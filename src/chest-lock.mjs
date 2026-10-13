@@ -29,12 +29,22 @@ export function thingsIn(attachmentRows, chest) {
   return n;
 }
 
-/** Inside a transaction: take the chest's lock, then read how full it is. */
+// THE CHEST'S OWN LAST WORD on the record: its newest leave or withdraw act. A
+// chest whose last word is a withdrawal is leaving the world — it takes
+// nothing more, whatever a writer planned before that decision (F1). `acts`
+// has no row-level security, so every writer's guard reads the same answer.
+const LAST_WORD_SQL = `
+  SELECT action FROM acts
+   WHERE class = 'mark' AND object = $1 AND action IN ('leave-mark', 'withdraw')
+   ORDER BY id DESC LIMIT 1`;
+
+/** Inside a transaction: take the chest's lock, then read how full it is and whether it is being withdrawn. */
 export async function lockedChestUse(client, chest) {
   await client.query(CHEST_LOCK_SQL, [chestLockKey(chest)]);
   const units = (await pgHoldingRows(client, {})).filter(isUnitRow);
   const { rows: held } = await pgAttachmentsFor(client);
-  return { units: totalOf(foldUnits(units), chest), things: thingsIn(held, chest) };
+  const word = (await client.query(LAST_WORD_SQL, [String(chest)])).rows[0]?.action ?? null;
+  return { units: totalOf(foldUnits(units), chest), things: thingsIn(held, chest), withdrawn: word === "withdraw" };
 }
 
 const bounce = (code, defect, hint, extra = {}) => {
@@ -51,9 +61,30 @@ const bounce = (code, defect, hint, extra = {}) => {
  */
 export const chestRoomGuard = ({ chest, capacity, adding }) => async (client) => {
   const used = await lockedChestUse(client, chest);
+  if (used.withdrawn)
+    throw bounce(409, `${chest} was withdrawn`, "its maker took it off the world before this reached it; it takes nothing more. Nothing was recorded.", { room: 0 });
   const total = used.units + used.things;
   if (total + adding > capacity)
     throw bounce(409, `${chest} has room for ${Math.max(capacity - total, 0)}, not ${adding}`,
       `its capacity is ${capacity} and it holds ${total} now (units of every label and whole things); another hand reached it first. Nothing was recorded.`,
       { room: Math.max(capacity - total, 0) });
+};
+
+/**
+ * THE PEN GUARD FOR WITHDRAWING A CHEST (Wright's independent review, F1): a
+ * chest that holds ANYTHING — counted units of any label, or a whole thing —
+ * is not withdrawn, or what is inside would be stranded in a mark that is
+ * gone. Judged under the chest's lock inside the withdrawal's own transaction,
+ * so a give, refill, thing-put or stock either landed first (and is counted
+ * here) or waits and then finds the chest withdrawn (chestRoomGuard). Refuses —
+ * rolling back, writing nothing — with the contents named.
+ */
+export const chestEmptyGuard = ({ chest }) => async (client) => {
+  const used = await lockedChestUse(client, chest);
+  if (used.units + used.things > 0) {
+    const parts = [used.units ? `${used.units} unit${used.units === 1 ? "" : "s"}` : null, used.things ? `${used.things} whole thing${used.things === 1 ? "" : "s"}` : null].filter(Boolean);
+    throw bounce(409, `${chest} still holds ${parts.join(" and ")}`,
+      "a chest is withdrawn only when it is empty — take out what is inside first (units by a take, a whole thing by a take aimed at the chest). Nothing was recorded.",
+      { holds: { units: used.units, things: used.things } });
+  }
 };

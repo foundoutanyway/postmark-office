@@ -370,7 +370,7 @@ const ROW_COLUMNS = "crossing, actor, action, object, at_anchor, at_dx, at_dy, w
  * more — and `actId` is the record's own id, which is the receipt a caller
  * names its write by.
  */
-export async function appendJournal(db, entry = {}) {
+export async function appendJournal(db, entry = {}, { guard = null } = {}) {
   const row = normalizeRow(entry);
 
   // World 2.0 is the record. A mark-class declaration also takes its place on
@@ -409,8 +409,11 @@ export async function appendJournal(db, entry = {}) {
       // dying at cutover". The closure falsifier pairs an act to its claim by
       // the claim's own slug and claimant, never by that column.
       claimFn: (client, actId, household) => claimTxFromJournal(client, row, null, { household, actId }),
+      // `guard` (WLD-27): a check that must hold inside this write's own
+      // transaction, as appendActFlipped's — a door's guard holds on either arm
+      guard,
     }
-    : {});   // throws PenUnreachableError — the door bounces, nothing was written
+    : { guard });   // throws PenUnreachableError — the door bounces, nothing was written
 
   // `record` is what the door's `log:` field says, decided HERE because this is
   // the line that knows which table received the row. A private draft has no

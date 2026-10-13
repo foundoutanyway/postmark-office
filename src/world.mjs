@@ -3812,12 +3812,20 @@ export async function journalWithdraw({ by, slug, household, cause = null }, { c
     // The unflipped arm was `appendJournal(db, entry)` — a sqlite row written
     // here and a Postgres copy queued behind it. The sqlite row is gone, so
     // that call awaits the record and throws exactly as the flipped one does.
+    //
+    // A CHEST IS WITHDRAWN ONLY EMPTY (WLD-27, Wright's independent review F1):
+    // judged under the chest's own lock inside this write's transaction
+    // (chest-lock.mjs § chestEmptyGuard), so no give or stock can slip contents
+    // in behind the decision. Any other mark withdraws exactly as before.
+    const isChest = (live.find((m) => m.id === id) ?? canon.marks.find((m) => m.id === id))?.class === "chest";
+    const guard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
     let row;
     try {
       row = laneFlipped("mark")
-        ? await appendActFlipped(null, entry)
-        : await appendJournal(null, entry);
+        ? await appendActFlipped(null, entry, guard ? { guard } : {})
+        : await appendJournal(null, entry, guard ? { guard } : {});
     } catch (err) {
+      if (err?.defect && err?.code) throw err;           // the chest guard refused, under its lock — nothing was written
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
           "this door's pen is the office's record; when it cannot be reached the door refuses rather than writing anywhere else — your mark is exactly as it was, and the withdrawal is safe to make again");

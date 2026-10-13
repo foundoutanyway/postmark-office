@@ -475,7 +475,7 @@ export function backedRow(row, { mark = null, belongs = () => false } = {}) {
   };
 }
 
-async function runExec(payload) {
+export async function runExec(payload) {
   const exec = join(HERE, "world-stake-exec.mjs");
   const env = { ...process.env, TOWN_CLONE };
   let out;

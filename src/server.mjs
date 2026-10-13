@@ -1646,6 +1646,12 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       if (path === "/world/walkers") {
         return worldWalkers(WORLD_CLONE, null, { roll: townRoll() }).then((r) => j(res, 200, r)).catch((e) => bounceFault(res, "the world door tripped", e));
       }
+      // GET /world/chests — every chest on the map with its live count (WLD-27),
+      // keyless like the walkers: a chest stands on the world, and the map draws
+      // its label and count from this read, never from a stored number.
+      if (path === "/world/chests") {
+        return import("./world-units.mjs").then((m) => m.chestsRead()).then((r) => j(res, 200, r)).catch((e) => bounceFault(res, "the world door tripped", e));
+      }
       // GET /world/present — who is standing where (Stage 2, WORLD_PRESENCE).
       // With x/y: who is near that point, nearest first. Bare: everyone, with
       // their places — world_walkers' successor shape. Keyless like the rest of
@@ -2222,7 +2228,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       // key where its neighbours do not, and that is not a reason to hide it —
       // this list says which doors EXIST, and a 401 that names itself is an
       // answer. It is a lie only when the door is not there.
-      return bounce(res, 404, "no such door", `GET /town /residents[?limit=&offset=&since=&office=] /residents/{h} /mail/{h} /letters[?filters] /letters/{id} /doorstep/{h} /metrics/mail /repo/log[?path=&author=&since=&until=&limit=] /regions /regions/{slug} /homes/{h} /stamps /stamps/{h} /quests/{h} /world/settlements /world/store /world/dynamic /world/present /world/walkers /world/holdings /world/graph[?kinds=&types=] /world/graph.gexf[?view=static]${apexEnabled() ? " /world/apex?x=&y=" : ""} /votes /votes/{topic} /bulletin /fund/intake /search?q= /calendar /calendar/{host}/{slug} /posts?class=[&limit=&offset=] /posts/{author}/{slug} /world/find?q=`);
+      return bounce(res, 404, "no such door", `GET /town /residents[?limit=&offset=&since=&office=] /residents/{h} /mail/{h} /letters[?filters] /letters/{id} /doorstep/{h} /metrics/mail /repo/log[?path=&author=&since=&until=&limit=] /regions /regions/{slug} /homes/{h} /stamps /stamps/{h} /quests/{h} /world/settlements /world/store /world/dynamic /world/present /world/walkers /world/chests /world/holdings /world/graph[?kinds=&types=] /world/graph.gexf[?view=static]${apexEnabled() ? " /world/apex?x=&y=" : ""} /votes /votes/{topic} /bulletin /fund/intake /search?q= /calendar /calendar/{host}/{slug} /posts?class=[&limit=&offset=] /posts/{author}/{slug} /world/find?q=`);
     }
 
     // Every act that reaches the write tier is counted by the channel it

@@ -407,7 +407,11 @@ export function actsInsert(row, household) {
  * the private arm ride THIS queue and THIS transaction, so a compose and its
  * own withdrawal cannot overtake each other in either era.
  */
-export async function penWrite(row, { claimFn = null, household = null, act = true, env = process.env } = {}) {
+// `guard(client)` (WLD-27, chest-lock.mjs): a check that must hold INSIDE this
+// write's transaction — it takes its own lock and reads there, and a refusal it
+// throws (a door bounce, carrying `defect`) rolls the transaction back and
+// reaches the door as that refusal, never as "the pen is unreachable".
+export async function penWrite(row, { claimFn = null, household = null, act = true, guard = null, env = process.env } = {}) {
   try {
     // A resolver, resolved BEFORE the transaction opens — same reason
     // `shadowWrite` does it there: officeWrite declares `app.household` at
@@ -415,6 +419,7 @@ export async function penWrite(row, { claimFn = null, household = null, act = tr
     // connection while this one holds the transaction open.
     const hh = typeof household === "function" ? await household() : household;
     return await officeWrite(async (client) => {
+      if (guard) await guard(client);
       const actId = act ? await insertAct(client, row, null) : null;
       if (claimFn) await claimFn(client, actId, hh);
       state.written += 1;
@@ -422,6 +427,7 @@ export async function penWrite(row, { claimFn = null, household = null, act = tr
     }, { household: hh, env });
   } catch (err) {
     if (err?.name === "LateCrossingError") throw err; // the pen REFUSED, it was not unreachable — the door says which
+    if (guard && err?.defect) throw err;              // the guard refused, under its lock — a door's own answer
     state.refused += 1;
     state.lastError = String(err?.message ?? err);
     console.error(`[world2-pen] FLIPPED WRITE REFUSED (${row.actor} ${row.action}): ${state.lastError}`);

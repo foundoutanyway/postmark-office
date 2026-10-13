@@ -750,6 +750,11 @@ const DISPATCH = {
   give: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", args, key) },
   drop: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", args, key) },
   take: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", args, key) },
+  // COUNTED UNITS (WLD-27): consume and refill are the hold lane's two new
+  // faces — one held consumable used up, and a candy label's creator topping a
+  // chest up. Same tool, same queue; the face rides as `act`.
+  consume: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", { ...args, act: "consume" }, key) },
+  refill: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", { ...args, act: "refill" }, key) },
   // ── the crossings ─────────────────────────────────────────────────────────
   //
   // ⚠ THE OLD COMMENT HERE WAS FALSE, AND SAID SO CONFIDENTLY. It read:

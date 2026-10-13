@@ -79,7 +79,7 @@ test("the wall helper: a point in town is clear, a point past the border is behi
 // in test/mists-forecast.test.mjs; this pin keeps the ORDER.
 test("THE PLACEMENT DOOR forecasts the Mists for the mark's ground after every other judgment and before either pen writes; it vetoes nothing", () => {
   const door = SOURCE.slice(SOURCE.indexOf("export async function leaveMarkViaOffice"), SOURCE.indexOf("export async function withdrawMarkViaOffice") > 0 ? SOURCE.indexOf("export async function withdrawMarkViaOffice") : undefined);
-  const asked = door.indexOf("mistsWarning = await placementForecast(");
+  const asked = door.indexOf(": await placementForecast({ worldClone,");
   assert.ok(asked > 0, "the placement door asks for the forecast");
   assert.ok(asked > door.indexOf("RING_CLAIM_SENTENCE") && asked > door.indexOf("const clean = {"), "after every other judgment of the mark");
   assert.ok(asked < door.indexOf("await journalLeaveMark(clean") && asked < door.indexOf("draftWrite("), "and before either pen writes");

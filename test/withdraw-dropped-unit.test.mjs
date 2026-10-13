@@ -340,8 +340,9 @@ test("D · RACE WITH PUBLICATION — the candle decides: a clearing that holds i
   await clearing.query("BEGIN"); await clearing.query(CLEARING_TAKES_THE_CANDLE);
   await clearing.query("UPDATE claims SET status = 'locked', decided_at = now() WHERE slug = $1 AND status = 'pending'", [a.mark]);
   await clearing.query(`INSERT INTO marks (id, slug, kind, owner, household, body, geometry, bbox, status, locked_window) SELECT id, slug, 'sited', claimant, household, body, geometry, bbox, 'standing', window_id FROM claims WHERE slug = $1`, [a.mark]);
-  const w1 = withdraw(a.mark).then((x) => ({ x }), (e) => ({ e }));
-  await until(async () => (await advisoryWaiters()) >= 1, "the withdrawal to wait on the candle");
+  let done1 = false;
+  const w1 = withdraw(a.mark).then((x) => ({ x }), (e) => ({ e })).finally(() => { done1 = true; });
+  await until(async () => done1 || (await advisoryWaiters()) >= 1, "the withdrawal to wait on the candle");
   await clearing.query("COMMIT"); await clearing.end();
   const one = await w1;
   assert.equal(one.e?.code, 409, JSON.stringify(one.x ?? one.e?.defect));
@@ -363,7 +364,8 @@ test("D · RACE WITH PUBLICATION — the candle decides: a clearing that holds i
     await later.query("COMMIT"); await later.end();
     return rowCount;
   })();
-  await until(async () => (await advisoryWaiters()) >= 1, "the clearing to wait on the candle");
+  let cleared = false; clear.finally(() => { cleared = true; });
+  await until(async () => cleared || (await advisoryWaiters()) >= 1, "the clearing to wait on the candle");
   go.open();
   const two = await w2;
   assert.equal(two.unit_returned, 1);

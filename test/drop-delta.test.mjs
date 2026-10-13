@@ -133,8 +133,9 @@ test("C · A BUSY DROP IS NEVER LOST BEHIND THE CURSOR: a set-down still being w
   });
   assert.ok(BigInt(later) > BigInt(n));
   await undoAll([later]);
-  const t = tick();
-  for (let i = 0; i < 300 && (await q1("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"))[0].n < 1; i++) await new Promise((r) => setTimeout(r, 20));
+  let ticked = false;
+  const t = tick().finally(() => { ticked = true; });
+  for (let i = 0; i < 300 && !ticked && (await q1("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"))[0].n < 1; i++) await new Promise((r) => setTimeout(r, 20));
   await busy.query("COMMIT");
   const r = await t;
   assert.deepEqual(r.restored.map((x) => x.act), [n], "the busy drop was waited for, read, and returned");

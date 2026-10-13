@@ -285,9 +285,11 @@ test("A · INTERLEAVING 1 — a stake that passed its check BEFORE the exit comm
   const s = heldStake(m.mark, "sbx-dee", 3);
   await s.checked;
   // the exit runs: its first holder read sees nothing, its act commits, then its barrier waits on the stake's lock
-  const exit = takeBack(m.record, await unitDeps(m.record));
+  let settled = false;
+  const exit = takeBack(m.record, await unitDeps(m.record)).finally(() => { settled = true; });
   await until(async () => (await unitActs()).some((a) => a.action === UNIT_ACTION.takeBack && a.object === m.mark), "the exit act to commit");
-  await until(async () => (await advisoryWaiters()) >= 1, "the exit's barrier to wait on the stake's lock");
+  // the exit either waits at its barrier on the stake's lock, or (with no boundary) runs on past it
+  await until(async () => settled || (await advisoryWaiters()) >= 1, "the exit to reach its late pass");
   assert.equal(position(m.mark, "sbx-dee"), 0, "the stake has not landed yet");
   s.release();
   const staked = await s.done;
@@ -363,8 +365,9 @@ for (const pen of ["unflipped", "flipped"]) {
     const mark = await plainMark(`racing-${pen}`);
     const s = heldStake(mark, "sbx-bo", 2);
     await s.checked;
-    const w = withdrawMarkViaOffice(world, { mark }, KEY_ANA).then((x) => ({ x }), (e) => ({ e }));
-    await until(async () => (await advisoryWaiters()) >= 1, "the withdrawal to wait on the mark's lock");
+    let settled = false;
+    const w = withdrawMarkViaOffice(world, { mark }, KEY_ANA).then((x) => ({ x }), (e) => ({ e })).finally(() => { settled = true; });
+    await until(async () => settled || (await advisoryWaiters()) >= 1, "the withdrawal to wait on the mark's lock (or, unguarded, to finish)");
     s.release(); await s.done;
     const { x, e } = await w;
     assert.equal(x, undefined, JSON.stringify(x));
@@ -385,8 +388,9 @@ for (const pen of ["unflipped", "flipped"]) {
     const w = journalWithdraw({ by: "sbx-ana", slug: mark.split("/")[1], household: "hh:sbx-ana", guard });
     await read.p;                                         // the withdrawal holds the mark's lock
     const before = ledger();
-    const stake = execStake("sbx-bo", mark, 2);           // the real exec, under the flock, waits on the mark's lock
-    await until(async () => (await advisoryWaiters()) >= 1, "the stake to wait on the mark's lock");
+    let staked = false;
+    const stake = execStake("sbx-bo", mark, 2).finally(() => { staked = true; }); // the real exec, under the flock, waits on the mark's lock
+    await until(async () => staked || (await advisoryWaiters()) >= 1, "the stake to wait on the mark's lock (or, unchecked, to land)");
     go.open();
     assert.equal((await w).withdrawn, true);
     const x = await stake;
@@ -468,8 +472,9 @@ test("B · CLEANUP RETRY of a failed withdrawal whose late return failed: the re
   await s.checked;
   let failDee = true;
   const deps = await unitDeps(m.record, { unstake: async (r) => (r.handle === "sbx-dee" && failDee ? (failDee = false, { error: "bounce", defect: "synthetic: the ledger could not be written" }) : LIVE.unstake(r)) });
-  const first = takeBack(m.record, deps);
-  await until(async () => (await advisoryWaiters()) >= 1, "the barrier");
+  let settled = false;
+  const first = takeBack(m.record, deps).finally(() => { settled = true; });
+  await until(async () => settled || (await advisoryWaiters()) >= 1, "the exit to reach its late pass");
   s.release(); await s.done;
   const one = await first;
   assert.equal(one.withdrawn.withdrawn, false, "the late return failed, so the mark has not left");

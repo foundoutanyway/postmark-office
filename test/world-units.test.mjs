@@ -193,7 +193,10 @@ for (const route of ["take-back", "consume-in-place"]) {
     assert.equal(w.ledger.length, 3, "one line per actual staker");
     assert.ok(w.ledger.every((l) => l.includes(`stake:world-mark/${UNIT_MARK}`)));
     assert.equal(w.withdrawn.length, 1);
-    assert.deepEqual(w.withdrawn[0], { by: "sbx-bo", slug: "test-comets-41", household: "hh:sbx-bo" });
+    const { cause, ...asked } = w.withdrawn[0];
+    assert.deepEqual(asked, { by: "sbx-bo", slug: "test-comets-41", household: "hh:sbx-bo" });
+    // the record says whose act made the author's mark leave (not the author)
+    assert.deepEqual([cause.exit, cause.by, typeof cause.act], [route, "sbx-cy", "number"]);
     const r2 = await callUnits(route, { thing: UNIT_MARK }, KEY, "sbx-cy", w.deps);
     assert.equal(r2.duplicate, true);
     assert.equal(w.ledger.length, 3, "no second return");

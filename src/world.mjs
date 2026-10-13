@@ -3762,7 +3762,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
 }
 
 /** withdraw, as one later entry. The terminal supersession (edit-law § withdraw) — nothing is deleted, a row says it ended. */
-export async function journalWithdraw({ by, slug, household }, { crossing = currentCrossing() } = {}) {
+export async function journalWithdraw({ by, slug, household, cause = null }, { crossing = currentCrossing() } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${by}/${slug}`;
   const canon = canonForGuards();
@@ -3793,7 +3793,10 @@ export async function journalWithdraw({ by, slug, household }, { crossing = curr
     const entry = {
       crossing, actor: by, household, action: ACTION_WITHDRAW,
       object: id, at, witnesses, cls: CLASS_MARK,
-      payload: { by, slug, was_published: wasPublished },
+      // `cause` (WLD-27): a withdrawal the door files because a dropped unit's mark
+      // was taken back or consumed — the author's mark leaves, and the record says
+      // whose act made it leave, so the author is not read as having withdrawn it.
+      payload: { by, slug, was_published: wasPublished, ...(cause ? { cause } : {}) },
       effect: wasPublished
         ? "your sketchbook lets it go now; canon lets it go at the next crossing — the settlement unpublishes it, and its whole life stays in the log"
         : "the draft is gone — it never crossed, so there is nothing to unpublish; its life stays in the log",

@@ -49,6 +49,8 @@ const reserved = new Map();
 export const reservedFor = (handle) => reserved.get(String(handle)) ?? 0;
 const reserve = (handle, n) => reserved.set(String(handle), reservedFor(handle) + n);
 const release = (handle, n) => { const left = reservedFor(handle) - n; if (left > 0) reserved.set(String(handle), left); else reserved.delete(String(handle)); };
+/** The id of the act that recorded this mark's exit, read back for a retry. */
+const exitActOf = (units, id) => units.find((r) => (r.action === UNIT_ACTION.takeBack || r.action === UNIT_ACTION.consumeInPlace) && String(r.object) === id)?.id ?? null;
 /** Things held whole by this resident (a chest's contents are the chest's, not its carrier's). */
 const thingsCarried = (attachments, handle) => holdingsOf(attachments, handle).length;
 
@@ -396,7 +398,8 @@ async function markExit(route, args, key, actor, deps, view, cap) {
   let withdrawn = withdrawnBefore ? { withdrawn: true, already: true } : null;
   if (!withdrawnBefore) {
     try {
-      withdrawn = await deps.withdraw({ by, slug, household });
+      withdrawn = await deps.withdraw({ by, slug, household,
+        cause: { exit: route, by: actor, act: acted.seq ?? exitActOf(acted.units, id) } });
       if (withdrawn?.withdrawn !== false)
         await holdTurn(() => writeUnits(deps, key, actor, { action: UNIT_ACTION.exitWithdrawn, object: id, moves: [], payload: { mark: id, by } }));
     } catch (e) { withdrawn = { withdrawn: false, why: String(e?.defect ?? e?.message ?? e).slice(0, 200), retry: "ask again: the unit is not gained and nothing is returned a second time; only the withdrawal is tried again" }; }

@@ -76,7 +76,7 @@ test("THE PLACEMENT DOOR asks the wall for the ground a sited or parcel mark add
   const guard = door.indexOf("await mistsGroundCheck(worldClone,");
   assert.ok(guard > 0, "the placement door asks the wall");
   assert.ok(guard > door.indexOf("RING_CLAIM_SENTENCE") && guard > door.indexOf("const clean = {"), "after every other judgment of the mark");
-  assert.ok(guard < door.indexOf("await journalLeaveMark(clean)") && guard < door.indexOf("draftWrite("), "and before either pen writes");
+  assert.ok(guard < door.indexOf("await journalLeaveMark(clean") && guard < door.indexOf("draftWrite("), "and before either pen writes");
   assert.ok(door.includes("if (seen?.unreadable) throw bounce(503, MISTS_UNREADABLE,"), "a wall it cannot read is a 503, never a pass");
   assert.match(door, /this ground stands behind the wall of the Mists/);
   assert.match(door, /marks already standing stay as they are/);

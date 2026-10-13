@@ -3401,7 +3401,7 @@ export async function markStandsOnOwnGround(clean, canon = null) {
  * the same fields the exec answers with — `branch` and `commit` become `seq`,
  * because under the flag the receipt for a write is its line in the log.
  */
-async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
+async function journalLeaveMark(clean, { crossing = currentCrossing(), guard = null } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${clean.by}/${clean.slug}`;
   const canon = canonForGuards();
@@ -3687,8 +3687,8 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     let row;
     try {
       row = laneFlipped("mark")
-        ? await appendActFlipped(null, entry)
-        : await appendJournal(null, entry);
+        ? await appendActFlipped(null, entry, guard ? { guard } : {})
+        : await appendJournal(null, entry, guard ? { guard } : {});
     } catch (err) {
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
@@ -3812,12 +3812,20 @@ export async function journalWithdraw({ by, slug, household, cause = null }, { c
     // The unflipped arm was `appendJournal(db, entry)` — a sqlite row written
     // here and a Postgres copy queued behind it. The sqlite row is gone, so
     // that call awaits the record and throws exactly as the flipped one does.
+    //
+    // A CHEST IS WITHDRAWN ONLY EMPTY (WLD-27, Wright's independent review F1):
+    // judged under the chest's own lock inside this write's transaction
+    // (chest-lock.mjs § chestEmptyGuard), so no give or stock can slip contents
+    // in behind the decision. Any other mark withdraws exactly as before.
+    const isChest = (live.find((m) => m.id === id) ?? canon.marks.find((m) => m.id === id))?.class === "chest";
+    const guard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
     let row;
     try {
       row = laneFlipped("mark")
-        ? await appendActFlipped(null, entry)
-        : await appendJournal(null, entry);
+        ? await appendActFlipped(null, entry, guard ? { guard } : {})
+        : await appendJournal(null, entry, guard ? { guard } : {});
     } catch (err) {
+      if (err?.defect && err?.code) throw err;           // the chest guard refused, under its lock — nothing was written
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
           "this door's pen is the office's record; when it cannot be reached the door refuses rather than writing anywhere else — your mark is exactly as it was, and the withdrawal is safe to make again");
@@ -4212,7 +4220,12 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // POS-5 slice 1. The journal door throws its bounces directly (they are the
     // same grammar the exec answers with, one process earlier), so only the
     // machinery tripping lands in the catch.
-    try { result = await journalLeaveMark(clean); }
+    // A DROPPED UNIT'S MARK is filed under its drop's own lock, and not at all
+    // once that drop was undone (WLD-27 F0, drop-recovery.mjs § dropLiveGuard):
+    // the unit is in hands or on the ground, never both.
+    const dropGuard = dropUnit != null && payload.dropped === `act:${dropUnit.actId}`
+      ? (await import("./drop-recovery.mjs")).dropLiveGuard({ actId: dropUnit.actId }) : null;
+    try { result = await journalLeaveMark(clean, dropGuard ? { guard: dropGuard } : {}); }
     catch (e) { if (e?.code) throw e; throw bounce(500, "the mark pass tripped", String(e?.message ?? e).slice(0, 300)); }
   } else {
     try {

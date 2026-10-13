@@ -292,3 +292,162 @@ test("D · the withdrawal's cause is always the exit itself: the first try names
   assert.equal(totalOf(r.units(), "sbx-cy"), 1);
   assert.equal(r.ledger.length, 2, "two returns, ever");
 });
+
+// ── F2 (Wright's independent review, AUTHORITY 2026-10-13T03:01:29Z): refill
+// needs the chest's MAKER who is also the CREATOR of the label used. Authorship
+// is not possession or household; giving into a chest stays open. ───────────
+
+const BO_LABEL = { label: "test-drops", name: "Test Drops", creator: "sbx-bo" };
+const twoLabels = () => classViewOf({ classes: new Map([...CLASSES, ["candy", { ...CLASSES.get("candy"), labels: [...CLASSES.get("candy").labels, BO_LABEL] }]]) });
+const F2_CHEST = "sbx-ana/f2-bowl";
+const f2Rig = (extra = {}) => {
+  const r = rig({ marks: { [F2_CHEST]: { id: F2_CHEST, by: "sbx-ana", class: "chest", capacity: 30 } } });
+  r.deps.classes = twoLabels;
+  r.deps.householdOf = (h) => ({ key: "hh:ana-and-bo", house: "hh:ana-and-bo" });     // Bo shares Ana's house
+  Object.assign(r.deps, extra);
+  return r;
+};
+
+test("F2 · Bo cannot refill Ana's chest — empty, partly full, full (a would-be no-op), carried by Bo, same household, with a label of his own — and nothing is recorded", async () => {
+  for (const [what, setup] of [
+    ["empty", () => {}],
+    ["partly full of Ana's", (r) => r.seedUnits(F2_CHEST, 10)],
+    ["holding Bo's own label", (r) => r.seedUnits(F2_CHEST, 4, "test-drops")],
+    ["full", (r) => r.seedUnits(F2_CHEST, 30)],
+    ["carried by Bo", (r) => r.hold("sbx-bo", F2_CHEST)],
+  ]) {
+    const r = f2Rig(); setup(r);
+    let reached = 0; r.deps.reachTake = async () => { reached += 1; };
+    const before = r.acts.length;
+    await assert.rejects(callUnits("refill", { chest: F2_CHEST }, KEY("sbx-bo"), "sbx-bo", r.deps),
+      (e) => e.code === 403 && /sbx-bo did not make sbx-ana\/f2-bowl/.test(e.defect), what);
+    assert.equal(r.acts.length, before, `${what}: nothing recorded`);
+    assert.equal(reached, 0, `${what}: refused before anything else is asked`);
+  }
+});
+
+test("F2 · the maker with no registered label cannot refill her own chest", async () => {
+  const r = rig({ marks: { "sbx-eve/her-tin": { id: "sbx-eve/her-tin", by: "sbx-eve", class: "chest" } } });
+  await assert.rejects(callUnits("refill", { chest: "sbx-eve/her-tin" }, KEY("sbx-eve"), "sbx-eve", r.deps), (e) => e.code === 403 && /sbx-eve has no candy label/.test(e.defect));
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.refill).length, 0);
+});
+
+test("F2 · the maker who created the label refills to capacity — a mixed chest with another label's gifts and a whole thing included; full is a no-op", async () => {
+  const r = f2Rig();
+  r.deps.markById = async (id) => ({ [F2_CHEST]: { id: F2_CHEST, by: "sbx-ana", class: "chest", capacity: 30 }, "sbx-bo/f2-toaster": { id: "sbx-bo/f2-toaster", class: "toaster" } })[id] ?? null;
+  r.seedUnits(F2_CHEST, 6); r.seedUnits(F2_CHEST, 5, "test-drops"); r.hold(F2_CHEST, "sbx-bo/f2-toaster");
+  const filled = await callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.deepEqual([filled.label, filled.count, filled.chest.count], [LABEL, 18, 30], "6 + 5 + 1 thing + 18 = 30");
+  const noop = await callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.equal(noop.noop, true);
+});
+
+test("F2 · an outsider still gives into the chest", async () => {
+  const r = f2Rig({ householdOf: (h) => ({ key: `hh:${h}`, house: `hh:${h}` }) });
+  r.seedUnits("sbx-cy", 3);
+  const gave = await callUnits("give", { to: F2_CHEST, count: 2 }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.deepEqual([gave.count, gave.receiver.count], [2, 2]);
+});
+
+test("F2 · Ana's own chest holding only Bo's gifts: Ana fills the rest with her own label (Wright 03:38:35Z — the label-presence guard is dropped); Bo still cannot refill it", async () => {
+  const r = f2Rig();
+  r.seedUnits(F2_CHEST, 5, "test-drops");
+  await assert.rejects(callUnits("refill", { chest: F2_CHEST }, KEY("sbx-bo"), "sbx-bo", r.deps), (e) => e.code === 403 && /sbx-bo did not make/.test(e.defect));
+  const filled = await callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.deepEqual([filled.label, filled.count, filled.chest.count], [LABEL, 25, 30], "30 − 5 of her own beside Bo's 5");
+  assert.deepEqual(filled.chest.edges.map((e) => [e.label, e.count]).sort(), [[LABEL, 25], ["test-drops", 5]]);
+  assert.equal(filled.chest.class, "candy", "the mixed chest reads as the nearest common class");
+});
+
+// ── F4 (Wright's independent review, 03:01:29Z): every stake is returned before
+// the mark leaves — a stake that lands after the exit read its holders too, on
+// a fresh exit and on a cleanup retry. THESE USE INJECTED LEDGER COLLABORATORS
+// (the rig's `holders`/`unstake`, which clip to the open position as the
+// engine's unstake does) — not the town's engine, not a real ledger. ────────
+
+/** After the exit's first holder read, `who` stakes `n` on the mark. */
+const stakeLandsAfterFirstRead = (r, who, n) => {
+  const read = r.deps.holders; let reads = 0;
+  r.deps.holders = async (m) => { const out = await read(m); if (++reads === 1) r.positions[m].push({ handle: who, stamps: n }); return out; };
+};
+
+function f4Rig() {
+  const r = rig({ marks: { [DROPPED]: droppedMark }, stakes: STAKES });
+  // reach the rig's open positions (the ledger the injected unstake clips against)
+  const positions = {}; let failUnstakeFor = null;
+  positions[DROPPED] = [{ handle: "sbx-ana", stamps: 1 }, { handle: "sbx-bo", stamps: 2 }];
+  r.positions = positions;
+  r.deps.holders = async (m) => (positions[m] ?? []).filter((p) => p.stamps > 0).map((p) => ({ ...p }));
+  r.deps.unstake = async (x) => {
+    if (failUnstakeFor === x.handle) { failUnstakeFor = null; return { error: "bounce", defect: "the ledger could not be written" }; }
+    const p = (positions[x.mark] ?? []).find((y) => y.handle === x.handle);
+    const n = Math.min(p?.stamps ?? 0, x.stamps); if (p) p.stamps -= n;
+    if (n) r.ledger.push({ handle: x.handle, mark: x.mark, n });
+    return { applied: n };
+  };
+  r.failUnstakeOnceFor = (h) => { failUnstakeFor = h; };
+  return r;
+}
+const once = (ledger) => Object.fromEntries(ledger.map((l) => [l.handle, ledger.filter((x) => x.handle === l.handle).reduce((a, x) => a + x.n, 0)]));
+
+test("F4 · a stake that lands after the exit's first read is returned before the withdrawal — each staker once, clipped to what is open", async () => {
+  const r = f4Rig();
+  stakeLandsAfterFirstRead(r, "sbx-dee", 3);
+  const out = await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.deepEqual(out.returns.map((x) => [x.handle, x.stamps]), [["sbx-ana", 1], ["sbx-bo", 2]], "the exit's own returns");
+  assert.deepEqual(out.late_returns.map((x) => [x.handle, x.stamps]), [["sbx-dee", 3]], "the late stake, returned before the mark left");
+  assert.deepEqual(once(r.ledger), { "sbx-ana": 1, "sbx-bo": 2, "sbx-dee": 3 }, "each staker once");
+  assert.equal(out.withdrawn.withdrawn, true);
+  assert.equal(r.withdrawals.length, 1);
+  const [w] = r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn);
+  assert.deepEqual(w.payload.late_returns.map((x) => [x.handle, x.stamps]), [["sbx-dee", 3]], "the record says what was returned late");
+  assert.equal(totalOf(r.units(), "sbx-cy"), 1, "one unit");
+  assert.ok(r.positions[DROPPED].every((p) => p.stamps === 0), "nothing left open on a mark that left");
+});
+
+test("F4 · a late return that fails leaves the withdrawal pending and says so; the retry returns only what is open, then withdraws", async () => {
+  const r = f4Rig();
+  stakeLandsAfterFirstRead(r, "sbx-dee", 3);
+  r.failUnstakeOnceFor("sbx-dee");
+  const first = await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.equal(first.withdrawn.withdrawn, false);
+  assert.match(first.withdrawn.why, /a late stake by sbx-dee could not be returned/);
+  assert.equal(r.withdrawals.length, 0, "the mark was NOT withdrawn with a stake open on it");
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn).length, 0, "not marked complete");
+  const retry = await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.equal(retry.duplicate, true);
+  assert.deepEqual(retry.late_returns.map((x) => [x.handle, x.stamps]), [["sbx-dee", 3]]);
+  assert.equal(retry.withdrawn.withdrawn, true);
+  assert.deepEqual(once(r.ledger), { "sbx-ana": 1, "sbx-bo": 2, "sbx-dee": 3 }, "each staker once — the early ones not repaid on the retry");
+  assert.equal(totalOf(r.units(), "sbx-cy"), 1);
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn).length, 1);
+});
+
+test("F4 · an already-exited mark whose withdrawal is pending: a stake that lands meanwhile is returned before another resident's retry withdraws it — cause still the original exit", async () => {
+  const r = f4Rig();
+  r.failWithdrawals(1);
+  await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  const exit = r.acts.find((a) => a.action === UNIT_ACTION.takeBack);
+  r.positions[DROPPED].push({ handle: "sbx-eve", stamps: 2 });                // lands while the withdrawal is pending
+  const done = await callUnits("consume-in-place", { thing: DROPPED }, KEY("sbx-bo"), "sbx-bo", r.deps);
+  assert.deepEqual(done.late_returns.map((x) => [x.handle, x.stamps]), [["sbx-eve", 2]]);
+  assert.equal(done.withdrawn.withdrawn, true);
+  assert.deepEqual(r.withdrawals.at(-1).cause, { exit: "take-back", by: "sbx-cy", act: exit.id });
+  assert.deepEqual(once(r.ledger), { "sbx-ana": 1, "sbx-bo": 2, "sbx-eve": 2 });
+  const [w] = r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn);
+  assert.deepEqual([w.payload.finished_by, w.payload.late_returns.length], ["sbx-bo", 1]);
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.consumeInPlace).length, 0, "no consumption happened");
+});
+
+test("F4 · stakes that keep arriving refuse the withdrawal this time — pending, honest, every stake returned so far stays returned", async () => {
+  const r = f4Rig();
+  let k = 0;
+  const read = r.deps.holders;
+  r.deps.holders = async (m) => { const out = await read(m); r.positions[m].push({ handle: `sbx-late-${++k}`, stamps: 1 }); return out; };
+  const out = await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.equal(out.withdrawn.withdrawn, false);
+  assert.match(out.withdrawn.why, /stakes kept arriving/);
+  assert.equal(r.withdrawals.length, 0);
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn).length, 0);
+  assert.ok(r.ledger.every((l) => r.ledger.filter((x) => x.handle === l.handle).length === 1), "no staker returned twice");
+});

@@ -138,20 +138,20 @@ test("first stock: min(30, capacity) once; unlabelled makers admitted unstocked 
   assert.match(planChestStock({ chests: [{ id: "sbx-ana/huge", by: "sbx-ana", capacity: 500 }], labels: LABELS, dials }).refused[0].line, /outside 1\.\.120/);
 });
 
-test("refill: the creator only, exactly the remaining room (every label counted), full is a no-op", () => {
+test("refill: the chest's maker who created the label (F2), exactly the remaining room (every label counted), full is a no-op", () => {
   const rows = [stock(CHEST, "test-comets", 30), act(UNIT_ACTION.take, [{ from: CHEST, to: "sbx-cy", label: "test-comets", n: 7 }])];
   let fold = foldUnits(rows);
-  const r = planRefill({ fold, actor: "sbx-ana", chest: CHEST, capacity: 30, labels: LABELS });
+  const r = planRefill({ fold, actor: "sbx-ana", chest: CHEST, capacity: 30, labels: LABELS, maker: "sbx-ana" });
   assert.deepEqual(r.moves, [{ from: null, to: CHEST, label: "test-comets", n: 7 }]);
-  assert.throws(() => planRefill({ fold, actor: "sbx-cy", chest: CHEST, capacity: 30, labels: LABELS }), (e) => e.code === 403 && /no candy label/.test(e.defect));
-  assert.throws(() => planRefill({ fold, actor: "sbx-bo", chest: CHEST, capacity: 30, labels: LABELS }), (e) => e.code === 403 && /holds no test-drops/.test(e.defect));
+  assert.throws(() => planRefill({ fold, actor: "sbx-cy", chest: CHEST, capacity: 30, labels: LABELS, maker: "sbx-ana" }), (e) => e.code === 403 && /sbx-cy did not make/.test(e.defect));
+  assert.throws(() => planRefill({ fold, actor: "sbx-bo", chest: CHEST, capacity: 30, labels: LABELS, maker: "sbx-ana" }), (e) => e.code === 403 && /sbx-bo did not make/.test(e.defect), "a label of one's own does not open another's chest");
   rows.push(act(r.action, r.moves, { object: CHEST }));
   fold = foldUnits(rows);
-  const again = planRefill({ fold, actor: "sbx-ana", chest: CHEST, capacity: 30, labels: LABELS });
+  const again = planRefill({ fold, actor: "sbx-ana", chest: CHEST, capacity: 30, labels: LABELS, maker: "sbx-ana" });
   assert.equal(again.noop, true, "a full chest refills nothing");
   // mixed contents count toward the one capacity
   const mixed = foldUnits([stock(CHEST, "test-comets", 10), act(UNIT_ACTION.give, [{ from: null, to: CHEST, label: "test-drops", n: 15 }])]);
-  assert.equal(planRefill({ fold: mixed, actor: "sbx-ana", chest: CHEST, capacity: 30, labels: LABELS }).moves[0].n, 5);
+  assert.equal(planRefill({ fold: mixed, actor: "sbx-ana", chest: CHEST, capacity: 30, labels: LABELS, maker: "sbx-ana" }).moves[0].n, 5);
 });
 
 test("give into a chest respects its capacity; give to yourself and from empty hands refuse", () => {

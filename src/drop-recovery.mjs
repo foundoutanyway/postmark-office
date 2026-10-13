@@ -17,8 +17,9 @@
 // transaction-scoped advisory lock for that drop act, `wld27-drop:<act id>`,
 // and decide under it:
 //   · the filing refuses when an undo is already on the record (dropLiveGuard);
-//   · an undo refuses when the mark is filed — any claim for the slug the drop
-//     names, in any status including a private draft, or any mark act on it;
+//   · an undo refuses when the mark is filed — a claim whose own record names
+//     this drop act (data.dropped = act:<id>, the dropper, the label), in any
+//     status including a private draft, or a mark act whose payload names it;
 //   · an undo carries the nonce `drop-undone:<act id>` under the dropper's own
 //     actor and household, so `acts_world_nonce_once` (052) keeps a second one
 //     out even past the lock — replay, two ticks, compensation beside recovery.
@@ -47,8 +48,22 @@ export const dropMarkId = ({ actor, label, actId }) => `${actor}/${label}-${Stri
 export const TICK_MS = 15 * 60 * 1000;
 
 const UNDONE_SQL = `SELECT id FROM acts WHERE action = $1 AND payload->>'undoes' = $2 LIMIT 1`;
-const CLAIM_SQL = `SELECT id::text, status FROM claims WHERE slug = $1 LIMIT 1`;
-const MARK_ACT_SQL = `SELECT id FROM acts WHERE class = 'mark' AND object = $1 LIMIT 1`;
+// THE MARK IS KNOWN BY THE ACT IT NAMES (Bevel's follow-up review, A): a claim
+// is this drop's mark when its own record says so — `data.dropped` is exactly
+// `act:<id>`, its claimant is the dropper, its label the drop's label — in ANY
+// status. Never by a slug predicted from the act: a mark filed under another
+// name is still this unit, and an unrelated mark that happens to carry the
+// predicted name is not. A mark act counts only on the same proof in its own
+// payload (the leave's declaration carries `dropped` and `label`).
+const CLAIM_SQL = `
+  SELECT id::text, slug, status FROM claims
+   WHERE data->>'dropped' = $1 AND claimant = $2 AND data->>'label' = $3
+   ORDER BY submitted_at LIMIT 1`;
+const MARK_ACT_SQL = `
+  SELECT id::text, object FROM acts
+   WHERE class = 'mark' AND action IN ('leave-mark', 'amend')
+     AND payload->>'dropped' = $1 AND actor = $2 AND payload->>'label' = $3
+   ORDER BY id LIMIT 1`;
 
 /** Declare the dropper's household for this transaction, so its private drafts are visible to the checks. */
 async function declareDropperHousehold(client, actor) {
@@ -62,18 +77,19 @@ async function declareDropperHousehold(client, actor) {
 }
 
 /**
- * Inside a transaction: is this drop's mark filed? A claim for its slug in ANY
- * status — the dropper's household is declared first, so a private draft is
- * seen too — or any mark act on it (a leave or withdraw is written with its
- * claim, in the same transaction). Answers `{ claim, status }` or null.
+ * Inside a transaction: is this drop's mark filed? A claim whose own record
+ * names this drop act (CLAIM_SQL) in ANY status — the dropper's household is
+ * declared first, so a private draft is seen too — or a mark act whose payload
+ * names it. Answers `{ slug, claim, status }` (the slug the mark ACTUALLY has)
+ * or null.
  */
 export async function filedMarkOf(client, { actId, actor, label }) {
-  const slug = dropMarkId({ actor, label, actId });
+  const ref = `act:${String(actId)}`;
   await declareDropperHousehold(client, actor);
-  const { rows: [c] } = await client.query(CLAIM_SQL, [slug]);
-  if (c) return { slug, claim: c.id, status: c.status };
-  const { rows: [a] } = await client.query(MARK_ACT_SQL, [slug]);
-  return a ? { slug, mark_act: String(a.id), status: "acted" } : null;
+  const { rows: [c] } = await client.query(CLAIM_SQL, [ref, String(actor), String(label)]);
+  if (c) return { slug: c.slug, claim: c.id, status: c.status };
+  const { rows: [a] } = await client.query(MARK_ACT_SQL, [ref, String(actor), String(label)]);
+  return a ? { slug: a.object, mark_act: a.id, status: "acted" } : null;
 }
 
 const bounce = (code, defect, hint, extra = {}) => Object.assign(new Error(defect), { code, defect, hint, ...extra });
@@ -169,13 +185,16 @@ export async function recoverOrphanDrops(client, { now = Date.now(), crossing = 
 
 // ── THE CARRY COUNT, DURABLY ────────────────────────────────────────────────
 
-const SLUG_OF_DROP = `d.actor || '/' || COALESCE(d.payload->>'label', d.payload->'moves'->0->>'label') || '-' || d.id::text`;
+const LABEL_OF_DROP = `COALESCE(d.payload->>'label', d.payload->'moves'->0->>'label')`;
 const STILL_OUT_SQL = `
   SELECT count(*)::int AS n FROM acts d
    WHERE d.class = 'holding' AND d.action = $1 AND d.actor = $2
      AND NOT EXISTS (SELECT 1 FROM acts u WHERE u.action = $3 AND u.payload->>'undoes' = d.id::text)
-     AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.slug = ${SLUG_OF_DROP})
-     AND NOT EXISTS (SELECT 1 FROM acts m WHERE m.class = 'mark' AND m.object = ${SLUG_OF_DROP})`;
+     AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.data->>'dropped' = 'act:' || d.id::text
+                       AND c.claimant = d.actor AND c.data->>'label' = ${LABEL_OF_DROP})
+     AND NOT EXISTS (SELECT 1 FROM acts m WHERE m.class = 'mark' AND m.action IN ('leave-mark', 'amend')
+                       AND m.payload->>'dropped' = 'act:' || d.id::text AND m.actor = d.actor
+                       AND m.payload->>'label' = ${LABEL_OF_DROP})`;
 
 /**
  * How many of `actor`'s set-downs are still OUT — neither filed nor undone —

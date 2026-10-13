@@ -56,6 +56,12 @@ export const reservedFor = (handle) => reserved.get(String(handle)) ?? 0;
  * filings; the store's count (drop-recovery.mjs § dropsStillOut) covers a
  * restart, a crashed filing, a failed undo. They name the same drops, so the
  * larger stands.
+ *
+ * READ IT BEFORE THE HELD UNITS (Bevel's follow-up review, B). The tick's
+ * recovery turns an out unit into a held one between any two reads. Read out
+ * first and held second, and a recovery between them is counted twice — a
+ * take refused that would have fit, never a 25th admitted. The other order
+ * counts it nowhere: 23 held (old) + 0 out (new) admitted a 25th.
  */
 export async function inFlightFor(handle, deps) {
   const durable = deps?.dropsOut ? await deps.dropsOut(String(handle)) : 0;
@@ -251,11 +257,12 @@ export async function callUnits(route, args, key, actor, deps) {
       const n = unitCount(args.count);
       await deps.reachTake(from, actor);
       return holdTurn(async () => {
+        const inFlight = await inFlightFor(actor, deps); // BEFORE the rows: see inFlightFor
         const { units, attachments } = await deps.readRows();
         const fold = foldUnits(units);
         const plan = planTake({ fold, actor, from, label: args.label ?? null, n });
         refuseIfTaken(topClassOf(fold, from, view), view);
-        refuseOverCarry({ who: actor, units: totalOf(fold, actor) + await inFlightFor(actor, deps), things: thingsCarried(attachments, actor), adding: n, cap });
+        refuseOverCarry({ who: actor, units: totalOf(fold, actor) + inFlight, things: thingsCarried(attachments, actor), adding: n, cap });
         const w = await writeUnits(deps, key, actor, plan);
         const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
         return { did: "take", units: true, label: plan.label, count: n, from, ...w, holds: holdsBlock(after, actor, view), chest: await chestBlock(after, from, view, attachments, deps) };
@@ -268,13 +275,14 @@ export async function callUnits(route, args, key, actor, deps) {
       if (isChestId(to)) { chestCap = (await chestOrThrow(deps, to, view)).capacity; await deps.reachTake(to, actor); }
       else await deps.reachGive(to, actor);
       return holdTurn(async () => {
+        const inFlight = (!isChestId(to) ? await inFlightFor(to, deps) : 0); // BEFORE the rows: see inFlightFor
         const { units, attachments } = await deps.readRows();
         const fold = foldUnits(units);
         // the chest's one capacity is shared by its counted units and the whole things in it
         const capacityOfTo = chestCap == null ? null : chestCap - holdingsOf(attachments, to).length;
         const plan = planGive({ fold, actor, to, label: args.label ?? null, n, capacityOfTo });
         refuseIfTaken(topClassOf(fold, actor, view, plan.label), view);
-        if (!isChestId(to)) refuseOverCarry({ who: to, units: totalOf(fold, to) + await inFlightFor(to, deps), things: thingsCarried(attachments, to), adding: n, cap });
+        if (!isChestId(to)) refuseOverCarry({ who: to, units: totalOf(fold, to) + inFlight, things: thingsCarried(attachments, to), adding: n, cap });
         // INTO A CHEST, the room is judged again under the chest's own lock inside
         // the write's transaction — the tick's stock is another process (finding 6)
         const w = await writeUnits(deps, key, actor, plan, isChestId(to) ? { guard: chestRoomGuard({ chest: to, capacity: chestCap, adding: n }) } : {});
@@ -453,11 +461,12 @@ async function markExit(route, args, key, actor, deps, view, cap) {
   // engine's own unstake lines, so a run that stopped halfway resumes from the
   // positions still open and never pays twice.
   const acted = await holdTurn(async () => {
+    const inFlight = route === "take-back" ? await inFlightFor(actor, deps) : 0; // BEFORE the rows: see inFlightFor
     const { units, attachments } = await deps.readRows();
     if (exitedMarks(units).has(id)) return { already: true, units };
     const fold = foldUnits(units);
     if (route === "take-back")
-      refuseOverCarry({ who: actor, units: totalOf(fold, actor) + await inFlightFor(actor, deps), things: thingsCarried(attachments, actor), adding: 1, cap });
+      refuseOverCarry({ who: actor, units: totalOf(fold, actor) + inFlight, things: thingsCarried(attachments, actor), adding: 1, cap });
     const plan = returnsAtExit({ mark: id, holders: await deps.holders(id) });
     const returned = [];
     for (const r of plan) {
@@ -654,10 +663,11 @@ async function thingFromChest(args, key, actor, deps, view, cap) {
   refuseIfTaken(String(mark?.class ?? "thing"), view);
   await deps.reachTake(chestId, actor);
   return holdTurn(async () => {
+    const inFlight = await inFlightFor(actor, deps); // BEFORE the rows: see inFlightFor
     const { units, attachments } = await deps.readRows();
     const holder = liveHolder(attachments, thing);
     if (holder !== chestId) throw bounce(409, `${chestId} is not holding ${thing}`, holder ? `${holder} is. Nothing was recorded.` : "it stands on the ground. Nothing was recorded.");
-    refuseOverCarry({ who: actor, units: totalOf(foldUnits(units), actor) + await inFlightFor(actor, deps), things: thingsCarried(attachments, actor), adding: 1, cap });
+    refuseOverCarry({ who: actor, units: totalOf(foldUnits(units), actor) + inFlight, things: thingsCarried(attachments, actor), adding: 1, cap });
     const w = await writeThingHolding(deps, key, actor, attachments, { did: "take", thing, holder: actor, previous: chestId, madeBy: String(mark?.by ?? thing.split("/")[0]) });
     return { did: "take", thing, from: chestId, holder: actor, ...w };
   });

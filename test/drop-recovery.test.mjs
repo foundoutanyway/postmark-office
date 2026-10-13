@@ -50,10 +50,13 @@ const drop = (minutesAgo, actor = "sbx-cy") => owner(async (c) => (await c.query
 const give = (to, n) => owner((c) => c.query(
   `INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now() - interval '1 day', 300.0, 'the-town', 'units:give', $1, 'holding', $2, 'the-town')`,
   [to, JSON.stringify({ units: true, moves: [{ from: null, to, label: LABEL, n }] })]));
+/** The leave's declaration for a dropped unit: it names the act it is (world-stacks.mjs § droppedUnitMark). */
+const leavePayload = (actId) => ({ class: "candy", kind: "sited", label: LABEL, dropped: `act:${actId}`, by: "sbx-cy" });
 /** The dropped unit's mark, filed: its claim in `status`, and (unless a draft) its leave act — as the pen writes them, together. */
 const file = (actId, status = "pending") => owner(async (c) => {
   const slug = dropMarkId({ actor: "sbx-cy", label: LABEL, actId });
-  if (status !== "draft") await c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), 300.2, 'sbx-cy', 'leave-mark', $1, 'mark', '{}', $2)`, [slug, HH]);
+  if (status !== "draft") await c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), 300.2, 'sbx-cy', 'leave-mark', $1, 'mark', $3, $2)`,
+    [slug, HH, JSON.stringify(leavePayload(actId))]);
   await c.query(`INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, bbox, stake, data, slug)
                  VALUES (300, 'sited', 'sbx-cy', $1, $2, 'One Test Comets, set down here.', '{"at":{"x":0,"y":0},"extent":{"w":1,"h":1}}', '((0,0),(1,1))', 1, $3, $4)`,
     [HH, status, JSON.stringify({ class: "candy", label: LABEL, dropped: `act:${actId}` }), slug]);
@@ -97,17 +100,37 @@ test("RESTART BETWEEN THE DROP AND ITS CLAIM: an orphan older than one tick come
   assert.equal(await heldBy("sbx-cy"), 5, "every unit accounted for, none twice");
 });
 
-test("A FILED DROP IS NEVER REFUNDED — pending, locked, refused, retracted, held for review, a PRIVATE DRAFT, or only its mark act", { skip }, async () => {
+test("A FILED DROP IS NEVER REFUNDED — pending, locked, refused, retracted, held for review, a PRIVATE DRAFT, or only a leave act that names it", { skip }, async () => {
   await seed();
   const states = ["pending", "locked", "refused", "retracted", "held_review", "draft"];
   const ids = {};
   for (const s of states) { ids[s] = await drop(30); await file(ids[s], s); }
-  ids.actOnly = await drop(30);
-  await owner((c) => c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), 300.2, 'sbx-cy', 'withdraw', $1, 'mark', '{}', $2)`, [dropMarkId({ actor: "sbx-cy", label: LABEL, actId: ids.actOnly }), HH]));
+  ids.actOnly = await drop(30);                                // a leave act whose own payload names the drop, its claim since gone
+  await owner((c) => c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), 300.2, 'sbx-cy', 'leave-mark', $1, 'mark', $3, $2)`,
+    [`sbx-cy/renamed-${ids.actOnly}`, HH, JSON.stringify(leavePayload(ids.actOnly))]));
   const r = await office((c) => recoverOrphanDrops(c, {}));
   assert.deepEqual(r.restored, [], JSON.stringify(r));
   assert.deepEqual(r.filed.map((f) => f.act).sort(), Object.values(ids).sort());
   for (const id of Object.values(ids)) assert.deepEqual(await undos(id), [], `act ${id}`);
+});
+
+test("IDENTITY IS THE ACT REFERENCE, NOT A NAME: an unrelated mark act at the predicted slug, another resident's claim naming the act, and a claim with the wrong label do not stand in for the unit", { skip }, async () => {
+  await seed();
+  const a = await drop(30), b = await drop(30), d = await drop(30);
+  await owner(async (c) => {
+    // a: a mark act at exactly the predicted slug, naming no act
+    await c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), 300.2, 'sbx-cy', 'leave-mark', $1, 'mark', '{"class":"thing"}', $2)`, [dropMarkId({ actor: "sbx-cy", label: LABEL, actId: a }), HH]);
+    // b: someone else's claim that names Cy's act
+    await c.query(`INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, bbox, stake, data, slug)
+                   VALUES (300, 'sited', 'sbx-bo', 'hh:sbx-bo', 'pending', 'Not mine to file.', '{"at":{"x":0,"y":0},"extent":{"w":1,"h":1}}', '((0,0),(1,1))', 1, $1, 'sbx-bo/borrowed')`,
+      [JSON.stringify({ class: "candy", label: LABEL, dropped: `act:${b}` })]);
+    // d: Cy's own claim naming the act, under another label
+    await c.query(`INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, bbox, stake, data, slug)
+                   VALUES (300, 'sited', 'sbx-cy', $1, 'pending', 'Another label.', '{"at":{"x":0,"y":0},"extent":{"w":1,"h":1}}', '((0,0),(1,1))', 1, $2, 'sbx-cy/other-label')`,
+      [HH, JSON.stringify({ class: "candy", label: "test-drops", dropped: `act:${d}` })]);
+  });
+  const r = await office((c) => recoverOrphanDrops(c, {}));
+  assert.deepEqual(r.restored.map((x) => x.act).sort(), [a, b, d].sort(), "none of the three proves this unit was filed");
 });
 
 test("ONCE ACROSS REPLAY AND CONCURRENT TICKS: two recoveries racing write one undo", { skip }, async () => {
@@ -142,8 +165,8 @@ test("THE CLAIM RACES THE RECOVERY: a filing holding the drop's lock commits fir
   const filer = await store.connect("office_api");
   await filer.query("BEGIN");
   await dropLiveGuard({ actId: id })(filer);                  // the leave's own guard, inside its transaction
-  await filer.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), 300.2, 'sbx-cy', 'leave-mark', $1, 'mark', '{}', $2)`,
-    [dropMarkId({ actor: "sbx-cy", label: LABEL, actId: id }), HH]);
+  await filer.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), 300.2, 'sbx-cy', 'leave-mark', $1, 'mark', $3, $2)`,
+    [dropMarkId({ actor: "sbx-cy", label: LABEL, actId: id }), HH, JSON.stringify(leavePayload(id))]);
   const rec = office((c) => recoverOrphanDrops(c, {}));
   await new Promise((r) => setTimeout(r, 300));
   const waiting = await owner(async (c) => (await c.query("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")).rows[0].n);
@@ -307,4 +330,56 @@ test("DOOR · a legitimate set-down files and stays filed: no undo, nothing out"
   assert.deepEqual(await undos(id), []);
   assert.equal(await office(async (c) => { await c.query("BEGIN READ ONLY"); try { return await dropsStillOut(c, "sbx-cy"); } finally { await c.query("COMMIT"); } }), 0);
   assert.deepEqual((await office((c) => recoverOrphanDrops(c, { now: Date.now() + 2 * TICK_MS }))).restored, []);
+});
+
+// ── correction B across every unit cap path (Bevel's probe covers `take`) ────
+// The tick's recovery commits between the in-flight read and the held read —
+// injected exactly there, as Bevel's probe does. Each path must refuse, and the
+// record must hold 24, never 25. Real pen, real store.
+
+const raceDeps = async ({ markById = async () => null, attachments = [], holders = async () => [] } = {}) => {
+  const base = await door({ leave: async () => { throw new Error("unused"); } });
+  let ran = 0;
+  return { ...base, markById, holders, unstake: async () => ({ applied: 0 }), withdraw: async () => ({ withdrawn: true }),
+    readRows: async () => ({ units: await unitActs(), attachments }),
+    dropsOut: async (h) => {
+      if (ran++ === 0) assert.equal((await office((c) => recoverOrphanDrops(c, {}))).restored.length, 1, "the tick restores in the gap");
+      return office(async (c) => { await c.query("BEGIN READ ONLY"); try { return await dropsStillOut(c, h); } finally { await c.query("COMMIT"); } });
+    } };
+};
+
+test("B · a GIVE to a resident at 23 held + 1 out, with the tick restoring in the gap, is refused; the record stays 24", { skip }, async () => {
+  await seed(); await give("sbx-cy", 24); await drop(30); await give("sbx-bo", 1);
+  const deps = await raceDeps();
+  const e = await callUnits("give", { to: "sbx-cy", count: 1 }, { handles: new Set(["sbx-bo"]) }, "sbx-bo", deps).then(() => null, (x) => x);
+  assert.equal(e?.code, 409, e?.message);
+  assert.equal(await heldBy("sbx-cy"), 24);
+});
+
+test("B · a TAKE-BACK at 23 held + 1 out, with the tick restoring in the gap, is refused; the record stays 24", { skip }, async () => {
+  await seed(); await give("sbx-cy", 25); const first = await drop(30); await drop(30);   // 23 in hand; one out (restored in the gap), one filed:
+  await file(first, "pending");
+  const mark = { id: dropMarkId({ actor: "sbx-cy", label: LABEL, actId: first }), by: "sbx-cy", class: "candy", kind: "sited", label: LABEL, dropped: `act:${first}` };
+  const deps = await raceDeps({ markById: async (id) => (id === mark.id ? mark : null) });
+  const e = await callUnits("take-back", { thing: mark.id }, KEY, "sbx-cy", deps).then(() => null, (x) => x);
+  assert.equal(e?.code, 409, e?.message);
+  assert.equal(await heldBy("sbx-cy"), 24);
+});
+
+test("B · a WHOLE THING out of a chest at 23 held + 1 out, with the tick restoring in the gap, is refused", { skip }, async () => {
+  await seed(); await give("sbx-cy", 24); await drop(30);
+  const chest = { id: "sbx-ana/b-chest", by: "sbx-ana", class: "chest", capacity: 30 };
+  const toaster = { id: "sbx-ana/b-toaster", by: "sbx-ana", class: "thing" };
+  const deps = await raceDeps({ markById: async (id) => ({ [chest.id]: chest, [toaster.id]: toaster })[id] ?? null,
+    attachments: [{ entity: chest.id, target: toaster.id, policy: "cascade", born_at: new Date(Date.now() - 60000).toISOString() }] });
+  const e = await callUnits("thing-from-chest", { thing: toaster.id, from: chest.id }, KEY, "sbx-cy", deps).then(() => null, (x) => x);
+  assert.equal(e?.code, 409, e?.message);
+  assert.equal(await heldBy("sbx-cy"), 24, "24 units — and no toaster on top");
+});
+
+test("B · [source pin, not a run] the hold lane's whole-thing carry check reads in-flight BEFORE the held rows, as the unit door does", () => {
+  const src = readFileSync(join(ROOT, "src", "world-hold.mjs"), "utf8");
+  const fn = src.slice(src.indexOf("async function carryForThings("), src.indexOf("async function unitsHeldBy("));
+  const flight = fn.indexOf("await inFlightFor(who"), rows = fn.indexOf("await storeHoldingRows()");
+  assert.ok(flight > 0 && rows > 0 && flight < rows, "out first, held second");
 });

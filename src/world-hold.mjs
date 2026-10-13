@@ -1183,6 +1183,11 @@ export async function callHoldTool(name, args = {}, key = null) {
     const { guardedAttachments: guardRows } = await import("./world2-guards.mjs");
     const preRows = await guardRows();
     const preHolder = liveHolder(preRows, String(args.thing));
+    // A THING A CHEST HOLDS (WLD-27): naming it is a take aimed at the chest.
+    if (preHolder != null && String(preHolder).includes("/") && args.to == null) {
+      const { callUnits, liveUnitDeps } = await import("./world-units.mjs");
+      return await callUnits("thing-from-chest", { ...args, from: String(preHolder) }, key, actor, await liveUnitDeps());
+    }
     refuseGiveOfUnheld({ thing: args.thing, to: args.to ?? null, actor, holder: preHolder });
     const face = faceOf(preHolder, args.to ?? null);
     const reached = await refuseOutOfReach({ thing: args.thing, to: args.to ?? null, actor, act: face, holder: preHolder });
@@ -1358,7 +1363,8 @@ async function carryForThings({ who, attachments }) {
   const cap = thingDials()?.carry_cap;
   if (!Number.isInteger(cap)) return;
   const [{ storeHoldingRows }, { foldUnits, totalOf, isUnitRow, refuseOverCarry }] = await Promise.all([import("./world2-guards.mjs"), import("./world-stacks.mjs")]);
-  const units = totalOf(foldUnits((await storeHoldingRows()).filter(isUnitRow)), who);
+  const { reservedFor } = await import("./world-units.mjs");
+  const units = totalOf(foldUnits((await storeHoldingRows()).filter(isUnitRow)), who) + reservedFor(who);
   refuseOverCarry({ who, units, things: holdingsOf(attachments, who).length, adding: 1, cap });
 }
 

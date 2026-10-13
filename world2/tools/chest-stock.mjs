@@ -39,6 +39,16 @@
 
 import { LAW_AT_BLESSING_SQL, lawSnapshotFromRows } from "../../src/law-classes.mjs";
 import { UNIT_ACTION, foldUnits, stockedChests, candyLabels, planChestStock } from "../../src/world-stacks.mjs";
+import { pgAttachmentsFor } from "./guard-reads.mjs";
+
+/** Whole things each chest holds now: the latest holding row per thing, held (cascade) by a chest id. */
+export function thingsInChests(rows) {
+  const last = new Map();
+  for (const r of rows) last.set(String(r.target), r);
+  const out = new Map();
+  for (const r of last.values()) if (r.policy === "cascade" && String(r.entity).includes("/")) out.set(String(r.entity), (out.get(String(r.entity)) ?? 0) + 1);
+  return out;
+}
 
 export const TOWN_PEN = "postmark-pen";
 export const TOWN_HOUSEHOLD = "the-town";
@@ -67,7 +77,8 @@ export async function planFromStore(client) {
   });
   const units = (await client.query(UNITS_SQL)).rows;
   const newest = (await client.query(NEWEST_SQL)).rows[0]?.number ?? null;
-  const plan = planChestStock({ chests, labels: candyLabels(candy), stocked: stockedChests(units), fold: foldUnits(units), dials });
+  const { rows: held } = await pgAttachmentsFor(client);
+  const plan = planChestStock({ chests, labels: candyLabels(candy), stocked: stockedChests(units), fold: foldUnits(units), dials, thingsIn: thingsInChests(held) });
   return { ...plan, settlement: newest == null ? null : Number(newest), law: law.pin };
 }
 

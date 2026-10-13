@@ -114,3 +114,14 @@ test("the tick's step is non-fatal: an error is one named line", { skip }, async
   const r = await stockedOnTick(null, { stock: async () => { throw new Error("no store"); }, crossing: () => 1 });
   assert.deepEqual([r.verdict, r.line], ["error", "chests: NOT stocked (non-fatal) — no store"]);
 });
+
+test("a whole thing already in a chest takes its slot: the first stock fills only the room left", { skip }, async () => {
+  await seed();
+  // before the tick, the toaster went into the 20-slot chest of a labelled maker
+  await owner((c) => law(c, SHA_B, 251, LABELS_B));
+  await asOffice((c) => c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, effect, household)
+     VALUES (now() - interval '1 minute', 250.9, 'sbx-cy', 'give', 'sbx-cy/the-toaster', 'holding',
+             '{"thing":"sbx-cy/the-toaster","holder":"sbx-eve/her-chest","previous_holder":"sbx-cy","made_by":"sbx-cy","policy":"cascade"}', 'into the chest', 'hh:sbx-cy')`));
+  const r = await asOffice((c) => stockChests(c, { crossing: 251.5 }));
+  assert.deepEqual(r.stocked.filter((s) => s.chest === "sbx-eve/her-chest").map((s) => s.n), [19], "min(30, 20) less the toaster's one slot");
+});

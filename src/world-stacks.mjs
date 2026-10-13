@@ -47,6 +47,7 @@ export const UNIT_ACTION = Object.freeze({
   dropUndone: "units:drop-undone", // the set-down's mark could not be filed: the unit comes back
   takeBack: "units:take-back",     // a dropped unit's mark taken back into a holding
   consumeInPlace: "units:consume-in-place", // a dropped unit's mark consumed where it stands
+  exitWithdrawn: "units:exit-withdrawn", // that mark's withdrawal landed — the exit's terminal work is done
 });
 const UNIT_ACTIONS = new Set(Object.values(UNIT_ACTION));
 export const UNIT_PREFIX = "units:";
@@ -115,6 +116,10 @@ export const totalOf = (fold, holder) => edgesOf(fold, holder).reduce((s, e) => 
 /** Has the town stocked this chest? (the first stock is once, ever) */
 export const stockedChests = (rows = []) =>
   new Set(rows.filter((r) => isUnitRow(r) && r.action === UNIT_ACTION.stock).map((r) => String(r.object)));
+
+/** The exited marks whose withdrawal has landed (finding 2 of Bevel's review: a failed one is retried). */
+export const withdrawnMarks = (rows = []) =>
+  new Set(rows.filter((r) => isUnitRow(r) && r.action === UNIT_ACTION.exitWithdrawn).map((r) => String(r.object)));
 
 /** The dropped-unit marks that have already stopped being marks — taken back or consumed in place. */
 export const exitedMarks = (rows = []) =>
@@ -372,7 +377,7 @@ export function planRefill({ fold, actor, chest, capacity, labels }) {
  * failed, and never counted as stocked, so a later settlement that finds the
  * label stocks it then (Wright, 2026-10-13T00:09Z).
  */
-export function planChestStock({ chests = [], labels = [], stocked = new Set(), fold = null, dials = {} }) {
+export function planChestStock({ chests = [], labels = [], stocked = new Set(), fold = null, dials = {}, thingsIn = new Map() }) {
   const d = chestDials(dials);
   const stock = [], unstocked = [], refused = [];
   for (const c of chests) {
@@ -387,7 +392,8 @@ export function planChestStock({ chests = [], labels = [], stocked = new Set(), 
     // PRESERVE WHAT IS THERE: units given into an unstocked chest stay, and the
     // stock fills toward min(first_stock, capacity) without overfilling it.
     const target = Math.min(d.first_stock, capacity);
-    const held = fold ? totalOf(fold, id) : 0;
+    // every label's units AND the whole things already inside share the one capacity
+    const held = (fold ? totalOf(fold, id) : 0) + Number(thingsIn.get(id) ?? 0);
     const n = Math.max(0, Math.min(target, capacity - held));
     stock.push({ chest: id, handle: maker, label: mine.label, n, capacity });
   }

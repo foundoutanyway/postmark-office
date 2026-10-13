@@ -44,7 +44,7 @@ import { standingBounce, standingOf, isSuspended, bounceSentence, STANDING_BOUNC
 import { rolesSchema, roleGate, roleGatesOn, ROLE_SUBSCRIBER } from "./roles.mjs";
 import { openPaper, paperworkStoreOn } from "./paperwork.mjs"; // POS-271: sign-in, roles, the media ledger and the town log, one door
 import { arrivalPage } from "./arrival.mjs";
-import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, townLedger, townDocs, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
+import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, townLedger, townDocs, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, LETTER_IDS_MAX, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
 import { householdsFor, withHouseholdBlock } from "./households.mjs";
 import * as townIndexStore from "./town-index-store.mjs"; // the office.db readers moved to the store (POS-268)
 import { probeOf, isUnreachable, UNREACHABLE_DEFECT } from "./index-probe.mjs"; // the write path's questions of the index, office.db's or the store's (POS-268)
@@ -76,7 +76,7 @@ import { storeEngaged, storeSnapshot, worldStoreHealth } from "./world-serve.mjs
 import { worldGraphView, NODE_KINDS, gexfPath } from "./world-graph.mjs"; // stage E: the window
 import { dynamicHealth, dynamicDbPath, dynamicRetired } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's instrument panel
 import { servedEnterExitLedger, DEPRECATED_DOOR } from "./enter-exit-ledger.mjs"; // the passages, derived from the frozen era + the journal (2026-08-26)
-import { Bouncer, clientIp, keyIdForToken, worldWriteVerbForRest } from "./bouncer.mjs";
+import { Bouncer, DOORSTEPS_PER_READ, bulkCost, listParam, boxLocal, clientIp, keyIdForToken, worldWriteVerbForRest } from "./bouncer.mjs";
 import { loopLag } from "./loop-lag.mjs"; // POS-267: how long the one thread keeps a caller waiting
 import { storeTxnWatch } from "./store-txn-watch.mjs"; // POS-370: does any office connection sit idle inside a transaction
 import { readReleaseStamp } from "./release.mjs"; // POS-60: the deploy receipt the auto-deploy probes
@@ -96,6 +96,29 @@ function arg(name, fallback) {
 }
 
 const PORT = Number(arg("--port", "4380"));
+
+// ── THE BOX DOOR (Darko 2026-10-13, after the review of #516) ────────────────
+//
+// A second listener, bound to 127.0.0.1 only, for the box asking its own
+// office (the site refresh). A keyless GET that arrives HERE is not charged the
+// keyless bucket (bouncer.mjs § boxLocal). No nginx location names this port,
+// so nothing public can arrive on it, whatever its path or headers.
+//
+// OFFICE_BOX_PORT names it; "0" turns it off. Unset, it is 4390 for the office
+// on 4380 (prod) and OFF for every other port. Not port+10 and not 4390 for
+// all: the dev office (:4381) shares the box, and the train reaches dev before
+// prod, so a dev office holding 4390 would leave prod's refresh reading dev's
+// office. A test office opens one only when it asks.
+//
+// The door is the SERVER OBJECT, never the number: each socket the box server
+// accepts is recorded in BOX_SOCKETS, and only those are box-local. And a box
+// port equal to --port is refused by name at boot (no door, the office serves
+// on, every caller charged): on Windows a 127.0.0.1 bind can sit beside the
+// public *:port one and take its loopback traffic, nginx's included.
+const BOX_PORT = process.env.OFFICE_BOX_PORT != null && process.env.OFFICE_BOX_PORT !== ""
+  ? Number(process.env.OFFICE_BOX_PORT)
+  : (PORT === 4380 ? 4390 : 0);
+const BOX_SOCKETS = new WeakSet();
 
 // ── WHAT THIS PROCESS IS (runbook DEC-4, G3) ─────────────────────────────────
 //
@@ -735,6 +758,68 @@ async function fromTownIndex(res, fn, onNull = null, onError = null, then = null
   }
 }
 
+// ── ONE RESIDENT'S CARD: the single door and the bulk read both call this ────
+//
+// `{ card, asOf }`, or `{ card: null }` where the door says 404, or `{ refused }`
+// when the store cannot be reached. The pending paper rows are read first
+// (paper-fresh.mjs § freshFor): the town log is a paper, and the composed read
+// is synchronous.
+async function residentCard(who, key) {
+  const fresh = await freshFor(who, { odb, clone: TOWN_CLONE, asOf: AS_OF });
+  let r, asOf = null;
+  if (townIndexReads()) {
+    const got = await townIndexStore.storeAnswer(async (c) => withLastActiveOn(c, "card", await townIndexStore.resident(c, who, fresh)));
+    if (got.refused) return { refused: got.refused };
+    asOf = got.asOf ?? null;
+    r = got.out;
+  } else r = await withLastActive("card", resident(db, who, fresh));
+  if (!r) return { card: null, asOf };
+  // household leads (2026-08-07), from the store's registry (POS-342)
+  await withHouseholdBlock(r, who);
+  // ── WHAT THIS RESIDENT MADE, on the REST skin too ──────────────────────────
+  //
+  // BOTH SKINS OR NEITHER. This is the route the SITE builds its resident
+  // pages from (postmark-site tools/lib/fetch-town-data.mjs fetches
+  // /residents/<handle> for every resident), so a marks block that landed
+  // only on the MCP card would have left the page exactly as the walk
+  // found it — "No marks section appears on this page" — while the door
+  // answered. MCP-first means the door leads, not that the door is alone.
+  //
+  // KEYLESS HERE IS THE ORDINARY CASE, and it is what makes this safe:
+  // with no key the drafts tense is withheld as null by name, so a public
+  // page cannot render somebody's private sketchbook however it is built.
+  const card = await marksCountsFor(who, { key })
+    .then((marks) => ({ ...r, marks }))
+    .catch(() => r); // garnish only — the card stands without it
+  return { card, asOf };
+}
+
+// THE BULK READS ARE THE PUBLIC READS (Darko 2026-10-13). Each element is
+// composed with no key, whatever credential the caller holds, so a bulk answer
+// can never carry more than the single keyless reads would: "a page reads what
+// the resident reads". A few at a time, so one bulk read cannot hold every
+// store connection.
+const BULK_LANES = 6;
+class CardRefused extends Error {
+  constructor(refused) { super(refused.defect); this.refused = refused; }
+}
+async function mapLanes(items, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(BULK_LANES, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i]); }
+  }));
+  return out;
+}
+async function withPublicCards(page) {
+  const cards = await mapLanes(page.residents ?? [], async (row) => {
+    const got = await residentCard(row.handle, null);
+    if (got.refused) throw new CardRefused(got.refused);
+    return got.card;
+  });
+  return { ...page, cards };
+}
+
 const jCompact = (res, code, obj) => {
   const headers = { "content-type": "application/json; charset=utf-8", "x-postmark-as-of": AS_OF };
   const worldStoreAsOf = storeEngaged() ? storeSnapshot().asOfWorld : null;
@@ -983,9 +1068,9 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         berth: "POST /berth mints a keyless ephemeral berth: read everything, speak from the quay, nothing durable, 14-crossing sunset; travelers from another town may add from_town: \"1f3d9\" (a claim, recorded). GET /berth reads the town's rules for visitors, which a berth acknowledges before its first say lands",
         whoami: "GET /me (or the whoami tool) answers who your credential makes you — household, handles, visitor state",
       },
-      reads: ["/town", "/residents[?limit=&offset=&since=&office=]", "/residents/{handle}", "/mail/{handle}", "/letters", "/letters/{id}",
-        "/doorstep/{handle}", "/metrics/mail", "/repo/log", "/regions", "/regions/{slug}", "/homes/{handle}", "/stamps",
-        "/stamps/{handle}", "/quests/{handle}", "/votes", "/votes/{topic}", "/bulletin", "/search?q=", "/calendar", "/calendar/{host}/{slug}", "/posts?class=", "/posts/{author}/{slug}", "/world/find?q=",
+      reads: ["/town", "/residents[?limit=&offset=&since=&office=&cards=1]", "/residents/{handle}", "/mail/{handle}", "/letters[?full=1|digests=1&ids=]", "/letters/{id}",
+        "/doorstep/{handle}", "/doorsteps?handles=", "/metrics/mail", "/repo/log", "/regions", "/regions/{slug}", "/homes/{handle}", "/stamps",
+        "/stamps/{handle}", "/quests/{handle}", "/votes", "/votes/{topic}", "/bulletin[?full=1]", "/search?q=", "/calendar", "/calendar/{host}/{slug}", "/posts?class=", "/posts/{author}/{slug}", "/world/find?q=",
         "/world/settlements", "/world/store", "/world/present", "/world/holdings", "/household",
         "/keys/claim?handle=", "/berth", "/households[?h=a,b]",
         "/release"],
@@ -1261,14 +1346,19 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
   // outer layer. Invalid/stale credentials deliberately land in this tier.
   // A read worker admits nothing: the main thread charged this request to the
   // bucket before it handed it over, and the buckets are the main thread's RAM.
-  if (!key && req.method === "GET" && !IN_READ_WORKER) {
-    const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET" });
+  // A GET that arrived on the box door (the site refresh) is not charged:
+  // boxLocal in bouncer.mjs says why only the door counts.
+  // A bulk read is charged what its single reads would be (bulkCost), keyless
+  // and keyed alike.
+  const cost = req.method === "GET" ? bulkCost(path, url.searchParams) : 1;
+  if (!key && req.method === "GET" && !IN_READ_WORKER && !boxLocal(req, BOX_SOCKETS)) {
+    const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET", cost });
     if (limited) return rateResponse(res, limited);
   }
 
   const keyId = key && auth ? keyIdForToken(auth[1]) : null;
   const checkCredentialed = ({ verb, write, worldVerb = null }) => {
-    const limited = bouncer.checkKey({ keyId, verb, write });
+    const limited = bouncer.checkKey({ keyId, verb, write, cost: write ? 1 : cost });
     if (limited) return limited;
     return worldVerb
       ? bouncer.checkHouseholdWorldWrite({ household: key.household, verb: worldVerb })
@@ -1858,43 +1948,26 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         };
         // last_active is the newest act of their own, one store read for the
         // page (last-active.mjs, POS-481), on the client the read already holds.
-        if (townIndexReads()) return fromTownIndex(res, async (c) => withLastActiveOn(c, "page", await townIndexStore.residentPage(c, opts)));
-        return withLastActive("page", residentPage(db, opts)).then((p) => j(res, 200, p))
-          .catch((e) => bounceFault(res, "the office tripped", e));
+        // ?cards=1 (Darko 2026-10-13): the page's cards beside it, one per row
+        // in the same order, each exactly what GET /residents/<handle> answers
+        // a keyless caller (null where that door says 404). The site refresh
+        // read the cards one request each, 259 a pass.
+        const then = url.searchParams.get("cards") === "1" ? withPublicCards : null;
+        const failed = (e) => e instanceof CardRefused ? bounce(res, 503, e.refused.defect, e.refused.hint)
+          : bounceFault(res, "the office tripped", e);
+        if (townIndexReads()) return fromTownIndex(res, async (c) => withLastActiveOn(c, "page", await townIndexStore.residentPage(c, opts)), null, failed, then);
+        return withLastActive("page", residentPage(db, opts)).then(async (p) => j(res, 200, then ? await then(p) : p))
+          .catch(failed);
       }
 
       if ((m = /^\/residents\/([a-z0-9-]+)$/.exec(path))) {
-        // The pending paper rows are read first (paper-fresh.mjs § freshFor):
-        // the town log is a paper, and the composed read is synchronous.
         const who = m[1];
-        freshFor(who, { odb, clone: TOWN_CLONE, asOf: AS_OF }).then(async (fresh) => {
-        let r;
-        if (townIndexReads()) {
-          const got = await townIndexStore.storeAnswer(async (c) => withLastActiveOn(c, "card", await townIndexStore.resident(c, who, fresh)));
+        return residentCard(who, key).then((got) => {
           if (got.refused) return bounce(res, 503, got.refused.defect, got.refused.hint);
           if (got.asOf) res.setHeader("x-postmark-town-index-as-of", got.asOf);
-          r = got.out;
-        } else r = await withLastActive("card", resident(db, who, fresh));
-        if (!r) return bounce(res, 404, `no resident "${who}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/");
-        // household leads (2026-08-07), from the store's registry (POS-342)
-        await withHouseholdBlock(r, who);
-        // ── WHAT THIS RESIDENT MADE, on the REST skin too ────────────────────
-        //
-        // BOTH SKINS OR NEITHER. This is the route the SITE builds its resident
-        // pages from (postmark-site tools/lib/fetch-town-data.mjs fetches
-        // /residents/<handle> for every resident), so a marks block that landed
-        // only on the MCP card would have left the page exactly as the walk
-        // found it — "No marks section appears on this page" — while the door
-        // answered. MCP-first means the door leads, not that the door is alone.
-        //
-        // KEYLESS HERE IS THE ORDINARY CASE, and it is what makes this safe:
-        // with no key the drafts tense is withheld as null by name, so a public
-        // page cannot render somebody's private sketchbook however it is built.
-        return marksCountsFor(who, { key })
-          .then((marks) => j(res, 200, { ...r, marks }))
-          .catch(() => j(res, 200, r)); // garnish only — the card stands without it
+          if (!got.card) return bounce(res, 404, `no resident "${who}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/");
+          return j(res, 200, got.card);
         }).catch((e) => bounceFault(res, "the office tripped", e));
-        return;
       }
 
       // THE ROLE GATE'S ONE WORKING EXAMPLE, AND IT IS A DEMONSTRATION RATHER
@@ -2010,9 +2083,14 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           until: p.get("until") ?? undefined,
           excludeOffice: p.get("exclude-office") === "1",
           full: p.get("full") === "1",
+          // the letters since last time (queries.mjs § THE LETTERS SINCE LAST TIME)
+          digests: p.get("digests") === "1",
+          ids: p.has("ids") ? listParam(p, "ids") : undefined,
           limit: p.get("limit") ?? undefined,
           offset: p.get("offset") ?? undefined,
         };
+        if (opts.ids && (!opts.ids.length || opts.ids.length > LETTER_IDS_MAX))
+          return bounce(res, 400, `name 1 to ${LETTER_IDS_MAX} letter ids`, `GET /letters?full=1&ids=a,b,c (at most ${LETTER_IDS_MAX})`);
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.letterList(c, opts));
         return j(res, 200, letterList(db, opts));
       }
@@ -2072,6 +2150,26 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           }).catch((e) => bounceFault(res, "the office tripped reading the town index", e));
         }
         return open(letter(db, id));
+      }
+
+      // GET /doorsteps?handles=a,b,c (Darko 2026-10-13): up to 25 doorsteps in
+      // one read, in the order named, each exactly what GET /doorstep/<handle>
+      // answers a keyless caller (null where that door says 404). The site
+      // refresh asked for them one request each, 259 a pass. Composed with no
+      // key, whatever the caller holds (see withPublicCards).
+      if (path === "/doorsteps") {
+        const handles = listParam(url.searchParams, "handles");
+        if (!handles.length || handles.length > DOORSTEPS_PER_READ || handles.some((h) => !/^[a-z0-9-]+$/.test(h)))
+          return bounce(res, 400, `name 1 to ${DOORSTEPS_PER_READ} handles`, `GET /doorsteps?handles=a,b,c (lowercase-hyphenated, at most ${DOORSTEPS_PER_READ})`);
+        const ix = townIndexReads() ? townIndexStore.storeIndexPooled(TOWN_CLONE) : null;
+        return mapLanes(handles, async (handle) => ({
+          handle,
+          doorstep: (await doorstepBundle(handle, { db, key: null, meta, asOf: AS_OF, clone: TOWN_CLONE, odb, canWrite, ix, conversationsOffset: 0 })) ?? null,
+        }))
+          .then((doorsteps) => j(res, 200, { doorsteps }))
+          .catch((e) => e instanceof townIndexStore.TownIndexUnreachable
+            ? bounce(res, 503, e.refused.defect, e.refused.hint)
+            : bounceFault(res, "the doorsteps tripped", e));
       }
 
       if ((m = /^\/doorstep\/([a-z0-9-]+)$/.exec(path))) {
@@ -2165,6 +2263,20 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       }
 
       if (path === "/bulletin") {
+        // ?full=1 (Darko 2026-10-13): every entry whole, in the list's order,
+        // each exactly what GET /bulletin/<slug> answers; an entry the list
+        // names and the entry read cannot find is left out, as the site does
+        // with that 404. The site refresh read them one request each.
+        if (url.searchParams.get("full") === "1") {
+          // One entry at a time: the store reads share one client.
+          const whole = async (list, entry) => {
+            const out = [];
+            for (const b of list) { const e = await entry(b.slug); if (e != null) out.push(e); }
+            return out;
+          };
+          if (townIndexReads()) return fromTownIndex(res, async (c) => whole(await townIndexStore.bulletinList(c), (s) => townIndexStore.bulletinEntry(c, s)));
+          return whole(bulletinList(db), async (s) => bulletinEntry(db, s)).then((entries) => j(res, 200, entries));
+        }
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.bulletinList(c));
         return j(res, 200, bulletinList(db));
       }
@@ -2231,7 +2343,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       // key where its neighbours do not, and that is not a reason to hide it —
       // this list says which doors EXIST, and a 401 that names itself is an
       // answer. It is a lie only when the door is not there.
-      return bounce(res, 404, "no such door", `GET /town /residents[?limit=&offset=&since=&office=] /residents/{h} /mail/{h} /letters[?filters] /letters/{id} /doorstep/{h} /metrics/mail /repo/log[?path=&author=&since=&until=&limit=] /regions /regions/{slug} /homes/{h} /stamps /stamps/{h} /quests/{h} /world/settlements /world/store /world/dynamic /world/present /world/walkers /world/chests /world/holdings /world/graph[?kinds=&types=] /world/graph.gexf[?view=static]${apexEnabled() ? " /world/apex?x=&y=" : ""} /votes /votes/{topic} /bulletin /fund/intake /search?q= /calendar /calendar/{host}/{slug} /posts?class=[&limit=&offset=] /posts/{author}/{slug} /world/find?q=`);
+      return bounce(res, 404, "no such door", `GET /town /residents[?limit=&offset=&since=&office=&cards=1] /residents/{h} /mail/{h} /letters[?filters] /letters/{id} /doorstep/{h} /doorsteps?handles= /metrics/mail /repo/log[?path=&author=&since=&until=&limit=] /regions /regions/{slug} /homes/{h} /stamps /stamps/{h} /quests/{h} /world/settlements /world/store /world/dynamic /world/present /world/walkers /world/chests /world/holdings /world/graph[?kinds=&types=] /world/graph.gexf[?view=static]${apexEnabled() ? " /world/apex?x=&y=" : ""} /votes /votes/{topic} /bulletin[?full=1] /fund/intake /search?q= /calendar /calendar/{host}/{slug} /posts?class=[&limit=&offset=] /posts/{author}/{slug} /world/find?q=`);
     }
 
     // Every act that reaches the write tier is counted by the channel it
@@ -2918,6 +3030,20 @@ import("./world-graph-snapshot.mjs").then((m) => {
 if (IN_READ_WORKER) serveReadsInWorker(handle);
 else {
   const server = createServer(handle);
+  // The box door (§ THE BOX DOOR, at PORT): the writer only. A read-role
+  // process is a reader the writer's nginx routes to, never the box's own door.
+  // Bound first, so it is open by the time the boot line says "listening". A
+  // door that cannot bind says so and the office serves on without it: the
+  // refresh then fails to connect, loudly, rather than the office not starting.
+  const boxSame = BOX_PORT > 0 && BOX_PORT === PORT;
+  if (boxSame) console.error(`ERROR: OFFICE_BOX_PORT ${BOX_PORT} is this office's own --port; the box door must be a port of its own, so it is NOT opened and every caller is charged (set OFFICE_BOX_PORT to another port, e.g. 4390, or 0)`);
+  const boxDoor = BOX_PORT > 0 && !boxSame && !READ_ONLY_ROLE;
+  if (boxDoor) {
+    const box = createServer(handle);
+    box.on("connection", (socket) => BOX_SOCKETS.add(socket));
+    box.on("error", (e) => console.error(`WARN: the box door 127.0.0.1:${BOX_PORT} could not open (${e.code ?? e.message}); the box reads through it will fail until it does`));
+    box.listen(BOX_PORT, "127.0.0.1");
+  }
   server.listen(PORT, () => {
     // Only the writer starts a pool. A read-role process (DEC-4's kit) is a
     // reader already, and a pool inside it would be readers of a reader.
@@ -2926,6 +3052,7 @@ else {
     console.log(
       `postmark-office listening on :${server.address().port} — as-of ${AS_OF.slice(0, 12)}`
       + (READ_ONLY_ROLE ? ` — ROLE read (sqlite read-only, no write grant; writes → ${WRITER_URL})` : "")
-      + (size > 0 ? ` — ${size} read worker${size === 1 ? "" : "s"}` : ""));
+      + (size > 0 ? ` — ${size} read worker${size === 1 ? "" : "s"}` : "")
+      + (boxDoor ? ` — box door 127.0.0.1:${BOX_PORT}` : ""));
   });
 }

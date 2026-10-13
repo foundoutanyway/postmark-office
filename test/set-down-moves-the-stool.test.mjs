@@ -544,12 +544,23 @@ test("E · THE READ: a post-POS-138 drop keeps the promise over its amend on the
   assert.equal(kept.says, "keith set it down here; it stands where they stood, and the record re-sites the mark at the next fold");
   assert.deepEqual(kept.amend, { act_id: String(carried.drop.id), status: "pending" });
 
-  // LOCKED: still true — the clearing has moved it.
+  // LOCKED, NOT YET PRINTED: the fold is still the garage, so the promise holds.
   const { code, out } = clearWindow();
   assert.equal(code, 0, out);
   const locked = await docketAmends();
   assert.equal(locked[0]?.status, "locked");
-  assert.match((await readAfter(carried.drop.id, locked, WAITING_ROOM_AT)).says, /the record re-sites the mark at the next fold$/);
+  assert.match((await readAfter(carried.drop.id, locked, GARAGE_AT)).says, /the record re-sites the mark at the next fold$/);
+
+  // LOCKED AND PRINTED: `locked` is terminal, so the row stays on the docket
+  // while canon stands at the drop point. The promise is kept, so it is not
+  // made again: the read says canon has it here.
+  //
+  // THE FLIP: put `if (filed)` back above the canon-is-already-here check in
+  // `whereThingStands` and this reds on "re-sites the mark at the next fold".
+  const printed = await readAfter(carried.drop.id, locked, WAITING_ROOM_AT);
+  assert.equal(printed.says, "keith set it down here, and it stands where they stood: canon has it here too");
+  assert.deepEqual(printed.amend, { act_id: String(carried.drop.id), status: "locked" });
+  assert.equal(printed.move, undefined);
 
   // GIT-ERA: the same docket holds nothing from act 4976.
   const lie = await readAfter(GIT_ERA_DROP, locked, GARAGE_AT);
@@ -684,12 +695,14 @@ test("G · THE WIRING: `thingStandsBlock` reads the escrow behind the stool thro
     holdingAct({ id: DROP, at: "2026-10-11T19:20:00Z", actor: "postmaster", action: "drop", thing: STOOL, made_by: "keith",
       dx: WAITING_ROOM_AT.x, dy: WAITING_ROOM_AT.y }),
   ];
-  // G owns what it reads. Under this runner the file's top-level `after`
-  // hooks have already run by the time G does (they are registered before the
-  // module's own awaits): the A pen and the record env are dropped and the town
-  // bottle is swept. So G puts the bottle back, installs a pen of its own, and
-  // sets the record env for the block's read alone. The registry and the stance
-  // row are the record's; the holding half is the fixture's.
+  // G owns what it reads, and leans on nothing the file set up for A–F: when
+  // G was written, the record env set at the top was already unset once the
+  // module's store start had returned, and the stake door did not find the
+  // town bottle's engine. (The file's top-level `after` hooks run after G
+  // starts, so they are not the cause.) So G puts the bottle back, installs a
+  // pen of its own, and sets the record env for the block's read alone. The
+  // registry and the stance row are the record's; the holding half is the
+  // fixture's.
   put(town, "tools/world-stake.mjs", STAKE_BOTTLE);
   const own = installActsPen({ households: REGISTRY_ROWS.households });
   own.seedAct({ class: "stance", actor: "keith", action: "stance", object: STOOL, at: new Date("2026-10-11T20:00:00Z"),

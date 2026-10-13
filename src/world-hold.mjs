@@ -644,14 +644,18 @@ export async function whereThingStands(thingId, {
       // by hand (act 16921, S104), which carries no `_set_down.act_id`, so it is
       // never this drop's amend. Canon now has the stool where he set it down,
       // and the read says that: no re-site to come, no "canon keeps it at…",
-      // no call to move it.
+      // no call to move it. ASKED BEFORE THE FILED AMEND: `locked` is terminal,
+      // so once an own set-down's amend publishes, the docket keeps its locked
+      // row while canon already stands here, and "re-sites the mark at the next
+      // fold" would be promised forever. Locked but not yet printed still
+      // promises, because the fold is still the old place.
       if (house.same) {
         const filed = setDownAmendOf(amends, id, drop.seq);
+        if (foldAt && foldAt.x === at.x && foldAt.y === at.y)
+          return { ...base, amend: filed, canon_at: foldAt,
+            says: `${setter} set it down here, and it stands where they stood: canon has it here too` };
         if (filed)
           return { ...base, amend: filed, says: `${setter} set it down here; it stands where they stood, and the record re-sites the mark at the next fold` };
-        if (foldAt && foldAt.x === at.x && foldAt.y === at.y)
-          return { ...base, amend: null, canon_at: foldAt,
-            says: `${setter} set it down here, and it stands where they stood: canon has it here too` };
         if (amends == null)
           return { ...base, amend: null, canon_at: foldAt,
             says: `${setter} set it down here and it stands where they stood; the docket could not be read here, so whether an amend moves canon to this place is not known — canon has it at ${canonText}` };

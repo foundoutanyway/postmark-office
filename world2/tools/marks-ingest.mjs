@@ -234,7 +234,8 @@ export function carriedRow(was, ref, carry) {
  * @param {object[]} o.storeRows   every `marks` row, with `locked_at` (the close of its locked_window)
  * @param {Map}      o.pathAtRef   slug -> repo path of its mark.md at the ref
  * @param {Map|null} o.pathAtBase  slug -> repo path at the base (null: no base, so no retire can be proven)
- * @param {Function} o.commitFor   ({ path, range, deleted }) -> { sha, author, at, subject } | null
+ * @param {Function} o.commitFor   ({ path, range, deleted }) -> { sha, author, at, subject, printout_only? } | null
+ *                                 (`printout_only`: only the settlement's own printout touched the path — § POS-614)
  * @param {Set}      [o.held]      slugs held by name
  * @param {object[]} [o.derivedAtBase] `deriveSeed` rows at the BASE: given, an amend carries only the
  *                                 fields the file changed across the range (§ an amend carries the file's change)
@@ -249,6 +250,10 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
 
   const adds = [], amends = [], retires = [], skipped = [], heldOut = [], stops = [];
   const ruledAfter = (row, commit) => row.locked_at && commit?.at && new Date(row.locked_at) > new Date(commit.at);
+  // § THE SETTLEMENT'S OWN PRINTOUT: a path only the printout touched carries nothing.
+  const printoutOnly = (c) => (c?.printout_only
+    ? `only the settlement's own printout changed its file (${c.sha.slice(0, 9)} ${String(c.subject).slice(0, 40)}) — the store's own words read back, never an act (POS-614)`
+    : null);
 
   for (const row of derived) {
     const slug = row.slug;
@@ -264,11 +269,13 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
     const path = pathAtRef.get(slug);
     if (!was) {
       const commit = commitFor({ path, range: false, deleted: false });
+      if (printoutOnly(commit)) { skipped.push({ slug, fields: ["(add)"], why: printoutOnly(commit) }); continue; }
       if (!commit) { stops.push(`${slug}: no commit on the ref's ancestry names its file ${path} — a row with no provenance is not an act`); continue; }
       adds.push({ slug, row, commit });
       continue;
     }
     const commit = commitFor({ path, range: true, deleted: false });
+    if (printoutOnly(commit)) { skipped.push({ slug, fields, why: printoutOnly(commit) }); continue; }
     if (!commit) { skipped.push({ slug, fields, why: "differs, but no commit since the head changed its file — not the file's change to carry (a door-made row the file has not caught up to, or drift that predates the head)" }); continue; }
     if (ruledAfter(was, commit)) { skipped.push({ slug, fields, why: `differs, but the store's row was ruled at window ${was.locked_window} (${new Date(was.locked_at).toISOString()}), after the file's last change ${commit.sha.slice(0, 9)} — the door's later word stands` }); continue; }
     if (baseRecs) {
@@ -292,6 +299,7 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
       if (!path) continue;                                       // never in the file at the base: the door's, untouched
       if (held.has(was.slug)) { heldOut.push({ slug: was.slug, why: "HELD by the founder's word — refused by name" }); continue; }
       const commit = commitFor({ path, range: true, deleted: true });
+      if (printoutOnly(commit)) { skipped.push({ slug: was.slug, fields: ["(retire)"], why: printoutOnly(commit) }); continue; }
       if (!commit) { skipped.push({ slug: was.slug, fields: ["(retire)"], why: `absent at this ref, but no commit since the head deleted ${path}` }); continue; }
       if (ruledAfter(was, commit)) { skipped.push({ slug: was.slug, fields: ["(retire)"], why: `absent at this ref, but the store's row was ruled at window ${was.locked_window}, after the deletion ${commit.sha.slice(0, 9)}` }); continue; }
       retires.push({ slug: was.slug, was, commit });
@@ -481,18 +489,69 @@ export async function pathsAt(checkout) {
   return { paths, classMarks };
 }
 
-/** The commit that carried a file-side change, read from the log. */
+// ── THE SETTLEMENT'S OWN PRINTOUT IS NEVER AN INPUT (POS-614) ───────────────
+//
+// The crossing writes world main from the store, so a file its commit changed
+// says what the store already said, in the printout's spelling. Read back, it
+// is the store learning its own words as a new act. Measured at S106 and S107:
+// one amend each (`kuaka/exhibit-one-noe`, `current-the-reader/why-the-door-
+// refused-it`, fields `parent`/`_parentMarkId`), each carried by the sweep's own
+// "settlement: sweep" commit (50d1e6eeb, 0ddc96705), where the write-down's
+// framer spells a nested mark's parent its own way.
+//
+// So the commits the crossing writes are not provenance. A commit is the
+// printout when its AUTHOR EMAIL is one of the crossing's pens AND its SUBJECT
+// is one the crossing writes. Both, because the email alone is not enough: the
+// same Pen account was the git-era door's pen, and its 52 "mark: rei/…" commits
+// (2026-07-28, "via world_leave_mark") are a resident's own acts.
+//
+// The crossing's commits on main, by author and subject (world main, measured
+// 2026-10-13 at 0ddc96705):
+//   Postmark Pen         "settlement: sweep …"         the sweep's publish (101 touch WORLD/marks)
+//   Postmark Pen         "re-home: …"                  the sweep's re-home of a filing (27, 08-22..08-25)
+//   Postmark Pen         "photograph: windows …"       STATE/log, settlement-auto.sh § the photograph
+//   Postmark Pen         "crossing-save N: …"          STATE/snapshot, tools/crossing-save.mjs
+//   the settlement sweep (box)  "settlement: household registry …"   WORLD/households.json, deploy/settlement-registry.mjs
+// Only the first two have ever touched WORLD/marks; the rest are named so that
+// a future write of theirs into a mark is read the same way.
+//
+// A hand commit (Wright, a founder, a reviewed PR's merge) matches none of
+// these and is still the change this tool carries.
+export const PRINTOUT_PENS = Object.freeze([
+  { email: "301406700+postmark-pen@users.noreply.github.com", subjects: ["settlement: ", "re-home: ", "photograph: ", "crossing-save "] },
+  { email: "pen@postmark.town", subjects: ["settlement: ", "re-home: ", "photograph: ", "crossing-save "] },
+  { email: "postmark-settlement@users.noreply.github.com", subjects: ["settlement: "] },
+]);
+
+/** Is this commit the settlement's own printout? PURE. */
+export function isPrintoutCommit({ email, subject }) {
+  const e = String(email ?? "").toLowerCase();
+  const s = String(subject ?? "");
+  return PRINTOUT_PENS.some((p) => p.email === e && p.subjects.some((x) => s.startsWith(x)));
+}
+
+/**
+ * The commit that carried a file-side change, read from the log: the newest one
+ * that is not the printout. When only the printout touched the path, it answers
+ * `{ printout_only: true, … }` naming the newest printout commit, so the plan
+ * can say why it carries nothing; otherwise null when nothing touched it.
+ */
 export function commitReader(repo, { base, target }) {
   const SEP = "\x1f";
   return ({ path, range, deleted }) => {
     if (!path) return null;
-    const args = ["log", "-1", `--format=%H${SEP}%an${SEP}%cI${SEP}%s`];
+    const args = ["log", `--format=%H${SEP}%an${SEP}%ae${SEP}%cI${SEP}%s`];
     if (deleted) args.push("--diff-filter=D");
     args.push(range && base ? `${base}..${target}` : target, "--", path);
-    const line = git(repo, args).trim();
-    if (!line) return null;
-    const [sha, author, at, subject] = line.split(SEP);
-    return { sha, author, at: new Date(at).toISOString(), subject };
+    let printout = null;
+    for (const line of git(repo, args).split("\n")) {
+      if (!line.trim()) continue;
+      const [sha, author, email, at, subject] = line.split(SEP);
+      const c = { sha, author, at: new Date(at).toISOString(), subject };
+      if (!isPrintoutCommit({ email, subject })) return c;
+      printout ??= c;
+    }
+    return printout ? { ...printout, printout_only: true } : null;
   };
 }
 

@@ -138,7 +138,7 @@ test("first stock: min(30, capacity) once; unlabelled makers admitted unstocked 
   assert.match(planChestStock({ chests: [{ id: "sbx-ana/huge", by: "sbx-ana", capacity: 500 }], labels: LABELS, dials }).refused[0].line, /outside 1\.\.120/);
 });
 
-test("refill: the chest's maker who created the label (F2), exactly the remaining room (every label counted), full is a no-op exactly the remaining room (every label counted), full is a no-op", () => {
+test("refill: the chest's maker who created the label (F2), exactly the remaining room (every label counted), full is a no-op", () => {
   const rows = [stock(CHEST, "test-comets", 30), act(UNIT_ACTION.take, [{ from: CHEST, to: "sbx-cy", label: "test-comets", n: 7 }])];
   let fold = foldUnits(rows);
   const r = planRefill({ fold, actor: "sbx-ana", chest: CHEST, capacity: 30, labels: LABELS, maker: "sbx-ana" });

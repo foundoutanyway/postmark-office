@@ -1,7 +1,8 @@
 #!/bin/bash
 # world2-ingest.sh — the two projection pens on a poll.
 #
-#   law-ingest    world-law repo -> law_projection + identities
+#   law-ingest    world-law repo -> law_projection (`identities` is the registry's
+#                 VIEW since 055, POS-350; no pen writes it)
 #   stamp-ingest  town repo      -> stamp_projection
 #
 # ── WHY A POLL AT ALL, AND WHAT A DEAD ONE COSTS ────────────────────────────
@@ -129,8 +130,8 @@ fi
 # class reads ask law_projection at the newest settlements.tag_sha — "the bless
 # overrides the tick" (Keemin, 2026-09-18, postmark#2934) — and main runs ahead
 # of the tag between a crossing and its blessing. `--blessed` writes only that
-# sha's law_projection rows: identities and projection_heads['world-law'] stay
-# the main run's, so the clearing's pin never moves backwards. After the main
+# sha's law_projection rows: projection_heads['world-law'] stays the main
+# run's, so the clearing's pin never moves backwards. After the main
 # run, so a failure here can never hold the clearing's rulebook hostage.
 if [ "$RUN_BLESSED" -eq 1 ]; then
   run_pen world-blessed law-ingest.mjs --law-repo --blessed

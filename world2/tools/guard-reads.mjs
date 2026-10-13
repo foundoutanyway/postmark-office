@@ -557,8 +557,9 @@ export async function assertHouseholdDeclared(client, household) {
 // and the overlay lost the other six's withdrawals with nothing to say so.
 //
 // `= ANY($1)` is the spelling set — the same one 024's policy compares against.
-// The store does not re-spell `identities` either: `law_ingester` owns every row
-// of it, which is POS-160's second STOP and not this ship's.
+// Since 055 (POS-350) `identities` is the registry's VIEW and answers only
+// `hh:<slug>` or `solo:<handle>`, the set's first members; the set still
+// matters for the acts' own `household` column, which keeps old spellings.
 export const WITHDRAW_ACT_SELECT =
   `SELECT a.id, a.at, a.actor, a.object, a.household, a.payload
      FROM acts a

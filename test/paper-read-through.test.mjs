@@ -23,9 +23,14 @@
 //   · the store variant through the suite's embedded store
 //     (test/helpers/office-under-test.mjs § indexStore), seeded from that same
 //     office.db, never an env-named database.
-// Injected, and only these: the world block (a fixed `null`, so no world read
-// is attempted) for the standing read. Nothing here pushes beyond the temp
-// origin, reads a real record, or calls an office endpoint.
+// Injected, and only at the outside boundary: the world block (a fixed `null`)
+// for the household reads; WORLD_CLONE pointed at an absent temp path, so the
+// doorstep's own world read (which takes no injector) reports "unreadable" and
+// never opens a world; the record's acts pool (world2-acts.mjs §
+// __setPoolForTest) for the suspended and unreadable-standing cases; the store
+// index's pool (town-index-store.mjs § __setTownIndexPoolForTest) for the
+// unreachable-store case. Nothing here pushes beyond the temp origin, reads a
+// real record, or calls an office endpoint.
 
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
@@ -40,15 +45,21 @@ delete process.env.TOWN_SINGLE_LOG;
 delete process.env.WORLD2_PG;
 delete process.env.WORLD2_PG_URL;
 
-const { fixtureDb } = await import("./fixture.mjs");
 const { tempDir } = await import("./helpers/temp-dir.mjs");
+const scratch = tempDir("postmark-pos603-");
+// read at world.mjs's load, so set before anything imports it: no world is opened
+process.env.WORLD_CLONE = join(scratch, "no-world-clone");
+const { fixtureDb } = await import("./fixture.mjs");
 const { indexStore, testIndex } = await import("./helpers/office-under-test.mjs");
 const { householdApex } = await import("../src/household-apex.mjs");
 const { openOauthDb } = await import("../src/oauth.mjs");
 const { ensureTownJournal } = await import("../src/town-journal.mjs");
-const { TENSE } = await import("../src/paper-fresh.mjs");
+const { TENSE, freshFor } = await import("../src/paper-fresh.mjs");
+const { home: homeQ } = await import("../src/queries.mjs");
+const { ownerGate } = await import("../src/doorstep-bundle.mjs");
+const tis = await import("../src/town-index-store.mjs");
+const acts = await import("../src/world2-acts.mjs");
 
-const scratch = tempDir("postmark-pos603-");
 const dbPath = join(scratch, "office.db");
 fixtureDb(dbPath).close();
 // Two index states, set on the fixture's own rows (no row is invented):
@@ -175,18 +186,134 @@ both("G2 · flag-on: the act's own row makes the same read PENDING, with its seq
   } finally { delete process.env.TOWN_SINGLE_LOG; }
 });
 
-// THE OPEN CASE (reported, not fixed here): a home FOUNDED by the act, for a
-// resident the index holds no home row for. Both home readers answer null
-// before they compose (queries.mjs § home, town-index-store.mjs § home), so
-// threading the context cannot reach it. This test pins today's answer so the
-// day it changes is a deliberate one.
-both("NO INDEXED HOME (open): a page founded by the act is not yet on read: home, and the papers still ask for it", async () => {
+// ═══ THE FIRST HOME: no index row yet (POS-603 continuation) ═══════════════
+// limen has a card in the index and NO homes row. The act founds the page on
+// the record; the owner's own reads now compose it from the record, unplaced.
+
+both("FIRST HOME · do: home founds the page → read: home shows it, written, unplaced; the papers stop asking", async () => {
   const clone = townClone();
+  assert.equal((await read("home", "limen", clone)).code, 404, "no page anywhere yet");
+  assert.equal(owesHome(gapsOf(await read("standing", null, clone, null, keyFor("limen")), "limen")), true, "owed to start with");
   okAct(await act("home", "limen", HOME, clone), "home founds limen's page");
-  assert.ok(readFileSync(join(clone, "WHITE_PAGES", "limen", "HOME", "HOME.md"), "utf8").includes(HOME.body), "the record holds it");
   const r = await read("home", "limen", clone);
-  assert.equal(r.code, 404, "today: no index row, no compose");
-  assert.equal(owesHome(gapsOf(await read("standing", null, clone, null, keyFor("limen")), "limen")), true, "today: still owed");
+  assert.equal(r.code, undefined, JSON.stringify(r).slice(0, 200));
+  assert.equal(r.home.title, HOME.title);
+  assert.equal(r.home.description, HOME.body);
+  assert.deepEqual(r.home.images, []);
+  assert.equal(r.home.region, null, "unplaced: placement is never read from the page");
+  assert.equal(r.home.freshness.fields.home.tense, TENSE.written);
+  assert.equal(r.home.freshness.fields.home.file, "WHITE_PAGES/limen/HOME/HOME.md");
+  assert.equal(owesHome(gapsOf(await read("standing", null, clone, null, keyFor("limen")), "limen")), false, "read: standing");
+  assert.equal(owesHome(gapsOf(await householdApex({}, keyFor("limen"), ctxFor(clone)), "limen")), false, "the bare household read");
+});
+
+both("FIRST HOME · flag-on: the founding act's row makes it PENDING, with its seq", async () => {
+  process.env.TOWN_SINGLE_LOG = "1";
+  try {
+    const clone = townClone();
+    const odb = townLog();
+    const done = okAct(await act("home", "limen", HOME, clone, odb), "home");
+    const r = await read("home", "limen", clone, odb);
+    assert.equal(r.home.description, HOME.body);
+    assert.equal(r.home.freshness.fields.home.tense, TENSE.pending);
+    assert.equal(r.home.freshness.fields.home.seq, done.logged.seq);
+  } finally { delete process.env.TOWN_SINGLE_LOG; }
+});
+
+// ── the fallback's gates ────────────────────────────────────────────────────
+/** A page on the RECORD only, written by hand into the clone (not through the door). */
+function pageOnRecord(clone, handle, frontmatter = `title: ${HOME.title}`) {
+  mkdirSync(join(clone, "WHITE_PAGES", handle, "HOME"), { recursive: true });
+  writeFileSync(join(clone, "WHITE_PAGES", handle, "HOME", "HOME.md"), `---\n${frontmatter}\n---\n\n${HOME.body}\n`);
+}
+
+both("GATE · a known resident with no page on the record still has no home", async () => {
+  assert.equal((await read("home", "limen", townClone())).code, 404);
+});
+
+both("GATE · a handle the index does not hold gets nothing, even with a page on the record — and no path is built from it", async () => {
+  const clone = townClone();
+  pageOnRecord(clone, "ghost");
+  pageOnRecord(clone, "limen");
+  assert.equal((await read("home", "ghost", clone, null, keyFor("ghost"))).code, 404, "not a resident of the index");
+  assert.equal((await read("home", "ghost/../limen", clone, null, keyFor("limen"))).code, 404,
+    "a handle that would RESOLVE to limen's page is refused by the index's identity read before any path is joined");
+});
+
+both("GATE · no checkout in the context → no fallback (the reader is handed nothing to read)", async () => {
+  const clone = townClone();
+  pageOnRecord(clone, "limen");
+  const r = await householdApex({ read: "home", handle: "limen" }, keyFor("limen"), { ...ctxFor(clone), clone: null });
+  assert.equal(r.code, 404);
+});
+
+both("GATE · placement is never composed: a page carrying region frontmatter still reads unplaced; an indexed region is unchanged", async () => {
+  const clone = townClone();
+  pageOnRecord(clone, "limen", `title: ${HOME.title}\nregion: the-terrace`);
+  const r = await read("home", "limen", clone);
+  assert.equal(r.home.region, null);
+  okAct(await act("home", "wright", HOME, clone), "wright's indexed page");
+  assert.equal((await read("home", "wright", clone)).home.region, "the-terrace");
+});
+
+// The record's standing, through its own pool seam (office.db's road; the
+// store's road reads standing from the index store and is unchanged here).
+async function withActsPool(pool, fn) {
+  const keep = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
+  Object.assign(process.env, { WORLD2_PG: "1", WORLD2_PG_URL: "postgres://unused@127.0.0.1:9/never" }); // the pool below answers; this is never dialled
+  acts.__setPoolForTest(pool);
+  try { return await fn(); } finally {
+    acts.__setPoolForTest(null);
+    if (keep.pg === undefined) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = keep.pg;
+    if (keep.url === undefined) delete process.env.WORLD2_PG_URL; else process.env.WORLD2_PG_URL = keep.url;
+  }
+}
+const QUARANTINE = { id: 1, date: "2026-10-01", act: "quarantine", handle: "limen", by_who: "registrar", founder_word: null,
+  reason: "fixture", line: "- 2026-10-01 · quarantine · limen · by: registrar · reason: fixture", source: "door", actor: null };
+
+test("GATE · a SUSPENDED handle's page is not composed ahead of the index (freshFor's standing gate) [office.db]", async () => {
+  const clone = townClone();
+  pageOnRecord(clone, "limen");
+  await withActsPool({ query: async () => ({ rows: [QUARANTINE] }) }, async () => {
+    const fresh = await freshFor("limen", { clone });
+    assert.equal(fresh.suspended, true, "the stub's row reads as a quarantine");
+    assert.equal(homeQ(db, "limen", fresh), null);
+  });
+});
+
+test("GATE · an UNREADABLE standing keeps the overlay off too — never read as good standing [office.db]", async () => {
+  const clone = townClone();
+  pageOnRecord(clone, "limen");
+  await withActsPool({ query: async () => { throw new Error("standing store down"); } }, async () => {
+    const fresh = await freshFor("limen", { clone });
+    assert.equal(fresh.suspended, true, "fail closed");
+    assert.equal(homeQ(db, "limen", fresh), null);
+  });
+});
+
+test("GATE · an unreachable store index is a 503, never a fallback page [store]", { skip: STORE ? false : "no store variant in this run" }, async () => {
+  const clone = townClone();
+  pageOnRecord(clone, "limen");
+  const restore = await IX.useInProcess();
+  try {
+    const down = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    tis.__setTownIndexPoolForTest({ connect: async () => { throw down; }, query: async () => { throw down; }, end: async () => {}, on() {} });
+    const r = await read("home", "limen", clone);
+    assert.equal(r.code, 503, JSON.stringify(r).slice(0, 200));
+    assert.equal(r.home, undefined);
+  } finally { await restore(); }
+});
+
+// ── the doorstep's settling-in block (ownerGate), its own read of the papers ─
+both("DOORSTEP · ownerGate's settling_in stops asking for the page once it is tended (wright: indexed blank page; limen: first home)", async () => {
+  for (const h of ["wright", "limen"]) {
+    const clone = townClone();
+    const ix = tis.townIndexReads() ? tis.storeIndexPooled(clone) : null;
+    const gate = async () => (await ownerGate({ pending_outbox: 0 }, h, { db, clone, key: keyFor(h), odb: null, meta: {}, asOf: null, ix })).settling_in?.next ?? [];
+    assert.equal(owesHome(await gate()), true, `${h}: owed to start with`);
+    okAct(await act("home", h, HOME, clone), `${h}: home`);
+    assert.equal(owesHome(await gate()), false, `${h}: settling_in no longer asks`);
+  }
 });
 
 // ═══ G3 · the papers check ══════════════════════════════════════════════════

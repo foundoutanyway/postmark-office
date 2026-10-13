@@ -16,7 +16,8 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { startStore } from "./helpers/embedded-store.mjs";
 import { stockChests, stockNonce, TOWN_PEN, TOWN_HOUSEHOLD } from "../world2/tools/chest-stock.mjs";
-import { stockedOnTick } from "../world2/tools/settlements-backfill.mjs";
+import { stockedOnTick, chestsAfterCarried } from "../world2/tools/settlements-backfill.mjs";
+import { chestRoomGuard, CHEST_LOCK_SQL, chestLockKey } from "../src/chest-lock.mjs";
 import { foldUnits, totalOf, edgesOf, UNIT_ACTION } from "../src/world-stacks.mjs";
 
 const store = await startStore({ db: "chest_stock_test" });
@@ -41,7 +42,11 @@ async function law(c, sha, number, labels) {
   await c.query("INSERT INTO settlements (number, tag_sha, published_at, window_id) VALUES ($1, $2, now(), $3)", [number, sha, WIN]);
 }
 
-async function chest(c, slug, data = {}) {
+async function carried(c, slug, settlement = 250) {
+  await c.query("INSERT INTO mark_carried (mark, settlement, added_sha) VALUES ($1, $2, $3)", [slug, settlement, "c".repeat(40)]);
+}
+
+async function chest(c, slug, data = {}, { admitted = 250 } = {}) {
   const id = uuid(), at = { x: 10 * n, y: 0 };
   const owner = slug.split("/")[0];
   const geometry = JSON.stringify({ at, extent: { w: 2, h: 2 } }), d = JSON.stringify({ class: "chest", by: owner, ...data });
@@ -49,11 +54,12 @@ async function chest(c, slug, data = {}) {
                  VALUES ($1, $2, 'sited', $3, $4, 'locked', now(), 'A chest.', $5, $6::box, 1, $7, $8)`, [id, WIN, owner, `hh:${owner}`, geometry, box(at), d, slug]);
   await c.query(`INSERT INTO marks (id, slug, kind, owner, household, body, geometry, bbox, status, locked_window, data)
                  VALUES ($1, $2, 'sited', $3, $4, 'A chest.', $5, $6::box, 'standing', $7, $8)`, [id, slug, owner, `hh:${owner}`, geometry, box(at), WIN, d]);
+  if (admitted != null) await carried(c, slug, admitted);
 }
 
 async function seed() {
   await owner(async (c) => {
-    await c.query("TRUNCATE acts, claims, marks, settlements, law_projection, windows CASCADE");
+    await c.query("TRUNCATE acts, claims, marks, mark_carried, settlements, law_projection, windows CASCADE");
     await c.query(`INSERT INTO windows (id, opens_at, closes_at, status, cleared_at) VALUES ($1, now() - interval '12 hours', now(), 'closed', now())`, [WIN]);
     await law(c, SHA_A, 250, LABELS_A);
     await chest(c, "sbx-ana/the-bowl");
@@ -124,4 +130,75 @@ test("a whole thing already in a chest takes its slot: the first stock fills onl
              '{"thing":"sbx-cy/the-toaster","holder":"sbx-eve/her-chest","previous_holder":"sbx-cy","made_by":"sbx-cy","policy":"cascade"}', 'into the chest', 'hh:sbx-cy')`));
   const r = await asOffice((c) => stockChests(c, { crossing: 251.5 }));
   assert.deepEqual(r.stocked.filter((s) => s.chest === "sbx-eve/her-chest").map((s) => s.n), [19], "min(30, 20) less the toaster's one slot");
+});
+
+
+// ── Bevel's review, findings 6 and 7, in the store's own terms ─────────────
+
+test("7 · a standing chest no settlement carried is NOT stocked; once carried, it is stocked at THAT settlement, not the newest", { skip }, async () => {
+  await seed();
+  await owner(async (c) => {
+    await c.query("INSERT INTO settlements (number, tag_sha, published_at, window_id) VALUES (249, $1, now() - interval '1 day', $2)", ["d".repeat(40), WIN]);
+    await chest(c, "sbx-ana/the-crate", {}, { admitted: null });
+  });
+  const before = await asOffice((c) => stockChests(c, { crossing: 250.5 }));
+  assert.ok(!before.stocked.some((s) => s.chest === "sbx-ana/the-crate"), "standing in the store is not admitted");
+  await owner((c) => carried(c, "sbx-ana/the-crate", 249));
+  const after = await asOffice((c) => stockChests(c, { crossing: 250.6 }));
+  const crate = after.stocked.find((s) => s.chest === "sbx-ana/the-crate");
+  assert.equal(crate?.settlement, 249, "attributed to the settlement that carried it");
+  assert.equal((await units()).find((a) => a.object === "sbx-ana/the-crate").payload.settlement, 249);
+});
+
+test("7b · the stock is held, and says so, when the carried step did not settle", { skip }, async () => {
+  let asked = 0;
+  for (const verdict of ["error", "DISAGREE", "skipped", "absent"]) {
+    const r = await chestsAfterCarried(null, { verdict }, { stock: async () => { asked += 1; return { line: "x" }; } });
+    assert.equal(r.verdict, "held");
+    assert.match(r.line, new RegExp(`did not settle \\(${verdict}\\)`));
+  }
+  assert.equal(asked, 0);
+  assert.equal((await chestsAfterCarried(null, { verdict: "ok" }, { stock: async () => ({ line: "stocked" }) })).line, "stocked");
+});
+
+test("6 · a give holding the chest's lock is counted by the stock that waits for it — 20 never becomes 24", { skip }, async () => {
+  await seed();
+  // the eve chest (capacity 20) gets a label, so the tick would stock it 20
+  await owner((c) => law(c, SHA_B, 251, LABELS_B));
+  const give = await store.connect("office_api");
+  try {
+    await give.query("BEGIN");
+    await chestRoomGuard({ chest: "sbx-eve/her-chest", capacity: 20, adding: 4 })(give);   // takes the lock, finds room
+    await give.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, effect, household)
+       VALUES (now(), 251.1, 'sbx-cy', 'units:give', 'sbx-eve/her-chest', 'holding', '{"units":true,"moves":[{"from":null,"to":"sbx-eve/her-chest","label":"test-comets","n":4}]}', 'a give', 'hh:sbx-cy')`);
+    const stocking = asOffice((c) => stockChests(c, { crossing: 251.5 }));   // plans, then waits on the lock
+    await new Promise((r) => setTimeout(r, 400));
+    await give.query("COMMIT");
+    const r = await stocking;
+    assert.deepEqual(r.stocked.filter((x) => x.chest === "sbx-eve/her-chest").map((x) => x.n), [16]);
+  } finally { await give.end(); }
+  assert.equal(totalOf(foldUnits(await units()), "sbx-eve/her-chest"), 20);
+});
+
+test("6b · a give after the stock is refused under the same lock, and its transaction writes nothing", { skip }, async () => {
+  await seed();
+  await asOffice((c) => stockChests(c, { crossing: 250.5 }));   // the bowl: 30 of 30
+  const before = (await units()).length;
+  const give = await store.connect("office_api");
+  try {
+    await give.query("BEGIN");
+    await assert.rejects(chestRoomGuard({ chest: "sbx-ana/the-bowl", capacity: 30, adding: 1 })(give), (e) => e.code === 409 && /room for 0/.test(e.defect));
+    await give.query("ROLLBACK");
+  } finally { await give.end(); }
+  assert.equal((await units()).length, before);
+  // and the lock really is one key per chest: a second session waits on it
+  const a = await store.connect("office_api"), b = await store.connect("office_api");
+  try {
+    await a.query("BEGIN"); await a.query(CHEST_LOCK_SQL, [chestLockKey("sbx-ana/the-bowl")]);
+    await b.query("BEGIN");
+    const r = await b.query("SELECT pg_try_advisory_xact_lock(hashtext($1)) AS got", [chestLockKey("sbx-ana/the-bowl")]);
+    assert.equal(r.rows[0].got, false, "the bowl's lock is held by the first session");
+    const other = await b.query("SELECT pg_try_advisory_xact_lock(hashtext($1)) AS got", [chestLockKey("sbx-ana/the-tub")]);
+    assert.equal(other.rows[0].got, true, "another chest's lock is free");
+  } finally { await a.query("ROLLBACK"); await b.query("ROLLBACK"); await a.end(); await b.end(); }
 });

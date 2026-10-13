@@ -38,7 +38,8 @@
 // `acts`. It writes nothing but the stock acts, and never a ledger line.
 
 import { LAW_AT_BLESSING_SQL, lawSnapshotFromRows } from "../../src/law-classes.mjs";
-import { UNIT_ACTION, foldUnits, stockedChests, candyLabels, planChestStock } from "../../src/world-stacks.mjs";
+import { UNIT_ACTION, foldUnits, stockedChests, candyLabels, planChestStock, chestDials } from "../../src/world-stacks.mjs";
+import { lockedChestUse } from "../../src/chest-lock.mjs";
 import { pgAttachmentsFor } from "./guard-reads.mjs";
 
 /** Whole things each chest holds now: the latest holding row per thing, held (cascade) by a chest id. */
@@ -54,16 +55,27 @@ export const TOWN_PEN = "postmark-pen";
 export const TOWN_HOUSEHOLD = "the-town";
 export const stockNonce = (chest) => `${UNIT_ACTION.stock}:${chest}`; // act-nonce.mjs § keptNonce's spelling
 
-const CHESTS_SQL = `SELECT slug, owner, data FROM marks WHERE status = 'standing' AND data->>'class' = 'chest' ORDER BY slug`;
+// ── ADMITTED, NOT MERELY STANDING (Bevel's review, finding 7) ──────────────
+//
+// A store row standing is not a chest the settlement admitted: fold-delta.mjs
+// documents standing rows with no canon file. The proof of admission is
+// `mark_carried` (049): the settlement that first CARRIED the mark into the
+// blessed world, written from git by the carried step of this same tick. So a
+// chest is stocked only when that row exists, and the stock is attributed to
+// THAT settlement — never to whichever settlement happens to be newest.
+const CHESTS_SQL = `
+  SELECT m.slug, m.owner, m.data, c.settlement
+    FROM marks m JOIN mark_carried c ON c.mark = m.slug
+   WHERE m.status = 'standing' AND m.data->>'class' = 'chest'
+   ORDER BY m.slug`;
 const UNITS_SQL = `SELECT id, class, action, object, payload FROM acts WHERE class = 'holding' AND action LIKE 'units:%' ORDER BY at, id`;
-const NEWEST_SQL = `SELECT number FROM settlements ORDER BY number DESC LIMIT 1`;
 const INSERT_SQL = `
   INSERT INTO acts (at, crossing, actor, action, object, class, payload, effect, household, nonce)
   VALUES (now(), $1, $2, $3, $4, 'holding', $5::jsonb, $6, $7, $8)
   ON CONFLICT DO NOTHING
   RETURNING id`;
 
-/** The plan, from the store, without writing. */
+/** The plan, from the store, without writing. Counts here are a preview; the stock is decided under each chest's lock. */
 export async function planFromStore(client) {
   const law = lawSnapshotFromRows((await client.query(LAW_AT_BLESSING_SQL)).rows);
   if (!law) return { unreadable: "the store holds no settlement whose law is ingested — the candy labels cannot be read, so nothing is stocked" };
@@ -71,45 +83,63 @@ export async function planFromStore(client) {
   const chestRec = law.classes.get("chest") ?? null;
   if (!chestRec) return { unreadable: `the law at S${law.pin.settlement} declares no chest class — nothing to stock` };
   const dials = typeof chestRec.dials === "string" ? JSON.parse(chestRec.dials) : (chestRec.dials ?? {});
-  const chests = (await client.query(CHESTS_SQL)).rows.map((r) => {
-    const d = typeof r.data === "string" ? JSON.parse(r.data) : (r.data ?? {});
-    return { id: String(r.slug), by: String(d.by ?? r.owner ?? String(r.slug).split("/")[0]), capacity: d.capacity ?? null };
-  });
+  const admitted = (await client.query(CHESTS_SQL)).rows
+    // a row that names no admitting settlement is not admitted, whatever read it
+    .filter((r) => Number.isInteger(Number(r.settlement)) && r.settlement != null)
+    .map((r) => {
+      const d = typeof r.data === "string" ? JSON.parse(r.data) : (r.data ?? {});
+      return { id: String(r.slug), by: String(d.by ?? r.owner ?? String(r.slug).split("/")[0]), capacity: d.capacity ?? null, settlement: Number(r.settlement) };
+    });
   const units = (await client.query(UNITS_SQL)).rows;
-  const newest = (await client.query(NEWEST_SQL)).rows[0]?.number ?? null;
   const { rows: held } = await pgAttachmentsFor(client);
-  const plan = planChestStock({ chests, labels: candyLabels(candy), stocked: stockedChests(units), fold: foldUnits(units), dials, thingsIn: thingsInChests(held) });
-  return { ...plan, settlement: newest == null ? null : Number(newest), law: law.pin };
+  const plan = planChestStock({ chests: admitted, labels: candyLabels(candy), stocked: stockedChests(units), fold: foldUnits(units), dials, thingsIn: thingsInChests(held) });
+  const settlementOf = new Map(admitted.map((c) => [c.id, c.settlement]));
+  return { ...plan, stock: plan.stock.map((s) => ({ ...s, settlement: settlementOf.get(s.chest) })), dials: chestDials(dials), law: law.pin };
 }
 
 /**
- * Stock what the plan says, in one transaction. Answers
- * `{ stocked: [...], skipped: [...], unstocked: [...], refused: [...], line }`.
- * `crossing` is the town clock to stamp (the caller's currentCrossing()).
+ * Stock what the plan says, EACH CHEST IN ITS OWN TRANSACTION UNDER ITS OWN
+ * LOCK (finding 6): the chest's advisory lock (chest-lock.mjs, the same one an
+ * office give, refill or thing-put takes inside its write), then its count
+ * re-read there, then the stock decided — `min(first_stock, capacity)` less
+ * everything already in it — and written. A give racing the tick either lands
+ * before the lock (and is counted) or waits for this commit (and is judged
+ * against the stocked chest). Answers `{ stocked, skipped, unstocked, refused, line }`.
  */
 export async function stockChests(client, { crossing = null } = {}) {
   const plan = await planFromStore(client);
   if (plan.unreadable) return { stocked: [], skipped: [], unstocked: [], refused: [], line: `chests: not stocked — ${plan.unreadable}` };
   const stocked = [], skipped = [];
-  await client.query("BEGIN");
-  try {
-    for (const s of plan.stock) {
-      if (s.n <= 0) { skipped.push({ chest: s.chest, why: "already full" }); continue; }
-      const payload = { units: true, moves: [{ from: null, to: s.chest, label: s.label, n: s.n }], label: s.label,
-        capacity: s.capacity, creator: s.handle, settlement: plan.settlement, first_stock: true };
-      const effect = `the town stocked ${s.chest} with ${s.n} ${s.label} at the settlement that admitted it (S${plan.settlement})`;
+  for (const s of plan.stock) {
+    await client.query("BEGIN");
+    try {
+      const used = await lockedChestUse(client, s.chest);
+      // min(first_stock, capacity), never past what is already inside (units and things)
+      const room = Math.min(Math.min(plan.dials.first_stock, s.capacity), s.capacity - (used.units + used.things));
+      if (room <= 0) {
+        // ZERO ROOM: nothing is written and the nonce is not spent, so a later
+        // tick that finds room stocks it then. Whether a full chest should
+        // instead close its first stock is an owner call on WLD-27 (Bevel's
+        // review, owner call 2) — not decided here.
+        await client.query("ROLLBACK");
+        skipped.push({ chest: s.chest, why: `no room under the lock (${used.units} units, ${used.things} things in ${s.capacity})` });
+        continue;
+      }
+      const payload = { units: true, moves: [{ from: null, to: s.chest, label: s.label, n: room }], label: s.label,
+        capacity: s.capacity, creator: s.handle, settlement: s.settlement, first_stock: true };
+      const effect = `the town stocked ${s.chest} with ${room} ${s.label} at the settlement that admitted it (S${s.settlement})`;
       const { rows } = await client.query(INSERT_SQL, [crossing, TOWN_PEN, UNIT_ACTION.stock, s.chest, JSON.stringify(payload), effect, TOWN_HOUSEHOLD, stockNonce(s.chest)]);
-      if (rows.length) stocked.push({ ...s, act: Number(rows[0].id) }); else skipped.push({ chest: s.chest, why: "already stocked (the nonce was spent)" });
+      await client.query("COMMIT");
+      if (rows.length) stocked.push({ ...s, n: room, act: Number(rows[0].id) }); else skipped.push({ chest: s.chest, why: "already stocked (the nonce was spent)" });
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
     }
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw e;
   }
   const parts = [
-    `chests: stocked ${stocked.length}${stocked.length ? ` (${stocked.map((s) => `${s.chest} +${s.n} ${s.label}`).join(", ")})` : ""}`,
+    `chests: stocked ${stocked.length}${stocked.length ? ` (${stocked.map((s) => `${s.chest} +${s.n} ${s.label} at S${s.settlement}`).join(", ")})` : ""}`,
     ...plan.unstocked.map((u) => u.line),
     ...plan.refused.map((r) => r.line),
   ];
-  return { stocked, skipped, unstocked: plan.unstocked, refused: plan.refused, settlement: plan.settlement, line: parts.join(" · ") };
+  return { stocked, skipped, unstocked: plan.unstocked, refused: plan.refused, line: parts.join(" · ") };
 }

@@ -474,7 +474,7 @@ const FLIP_REFUSED = Object.freeze({
   arena: "the arena is closed (Keemin, 2026-09-30) and writes nothing; unset it from W2_PEN",
 });
 
-export async function appendActFlipped(db, entry = {}) {
+export async function appendActFlipped(db, entry = {}, { guard = null } = {}) {
   const row = normalizeRow(entry);
   const lane = laneOf(row);
   if (FLIP_REFUSED[lane]) {
@@ -505,8 +505,9 @@ export async function appendActFlipped(db, entry = {}) {
       act: !draft,
       household: () => claimHouseholdFor(row),
       claimFn: (client, actId, household) => claimTxFromJournal(client, row, null, { household, actId }),
+      guard,
     }
-    : {}); // throws PenUnreachableError — the door bounces, nothing was written
+    : { guard }); // throws PenUnreachableError — the door bounces, nothing was written
 
   // ── THE REVERSE MIRROR IS GONE (G1 / POS-156, 2026-09-22) ─────────────────
   //

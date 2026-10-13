@@ -212,6 +212,13 @@ export async function stockedOnTick(client, { stock = stockChests, crossing = cu
   }
 }
 
+/** The stock step, gated on the carried step that proves admission (finding 7). */
+export async function chestsAfterCarried(client, carried, { stock = stockedOnTick } = {}) {
+  if (carried?.verdict !== "ok")
+    return { verdict: "held", line: `chests: not stocked this tick — the carried step did not settle (${carried?.verdict ?? "not run"}), and a chest is stocked only on the settlement that carried it` };
+  return stock(client);
+}
+
 // ── the arm ──────────────────────────────────────────────────────────────────
 
 const iso = (d) => (d == null ? "—" : new Date(d).toISOString().replace(/\.\d{3}Z$/, "Z"));
@@ -328,7 +335,10 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
       if (!json) console.log(carried.line);
       // THE FIRST STOCK (WLD-27), after the settlement rows: a chest the newest
       // settlement admitted is stocked by the tick that first sees it.
-      const chests = await stockedOnTick(client);
+      // ONLY ON A SETTLED CARRIED STEP (Bevel's review, finding 7): the stock's proof
+      // of admission IS the carried rows, so a tick whose carried step erred,
+      // refused or skipped stocks nothing and says why; the next tick tries again.
+      const chests = await chestsAfterCarried(client, carried);
       if (!json) console.log(chests.line);
       if (carried.verdict === "DISAGREE") verdict = "CONFLICT";
     } else if (verify) {

@@ -35,6 +35,7 @@ import {
   withdrawnMarks, ancestry, selectLabel, stockedChests,
 } from "./world-stacks.mjs";
 import { holdingsOf, sameHousehold, holdTurn, liveHolder, rowsFor, holdingEntry } from "./world-hold.mjs";
+import { chestRoomGuard } from "./chest-lock.mjs";
 
 // ── SLOTS HELD FOR AN ACT STILL IN FLIGHT (Bevel's review, finding 3) ───────
 //
@@ -110,7 +111,7 @@ export async function liveUnitDeps() {
     },
     standpoint: async (actor) => { const s = await world.residentStandpoint(String(actor)).catch(() => null); return s?.placed ? { x: s.x, y: s.y } : null; },
     householdOf: await (async () => { try { return await (await import("./households.mjs")).householdLookup(); } catch { return null; } })(),
-    append: (entry) => journal.appendActFlipped(null, entry),
+    append: (entry, opts = {}) => journal.appendActFlipped(null, entry, opts),
     stamp: (actor) => world.witnessStamp(actor),
     crossing: () => crossings.currentCrossing(),
     household: (key) => branches.resolvedWorldHousehold(key),
@@ -137,7 +138,7 @@ const sentenceOf = {
   [UNIT_ACTION.consumeInPlace]: (r) => `${r.actor} consumed the set-down unit where it stood; the mark it was leaves at the next crossing`,
 };
 
-async function writeUnits(deps, key, actor, { action, object, moves, payload = {} }) {
+async function writeUnits(deps, key, actor, { action, object, moves, payload = {} }, { guard = null } = {}) {
   const { at, witnesses } = await deps.stamp(actor);
   const m = moves[0] ?? {};
   const entry = {
@@ -146,7 +147,7 @@ async function writeUnits(deps, key, actor, { action, object, moves, payload = {
     payload: { units: true, moves, ...payload },
     effect: (sentenceOf[action] ?? (() => action))({ actor }, { ...m, ...payload, n: m.n, label: m.label ?? payload.label, from: m.from, to: m.to }),
   };
-  const row = await deps.append(entry);
+  const row = await deps.append(entry, guard ? { guard } : {});
   return { seq: row?.actId ?? row?.seq ?? null, effect: entry.effect };
 }
 
@@ -236,7 +237,9 @@ export async function callUnits(route, args, key, actor, deps) {
         const plan = planGive({ fold, actor, to, label: args.label ?? null, n, capacityOfTo });
         refuseIfTaken(topClassOf(fold, actor, view, plan.label), view);
         if (!isChestId(to)) refuseOverCarry({ who: to, units: totalOf(fold, to) + reservedFor(to), things: thingsCarried(attachments, to), adding: n, cap });
-        const w = await writeUnits(deps, key, actor, plan);
+        // INTO A CHEST, the room is judged again under the chest's own lock inside
+        // the write's transaction — the tick's stock is another process (finding 6)
+        const w = await writeUnits(deps, key, actor, plan, isChestId(to) ? { guard: chestRoomGuard({ chest: to, capacity: chestCap, adding: n }) } : {});
         const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
         return { did: "give", units: true, label: plan.label, count: n, to, ...w, holds: holdsBlock(after, actor, view), receiver: holdsBlock(after, to, view) };
       });
@@ -264,7 +267,8 @@ export async function callUnits(route, args, key, actor, deps) {
         const plan = planRefill({ fold, actor, chest, capacity: capacity - holdingsOf(attachments, chest).length, labels: view.labels() });
         if (plan.noop) return { did: "refill", units: true, noop: true, note: plan.note, chest: holdsBlock(fold, chest, view) };
         refuseIfTaken(topClassOf(fold, chest, view) ?? "candy", view);
-        const w = await writeUnits(deps, key, actor, { ...plan, payload: { label: plan.label, capacity } });
+        const w = await writeUnits(deps, key, actor, { ...plan, payload: { label: plan.label, capacity } },
+          { guard: chestRoomGuard({ chest, capacity, adding: plan.moves[0].n }) });
         const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
         return { did: "refill", units: true, label: plan.label, count: plan.moves[0].n, ...w, chest: holdsBlock(after, chest, view) };
       });
@@ -524,7 +528,8 @@ async function thingIntoChest(args, key, actor, deps, view) {
     const fold = foldUnits(units);
     const used = totalOf(fold, chestId) + holdingsOf(attachments, chestId).length;
     if (used + 1 > capacity) throw bounce(409, `${chestId} has no room — ${used} of ${capacity}`, "its one capacity holds units and whole things alike. Nothing was recorded.");
-    const w = await writeThingHolding(deps, key, actor, attachments, { did: "give", thing, holder: chestId, previous: actor, madeBy: String(mark.by ?? thing.split("/")[0]) });
+    const w = await writeThingHolding(deps, key, actor, attachments, { did: "give", thing, holder: chestId, previous: actor, madeBy: String(mark.by ?? thing.split("/")[0]) },
+      { guard: chestRoomGuard({ chest: chestId, capacity, adding: 1 }) });
     const after = [...attachments, { entity: chestId, target: thing, policy: "cascade", born_at: w.at }];
     return { did: "give", thing, to: chestId, into_chest: true, ...w,
       chest: holdsBlock(fold, chestId, view, await thingsHeldBy(after, chestId, deps.markById)) };
@@ -557,7 +562,7 @@ async function thingFromChest(args, key, actor, deps, view, cap) {
  * shape — stamped strictly after the thing's newest holding row, the same
  * guard `declareHolding` keeps against the same-millisecond swallow.
  */
-async function writeThingHolding(deps, key, actor, attachments, { did, thing, holder, previous, madeBy }) {
+async function writeThingHolding(deps, key, actor, attachments, { did, thing, holder, previous, madeBy }, { guard = null } = {}) {
   const prior = rowsFor(attachments, thing);
   const newest = prior.length ? Date.parse(prior[prior.length - 1].born_at) : NaN;
   const now = Date.now();
@@ -565,6 +570,6 @@ async function writeThingHolding(deps, key, actor, attachments, { did, thing, ho
   const { at: anchor, witnesses } = await deps.stamp(actor);
   const entry = holdingEntry({ did, thing, holder, previous_holder: previous, made_by: madeBy, policy: "cascade", declared_by: actor, at },
     { crossing: deps.crossing(), at: anchor, witnesses, cls: "holding", household: deps.household(key) });
-  const row = await deps.append(entry);
+  const row = await deps.append(entry, guard ? { guard } : {});
   return { seq: row?.actId ?? row?.seq ?? null, at, effect: entry.effect };
 }

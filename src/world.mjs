@@ -2633,6 +2633,9 @@ export async function pointWithinMarkFn() {
 
 export async function worldStateRaw() { return (await world())._raw.worldState; }
 
+/** Every canon mark in the one world — for a read that filters by class (WLD-27: the map's chests). */
+export async function worldMarksAll() { return (await world()).marks ?? []; }
+
 // WHERE EACH MARK'S CENTRE IS, in the fold the witness stamp reads (witnessStampAt
 // § centreOf): the inverse every reader of an act's anchor needs. The save's
 // emission lines compose a voice act's anchor and offset back into x,y with it

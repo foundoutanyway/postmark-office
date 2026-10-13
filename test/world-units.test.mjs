@@ -246,3 +246,38 @@ test("routing: which act a call is, read off its arguments", () => {
   assert.equal(unitRouteOf({ thing: "wright/a-stool", to: "sbx-ana" }), null);
   assert.throws(() => unitRouteOf({ act: "eat" }), /consume or refill/);
 });
+
+// ── the reads: the card's and doorstep's block, and the map's chests ────────
+import { chestsRead, residentHolds } from "../src/world-units.mjs";
+
+function readDeps({ units = [], attachments = [], marks = [], classes = CLASSES } = {}) {
+  return { classes: () => classViewOf(snapOf(classes)), units: async () => units, attachments: async () => attachments, marks: async () => marks };
+}
+const u = (action, moves, object = null) => ({ class: "holding", action, object, payload: { units: true, moves } });
+
+test("the map's chests: label and live count from the fold; a carried chest is on its holder, not a pip", async () => {
+  const marks = [chestMark({ id: CHEST, at: { x: 1, y: 2 } }), chestMark({ id: "sbx-bo/tin", by: "sbx-bo" }), { id: "sbx-ana/stool", class: "thing" }];
+  const units = [u(UNIT_ACTION.stock, [{ from: null, to: CHEST, label: "test-comets", n: 30 }], CHEST),
+    u(UNIT_ACTION.take, [{ from: CHEST, to: "sbx-cy", label: "test-comets", n: 12 }], CHEST)];
+  const r = await chestsRead(readDeps({ units, marks, attachments: [{ entity: "sbx-cy", target: "sbx-bo/tin", policy: "cascade" }] }));
+  assert.equal(r.count, 2, "chests only");
+  const bowl = r.chests.find((c) => c.chest === CHEST);
+  assert.deepEqual([bowl.shows, bowl.count, bowl.capacity, bowl.at], ["Test Comets: 18", 18, 30, { x: 1, y: 2 }]);
+  const tin = r.chests.find((c) => c.chest === "sbx-bo/tin");
+  assert.equal(tin.held_by, "sbx-cy");
+  assert.equal(tin.shows, "empty");
+  assert.equal(tin.empty_because, undefined, "sbx-bo has a label: an empty chest of theirs is just empty");
+});
+
+test("the card's block: a holding shows on its holder; an absent one is absent; an unlabelled maker's empty chest says why", async () => {
+  const marks = [chestMark({ id: "sbx-eve/her-chest", by: "sbx-eve" })];
+  const units = [u(UNIT_ACTION.give, [{ from: null, to: "sbx-cy", label: "test-comets", n: 2 }])];
+  const cy = await residentHolds("sbx-cy", readDeps({ units, marks }));
+  assert.deepEqual([cy.holds.count, cy.holds.shows, cy.chests.length], [2, "Test Comets: 2", 0]);
+  const dee = await residentHolds("sbx-dee", readDeps({ units, marks }));
+  assert.equal(dee.holds.count, 0);
+  const eve = await residentHolds("sbx-eve", readDeps({ units, marks }));
+  assert.match(eve.chests[0].empty_because, /no candy was registered for sbx-eve/);
+  const ana = await residentHolds("sbx-ana", readDeps({ units, marks }));
+  assert.deepEqual(ana.label, { label: "test-comets", name: "Test Comets", creator: "sbx-ana" });
+});

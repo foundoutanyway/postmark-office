@@ -340,3 +340,72 @@ async function markExit(route, args, key, actor, deps, view, cap) {
     returns_note: returned.length ? `${returned.length} staker(s) had their stamps on this mark returned, one line each` : "no stake stood on this mark, so nothing was returned",
     withdrawn, ...(route === "take-back" ? { holds: holdsBlock(acted.after, actor, view) } : {}) };
 }
+
+// ── THE READS: a holder's card and doorstep, and the map's chests ───────────
+//
+// "Held stacks appear on the holder's card and doorstep, NOT as free map pips.
+// Supply World viewer and site rendering from the authoritative reads, not
+// generated JSON edits or a second stored display count." Every number below is
+// the fold of the record's unit acts, at the moment of the read.
+
+/** One chest as a reader sees it — its counts, what it shows, and why it is empty when that needs saying. */
+export function chestFace({ mark, fold, stocked, labels, view, heldBy = null }) {
+  const id = String(mark.id);
+  const block = holdsBlock(fold, id, view);
+  const by = String(mark.by ?? id.split("/")[0]);
+  let capacity = null;
+  try { capacity = capacityOf(mark, view.dials("chest")); } catch { capacity = null; }
+  const unstocked = !stocked.has(id) && !labelOfCreator(labels, by);
+  return {
+    chest: id, by, at: mark.at ?? null, extent: mark.extent ?? null,
+    capacity, portable: portableOf(mark, view.dials("chest")), welcome: welcomeOf(mark, view.dials("chest")),
+    count: block.count, class: block.class, shows: block.count ? block.shows : "empty", edges: block.edges,
+    ...(heldBy ? { held_by: heldBy, carried_note: `${heldBy} is carrying it; it rides its holder and is drawn on their card, not as a pip of its own` } : {}),
+    ...(unstocked && block.count === 0
+      ? { empty_because: `no candy was registered for ${by}, so the town has not stocked it; it is stocked at the first settlement after ${by}'s candy label is registered` }
+      : {}),
+  };
+}
+
+/** The live collaborators the reads need. */
+async function liveReadDeps() {
+  const [{ lawSnapshot }, world, guards] = await Promise.all([import("./law-snapshot.mjs"), import("./world.mjs"), import("./world2-guards.mjs")]);
+  return {
+    classes: () => classViewOf(lawSnapshot()),
+    units: async () => (await guards.storeHoldingRows()).filter(isUnitRow),
+    attachments: () => guards.storeAttachmentRows(),
+    marks: () => world.worldMarksAll(),
+  };
+}
+
+/** Every chest on the map, with its live count — GET /world/chests, keyless. */
+export async function chestsRead(deps = null) {
+  const d = deps ?? await liveReadDeps();
+  const view = d.classes();
+  const [units, attachments, marks] = await Promise.all([d.units(), d.attachments(), d.marks()]);
+  const fold = foldUnits(units);
+  const stocked = (await import("./world-stacks.mjs")).stockedChests(units);
+  const labels = view.labels();
+  const { liveHolder } = await import("./world-hold.mjs");
+  const chests = marks.filter((m) => m?.class === "chest")
+    .map((mark) => chestFace({ mark, fold, stocked, labels, view, heldBy: liveHolder(attachments, String(mark.id)) }));
+  return { chests, count: chests.length,
+    reading_law: "a chest shows its label (or its contents' nearest common class) and its live count, folded from the record's acts at this read — never a stored number" };
+}
+
+/** What one resident holds and the chests they made — the card's and the doorstep's block. */
+export async function residentHolds(handle, deps = null) {
+  const d = deps ?? await liveReadDeps();
+  const view = d.classes();
+  const [units, marks] = await Promise.all([d.units(), d.marks()]);
+  const fold = foldUnits(units);
+  const stocked = (await import("./world-stacks.mjs")).stockedChests(units);
+  const labels = view.labels();
+  const mine = labelOfCreator(labels, handle);
+  return {
+    holds: holdsBlock(fold, handle, view),
+    ...(mine ? { label: mine } : {}),
+    chests: marks.filter((m) => m?.class === "chest" && String(m.by ?? String(m.id).split("/")[0]) === String(handle))
+      .map((mark) => chestFace({ mark, fold, stocked, labels, view })),
+  };
+}

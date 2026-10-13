@@ -287,6 +287,27 @@ export async function doorstepBundle(handle, ctx = {}) {
       unavailable: [`the house's posts could not be read (${String(e?.message ?? e).slice(0, 160)})`],
       put_up: { total: null, shown: 0, rows: [] }, taking_part: { total: null, shown: 0, rows: [] } };
   }
+  // ── WHAT THEY HOLD (WLD-27) — beside the segments, not one of them ─────
+  //
+  // `holds`: the resident's counted units, one edge per label, and what the
+  // holding shows ("Pocket Comets: 18", "101 candies"); `chests`: the chests
+  // they made, each with its live count — or, when the town has not stocked one
+  // because no candy label is registered for them, the sentence saying so. A
+  // held stack is drawn HERE and on the card, never as a pip on the map. The
+  // same block answers GET /world/chests's rows; both are the fold of the
+  // record's acts at this read. Public, like where a resident stands.
+  try {
+    const { residentHolds } = await import("./world-units.mjs");
+    const h = await residentHolds(handle);
+    // EMPTY HANDS ARE ONE NUMBER: most residents hold nothing and made no chest,
+    // and the morning page does not fatten by a block that says so at length.
+    d.holds = h.holds.count === 0 && !h.chests.length && !h.label
+      ? { serves: "world.holdings", args: { handle }, count: 0 }
+      : { serves: "world.holdings", args: { handle }, ...h };
+  } catch (e) {
+    d.holds = { serves: "world.holdings", args: { handle },
+      unavailable: `what ${handle} holds could not be read (${String(e?.message ?? e).slice(0, 160)}) — unknown, not empty` };
+  }
   // The manifest, republished now that every segment is on the page. A reader
   // walks `segments` to find them, so it must name all ten or none.
   d.segments = [...DOORSTEP_SEGMENTS];

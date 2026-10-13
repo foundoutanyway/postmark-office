@@ -6,10 +6,13 @@
 // registry row, omit `human` first.
 //
 // So a registry row has two faces. The PRIVATE one is the store's: `human` stays
-// in the rows, the fold (`registryFromRows`), the drain that prints the files,
-// the ceremonies that write it and the deriver that resolves a house by it. This
-// file is the PUBLIC one: the same row with the `human` KEY gone (not nulled:
-// a null still says "there is a field here"), every other key in its own order.
+// in the rows, the fold (`registryFromRows`), the private render
+// (`renderRegistry`, the round trip), the ceremonies that write it and the
+// deriver that resolves a house by it. This file is the PUBLIC one: the same
+// row with the `human` KEY gone (not nulled: a null still says "there is a field
+// here"), every other key in its own order. The public reads use it, and so does
+// the drain that prints the town's files (`renderPublicRegistry`, POS-394): the
+// printout in the town repo is public, so it carries no `human` either.
 //
 // It copies; it never mutates. The objects handed in are the private record's
 // (a caller may hold them, a memo may share them), so a projection that deleted

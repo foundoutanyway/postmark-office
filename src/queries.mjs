@@ -9,7 +9,7 @@ import { HOLO_CAPTION, TEACH, postingsWithoutPots } from "./funding.mjs";
 import { isResidentHandle } from "./residency.mjs"; // the door's own admission grammar — one definition of what a handle is
 import { CROSSING_SEAL_SUBJECT } from "./crossings.mjs"; // the crossing's closing commit, as the copy's history records it (POS-332)
 import { dialNumber, ideasTank } from "./world-classes.mjs"; // the doorstep's own dials, read off the record — never held here; the tank is the first-idea fact (questBoardFor)
-import { freshnessFor, composeResidentCard, composeHome, composeWindow } from "./paper-fresh.mjs"; // the freshness ladder
+import { freshnessFor, composeResidentCard, composeHome, composeWindow, composeFoundedHome } from "./paper-fresh.mjs"; // the freshness ladder
 import { readPane, paneRelPath, WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // the pane's frame — one owner, read by this door and by the act
 import { STANDING } from "./town-mail.mjs"; // what a letter written but not sailed is called, said once (POS-375)
 
@@ -3555,5 +3555,10 @@ export function regionResidents(db, slugOrName) {
 // ahead of. Composing it would invent a tense for a field that has none.
 export function home(db, handle, fresh = null) {
   const row = db.prepare("SELECT json FROM homes WHERE handle = ?").get(handle);
-  return row ? composeHome(JSON.parse(row.json), withFresh(db, handle, fresh)) : null;
+  if (row) return composeHome(JSON.parse(row.json), withFresh(db, handle, fresh));
+  // A page founded since the index was built (POS-603, paper-fresh.mjs §
+  // composeFoundedHome): only for a resident this index holds, and only with a
+  // freshness context that has a checkout.
+  if (!fresh?.clone || !db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)) return null;
+  return composeFoundedHome(handle, withFresh(db, handle, fresh));
 }

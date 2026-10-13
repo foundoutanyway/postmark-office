@@ -412,3 +412,39 @@ both("another household's read of the card is the composed public card, as REST'
   assert.equal(r.address.address.body, "a bench by the north window");
   assert.equal(r.address.freshness.fields["address.body"].tense, TENSE.written);
 });
+
+// ── next steps: the OFFICE'S WIRING only (Rivet, 2026-10-13 09:58Z) ──────────
+// queries.mjs § questTools imports the town's tools/quest-progress.mjs from the
+// clone (cached per process, only on a successful import). This literal module
+// is NOT the town's composer: it exports the interfaces nextStepsFor calls and
+// captures the paperRows the office hands composeNextSteps. So it proves that
+// the papers the office passes are read through the record — not that the whole
+// next_steps block is fresh (the onboarding facts stay index-paced, and the real
+// composer may merge or dedupe). Kept LAST: its module is the process's cached
+// copy from here on, and no test before it can have cached another.
+const QUEST_STUB = `// test-only literal: the interface nextStepsFor calls, nothing of the town's
+export const COUNTABLE_FIELD = {};
+export const townDay = () => "2026-10-13";
+export const onboardingFactsFor = () => ({});
+export const onboardingBoard = () => ({ rows: [] });
+export const boardForHandle = () => ({ quests: [] });
+export function composeNextSteps({ paperRows }) {
+  globalThis.__pos603PaperRows = paperRows;
+  return { steps: (paperRows ?? []).map((r) => ({ id: r.id, text: r.text })) };
+}
+`;
+test("NEXT STEPS (office wiring only) · the paper rows handed to the composer stop asking once the first home is founded [office.db]", async () => {
+  const { nextStepsFor } = await import("../src/queries.mjs");
+  const clone = townClone();
+  writeFileSync(join(clone, "tools", "quest-progress.mjs"), QUEST_STUB);
+  const run = async () => {
+    delete globalThis.__pos603PaperRows;
+    const ns = await nextStepsFor(db, {}, "limen", clone, { own: true, key: keyFor("limen"), worldBlock: async () => null });
+    const rows = globalThis.__pos603PaperRows;
+    assert.ok(Array.isArray(rows), `the composer was reached with paperRows (next steps: ${JSON.stringify(ns)?.slice(0, 160)})`);
+    return rows.map((r) => r.id);
+  };
+  assert.ok((await run()).includes("tend-your-home"), "owed to start with");
+  okAct(await act("home", "limen", HOME, clone), "home");
+  assert.equal((await run()).includes("tend-your-home"), false, "the office's paper rows no longer ask");
+});

@@ -16,8 +16,15 @@
 // (older than this field) counts as scheduled; a line with a source this module
 // does not know is "unknown" and never clears anything. Those are two rules.
 //
-// The reader here is this log's own: it judges the RAW text, so a newest line
-// that is torn, oversize or not a keep-v1 receipt is a finding, never skipped.
+// The reader here is this log's own: it judges the RAW text, so a line that is
+// torn, oversize or not a keep-v1 receipt is a finding, never skipped. EVIDENCE
+// IS NOT LAUNDERED (Rivet, first review): an unreadable line, or a receipt with
+// a source this module does not know, written AFTER the last valid scheduled
+// receipt stays an alarm until a later valid scheduled receipt recovers it. A
+// by-hand run can neither hide it from the judge nor erase it on append: the
+// writer keeps it (an unreadable line as a fixed marker naming only its
+// category, never its bytes) outside the retention caps that a flood of hand
+// runs fills.
 
 import { readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -47,10 +54,13 @@ const RUN_RE = /^[A-Za-z0-9._:-]{1,80}$/;
 // else arrives, and other lines (by-hand, unknown) are capped apart at 32, so a
 // burst of hand runs can never push the scheduled window out. A line is at most
 // MAX_LINE_BYTES; with every field bounded below, a receipt is well under 2 KB,
-// so the log stays under ~260 KB.
+// so the log (with at most 8 evidence lines, below) stays under ~280 KB.
 export const RETAIN_SCHEDULED = 96;
 export const RETAIN_OTHER = 32;
 export const MAX_LINE_BYTES = 4096;
+// Evidence the judge must keep seeing is capped apart: one line is enough to
+// alarm, so the newest 8 bound the file without ever emptying the finding.
+export const RETAIN_EVIDENCE = 8;
 
 const isIso = (s) => typeof s === "string" && s.length <= 40 && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(s) && Number.isFinite(Date.parse(s));
 
@@ -72,12 +82,17 @@ export function invalidity(o) {
   if (Object.hasOwn(o, "source") && (typeof o.source !== "string" || o.source.length > 32)) return "bad source";
   if (!o.steps || typeof o.steps !== "object" || Array.isArray(o.steps)) return "no steps";
   for (const [id, st] of Object.entries(o.steps)) {
-    if (!STEPS.includes(id)) return `unknown step ${String(id).slice(0, 20)}`;
+    if (!STEPS.includes(id)) return "unknown step";
     if (!st || typeof st !== "object" || !STATUSES.includes(st.s)) return `bad status for ${id}`;
     if (Object.hasOwn(st, "r") && (typeof st.r !== "string" || !REASON_RE.test(st.r))) return `bad reason for ${id}`;
   }
   return null;
 }
+
+// The writer's stand-in for an unreadable line it must keep: its category, never its bytes.
+export const MARK_KIND = "office-keep-unreadable";
+const BAD_WHY_RE = /^(?:not an object|not keep-v1|not an office-keep receipt|bad run id|bad timestamps|bad exit|bad signal|bad source|no steps|unknown step|bad (?:status|reason) for [a-z_]{1,16}|oversize line|not JSON \(torn or truncated\))$/;
+const marker = (why) => ({ v: KEEP_V, kind: MARK_KIND, why: BAD_WHY_RE.test(why) ? why : "not an office-keep receipt" });
 
 /** Every non-blank line of the raw log, oldest first: { row } or { bad }. */
 export function parseLog(text) {
@@ -87,6 +102,7 @@ export function parseLog(text) {
     if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) { out.push({ bad: "oversize line" }); continue; }
     let o;
     try { o = JSON.parse(line); } catch { out.push({ bad: "not JSON (torn or truncated)" }); continue; }
+    if (o && o.kind === MARK_KIND && o.v === KEEP_V && BAD_WHY_RE.test(o.why)) { out.push({ bad: o.why }); continue; }
     const why = invalidity(o);
     out.push(why ? { bad: why } : { row: o });
   }
@@ -115,17 +131,35 @@ export function buildReceipt({ stepsText = "", source, run, started, at, exit, s
   return receipt;
 }
 
-/** The log with one receipt added: malformed lines dropped, the scheduled window protected. */
+/** The index of the last valid scheduled receipt in parsed entries (file order), or -1. */
+function lastScheduledAt(entries) {
+  let last = -1;
+  entries.forEach((e, i) => { if (e.row && sourceOf(e.row) === "scheduled") last = i; });
+  return last;
+}
+/** An entry the judge must still see: unreadable, or an unknown source, after the last scheduled receipt. */
+const isEvidence = (e, i, last) => i > last && (e.bad || sourceOf(e.row) === "unknown");
+
+/**
+ * The log with one receipt added, the scheduled window protected. Evidence (an
+ * unreadable line or an unknown source after the last scheduled receipt) is
+ * KEPT apart from both caps, the newest RETAIN_EVIDENCE of it, so a hand run
+ * can never erase it; an unreadable line is kept as a marker naming its
+ * category. Only a later valid scheduled receipt retires it.
+ */
 export function appendReceipt(existingText, receipt) {
-  const rows = parseLog(existingText).filter((e) => e.row).map((e) => e.row);
-  rows.push(receipt);
-  let keepSched = RETAIN_SCHEDULED, keepOther = RETAIN_OTHER;
+  const entries = parseLog(existingText);
+  entries.push({ row: receipt });
+  const last = lastScheduledAt(entries);
+  let keepSched = RETAIN_SCHEDULED, keepOther = RETAIN_OTHER, keepEvidence = RETAIN_EVIDENCE;
   const kept = [];
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const sched = sourceOf(rows[i]) === "scheduled";
-    if (sched ? keepSched-- > 0 : keepOther-- > 0) kept.push(rows[i]);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (isEvidence(e, i, last)) { if (keepEvidence-- > 0) kept.push(e); continue; }
+    if (e.bad) continue; // recovered: a valid scheduled receipt came after it
+    if (sourceOf(e.row) === "scheduled" ? keepSched-- > 0 : keepOther-- > 0) kept.push(e);
   }
-  return kept.reverse().map((r) => JSON.stringify(r)).join("\n") + "\n";
+  return kept.reverse().map((e) => JSON.stringify(e.row ?? marker(e.bad))).join("\n") + "\n";
 }
 
 /**
@@ -139,9 +173,14 @@ export function judgeKeep(text, { steps, n, staleMinutes, now = Date.now() }) {
   const entries = parseLog(text);
   if (!entries.length) return ["the keep log is empty or unreadable — no tick has left a receipt"];
   const alarms = [];
-  const newest = entries[entries.length - 1];
-  if (newest.bad) alarms.push(`the newest keep receipt is unreadable (${newest.bad})`);
-  else if (sourceOf(newest.row) === "unknown") alarms.push("the newest keep receipt names a source this roll-call does not know");
+  // every line after the last valid scheduled receipt, not only the newest: a
+  // hand run written after a torn or unknown line must not hide it
+  const lastSched = lastScheduledAt(entries);
+  const evidence = entries.filter((e, i) => isEvidence(e, i, lastSched));
+  const bad = evidence.filter((e) => e.bad);
+  const unknown = evidence.length - bad.length;
+  if (bad.length) alarms.push(`${bad.length} keep receipt line(s) since the last scheduled receipt are unreadable (${bad[bad.length - 1].bad})`);
+  if (unknown) alarms.push(`${unknown} keep receipt(s) since the last scheduled receipt name a source this roll-call does not know`);
 
   // scheduled rows (legacy no-source lines included), oldest first; a run id
   // written twice counts once, as its LATER line

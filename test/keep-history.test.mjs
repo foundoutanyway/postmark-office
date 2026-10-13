@@ -18,17 +18,21 @@ import {
   sourceOf, invalidity, parseLog, buildReceipt, appendReceipt, judgeKeep, writeReceipt,
 } from "../deploy/keep-history.mjs";
 import { loadManifest, judgeOutcome, DEFAULT_MANIFEST } from "../tools/box-rollcall.mjs";
+// read through the namespace so this file still loads over an older module (the baseline-red run)
+import * as keepHistory from "../deploy/keep-history.mjs";
+const { RETAIN_EVIDENCE } = keepHistory;
 import { tempDir } from "./helpers/temp-dir.mjs";
 
 const T0 = Date.parse("2026-10-13T08:07:00Z");
 const MIN = 60_000;
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
-/** One receipt line. `steps` overrides; every other step is ok. `source: undefined` omits the field (legacy). */
-function rec({ run, at, source = "scheduled", steps = {} }) {
+/** One receipt line. `steps` overrides; every other step is ok. `legacy: true` writes NO source field at all. */
+function rec({ run, at, source = "scheduled", steps = {}, legacy = false }) {
   const all = {};
   for (const id of STEPS) all[id] = { s: "ok" };
   for (const [id, s] of Object.entries(steps)) all[id] = typeof s === "string" ? { s } : s;
-  const o = { v: 1, kind: "office-keep", run, ...(source === undefined ? {} : { source }), started: iso(at - MIN), at: iso(at), exit: 0, steps: all };
+  const o = { v: 1, kind: "office-keep", run, source, started: iso(at - MIN), at: iso(at), exit: 0, steps: all };
+  if (legacy) delete o.source;
   return JSON.stringify(o);
 }
 const log = (...lines) => lines.join("\n") + "\n";
@@ -91,8 +95,14 @@ test("provenance is four cases: absent counts as scheduled, scheduled, by-hand i
 
   const refused = (run, at, source) => rec({ run, at, source, steps: { push: "refused" } });
   const ok = (run, at, source) => rec({ run, at, source });
-  // absent: three legacy refused lines alarm exactly like scheduled ones
-  assert.equal(alarmsFor(judge(log(refused("a", T0 - 30 * MIN, undefined), refused("b", T0 - 15 * MIN, undefined), refused("c", T0, undefined))), "push").length, 1);
+  // absent: a REAL legacy line (no source property at all) counts as scheduled: N-1 quiet, N alarms, its ok resets
+  const legacy = (run, at, steps = {}) => rec({ run, at, steps, legacy: true });
+  for (const l of [legacy("a", T0), legacy("b", T0, { push: "refused" })]) assert.equal(Object.hasOwn(JSON.parse(l), "source"), false, "the line has no source property");
+  const L = (i, s) => legacy(`l${i}`, T0 - (3 - i) * 15 * MIN, s);
+  assert.deepEqual(judge(log(L(0), L(1), L(2, { push: "refused" }), L(3, { push: "refused" }))), [], "two legacy refusals are N-1");
+  assert.equal(alarmsFor(judge(log(L(0), L(1, { push: "refused" }), L(2, { push: "refused" }), L(3, { push: "refused" }))), "push").length, 1, "three are N");
+  assert.deepEqual(judge(log(L(0, { push: "refused" }), L(1, { push: "refused" }), L(2), L(3, { push: "refused" }))), [], "a legacy ok resets the streak");
+  assert.deepEqual(judge(log(L(0), L(1), L(2), L(3))).filter((x) => /source this roll-call does not know/.test(x)), [], "absent is never unknown");
   // by-hand: hand oks between scheduled refusals do NOT clear the streak...
   const handOks = log(refused("a", T0 - 30 * MIN), ok("h1", T0 - 20 * MIN, "by-hand"), refused("b", T0 - 15 * MIN), ok("h2", T0 - 5 * MIN, "by-hand"), refused("c", T0));
   assert.equal(alarmsFor(judge(handOks), "push").length, 1, "a manual success cannot mask a scheduled failure");
@@ -103,7 +113,7 @@ test("provenance is four cases: absent counts as scheduled, scheduled, by-hand i
   const unknownOk = log(refused("a", T0 - 30 * MIN), ok("u1", T0 - 20 * MIN, "cron"), refused("b", T0 - 15 * MIN), refused("c", T0 - 2 * MIN), ok("u2", T0 - MIN, "cron"));
   const u = judge(unknownOk);
   assert.equal(alarmsFor(u, "push").length, 1, "an unknown source never clears a streak");
-  assert.ok(u.some((x) => /names a source this roll-call does not know/.test(x)), "and an unknown NEWEST line is itself a finding");
+  assert.ok(u.some((x) => /1 keep receipt\(s\) since the last scheduled receipt name a source this roll-call does not know/.test(x)), "and an unknown line after the last scheduled one is itself a finding");
   // a log of only by-hand and unknown lines has no scheduled evidence at all
   assert.ok(judge(log(ok("h", T0, "by-hand"), ok("u", T0, "cron"))).some((x) => /no scheduled keep receipt/.test(x)));
 });
@@ -113,7 +123,7 @@ test("missing, malformed, torn or oversize newest evidence is a finding, never h
   assert.match(judge("\n\n")[0], /empty or unreadable/);
   const good = ticks(3);
   const torn = log(...good) + good[2].slice(0, 40); // a write cut off mid-line
-  assert.ok(judge(torn).some((x) => /newest keep receipt is unreadable \(not JSON/.test(x)));
+  assert.ok(judge(torn).some((x) => /since the last scheduled receipt are unreadable \(not JSON/.test(x)));
   const notKeep = log(...good, JSON.stringify({ v: 2, kind: "office-keep" }));
   assert.ok(judge(notKeep).some((x) => /unreadable \(not keep-v1\)/.test(x)));
   const badStatus = log(...good, rec({ run: "z", at: T0, steps: { push: "fine" } }));
@@ -124,6 +134,44 @@ test("missing, malformed, torn or oversize newest evidence is a finding, never h
   assert.ok(judge(oversize).some((x) => /unreadable \(oversize line\)/.test(x)));
   // a malformed line that is NOT the newest is skipped by the streak, not fatal
   assert.deepEqual(judge(log(good[0], "{torn", good[1], good[2])), []);
+});
+
+test("evidence is not laundered: a hand run after a torn, invalid or unknown line neither hides it nor erases it on append", () => {
+  const good = ticks(3);
+  const handOk = (run, at) => JSON.parse(rec({ run, at, source: "by-hand" }));
+  const schedOk = (run, at) => JSON.parse(rec({ run, at }));
+  const cases = [
+    ["torn", good[2].slice(0, 40) + "ghp_NOT_A_TOKEN", /unreadable \(not JSON \(torn or truncated\)\)/],
+    ["invalid status, scheduled", rec({ run: "z", at: T0, steps: { push: "fine" } }), /unreadable \(bad status for push\)/],
+    ["unknown step id", JSON.stringify({ ...JSON.parse(good[2]), run: "z", steps: { ghp_NOT_A_TOKEN: { s: "ok" } } }), /unreadable \(unknown step\)/],
+    ["unknown source", rec({ run: "u", at: T0, source: "cron" }), /source this roll-call does not know/],
+  ];
+  for (const [name, line, finding] of cases) {
+    const before = log(...good, line);
+    assert.ok(judge(before).some((x) => finding.test(x)), `${name}: alarms as the newest line`);
+    // the JUDGE alone: a hand line written after it does not hide it
+    const behindHand = before + rec({ run: "h0", at: T0 + MIN, source: "by-hand" }) + "\n";
+    assert.ok(judge(behindHand).some((x) => finding.test(x)), `${name}: still alarms behind a hand run`);
+    // the WRITER: hand appends keep it, through a flood
+    let text = before;
+    for (let i = 0; i < 60; i++) text = appendReceipt(text, handOk(`h${i}`, T0 + MIN + i * 1000));
+    const after = judge(text);
+    assert.ok(after.some((x) => finding.test(x)), `${name}: still alarms after 60 hand appends: ${after}`);
+    assert.doesNotMatch(text, /ghp_NOT_A_TOKEN/, `${name}: the bad line's bytes are not kept`);
+    assert.doesNotMatch(after.join(" "), /ghp_NOT_A_TOKEN/, `${name}: nor echoed`);
+    assert.equal(parseLog(text).filter((e) => e.row && sourceOf(e.row) === "unknown").length + parseLog(text).filter((e) => e.bad).length, 1, `${name}: the one piece of evidence, once`);
+    // a legitimate scheduled recovery retires it (no permanent poison)...
+    const recovered = appendReceipt(text, schedOk("s9", T0 + 2 * MIN));
+    assert.deepEqual(judge(recovered, { now: T0 + 3 * MIN }), [], `${name}: a later valid scheduled receipt recovers`);
+    // ...and the unknown line never counted as scheduled on the way
+    if (name === "unknown source") assert.ok(judge(log(rec({ run: "u", at: T0, source: "cron" }))).some((x) => /no scheduled keep receipt/.test(x)));
+  }
+  // evidence is capped apart from the other caps: a flood of torn lines keeps the newest 8, never zero
+  let flood = log(...good);
+  for (let i = 0; i < 20; i++) flood += "{torn\n";
+  flood = appendReceipt(flood, handOk("h", T0 + MIN));
+  assert.equal(parseLog(flood).filter((e) => e.bad).length, RETAIN_EVIDENCE);
+  assert.ok(judge(flood).some((x) => /8 keep receipt line\(s\) since the last scheduled receipt are unreadable/.test(x)));
 });
 
 test("stale: the newest SCHEDULED receipt older than the allowance alarms, and hand runs cannot freshen it", () => {
@@ -168,13 +216,15 @@ test("retention: 96 scheduled are kept through a flood of hand runs; other lines
   const rows = parseLog(text);
   assert.ok(rows.every((e) => e.row), "no malformed line survives a write");
   const sched = rows.filter((e) => sourceOf(e.row) === "scheduled");
-  const other = rows.filter((e) => sourceOf(e.row) !== "scheduled");
+  const hand = rows.filter((e) => sourceOf(e.row) === "by-hand");
+  const unknown = rows.filter((e) => sourceOf(e.row) === "unknown");
   assert.equal(sched.length, RETAIN_SCHEDULED);
   assert.equal(sched[0].row.run, "s4", "the OLDEST scheduled went first");
   assert.equal(sched.at(-1).row.run, "s99");
-  assert.equal(other.length, RETAIN_OTHER);
-  assert.equal(other.at(-1).row.run, "u0");
-  assert.ok(Buffer.byteLength(text) < (RETAIN_SCHEDULED + RETAIN_OTHER) * 2048, `bounded: ${Buffer.byteLength(text)} bytes`);
+  assert.equal(hand.length, RETAIN_OTHER, "hand runs are capped at 32");
+  assert.deepEqual(unknown.map((e) => e.row.run), ["u0"], "the unknown line after the last scheduled one is evidence, kept apart from that cap");
+  assert.equal(rows.at(-1).row.run, "u0");
+  assert.ok(Buffer.byteLength(text) < (RETAIN_SCHEDULED + RETAIN_OTHER + RETAIN_EVIDENCE) * 2048, `bounded: ${Buffer.byteLength(text)} bytes`);
   assert.ok(Math.max(...text.trim().split("\n").map((l) => Buffer.byteLength(l))) < 2048, "a full receipt is under 2 KB");
 });
 

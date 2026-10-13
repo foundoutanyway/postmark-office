@@ -27,7 +27,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tempDir } from "./helpers/temp-dir.mjs";
@@ -321,6 +321,24 @@ test("mint · a ledger that arrives red: mint refused ledger-red (exit 0 is not 
     verify: "notrun", commit: "notrun", push: "notrun", sync: "notrun", rollback: "ok:not-needed",
   });
   assert.deepEqual(calls(fx).slice(0, 6), ["registry", "settle", "standing", "gangway", "verify", "settlements"]);
+  assert.ok(published(fx));
+});
+
+test("mint · the pass cannot make its arrival copy (HOLD): mint refused prep-failed, nothing written, the tick goes on", { skip }, () => {
+  const fx = fixture();
+  // mktemp refuses ONLY the mint pass's HOLD template; every other call is the real one
+  unlinkSync(join(fx.bin, "mktemp"));
+  write(fx.bin, { mktemp: `#!/bin/sh\ncase "$*" in *postmark-tick-hold*) [ -n "$STUB_HOLD_FAIL" ] && exit 1;; esac\nexec ${which("mktemp")} "$@"\n` }, 0o755);
+  const head = fx.g("-C", fx.town, "rev-parse", "HEAD");
+  const r = run(fx, { ...OWED, STUB_HOLD_FAIL: "1" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(steps(receipt(fx)), {
+    ...GREEN, mint: "refused:prep-failed", welcome: "notrun", bugstage: "notrun", ballots: "notrun",
+    verify: "notrun", commit: "notrun", push: "notrun", sync: "notrun", rollback: "ok:not-needed",
+  });
+  assert.equal(calls(fx).includes("mint"), false, "nothing was minted without an arrival copy");
+  assert.equal(fx.g("-C", fx.town, "rev-parse", "HEAD"), head);
+  assert.equal(status(fx), "");
   assert.ok(published(fx));
 });
 

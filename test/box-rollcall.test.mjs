@@ -85,6 +85,7 @@ import {
   MINUTE,
 } from "../tools/box-rollcall.mjs";
 import { tempDir } from "./helpers/temp-dir.mjs";
+import { STEPS as KEEP_STEPS } from "../deploy/keep-history.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = join(HERE, "..", "deploy", "box-rollcall-manifest.json");
@@ -206,7 +207,17 @@ function healthy(m = manifest()) {
     // published, with the backlog going down rather than up. Generated from the
     // row's own thresholds so a manifest that raises `zero_published_runs` gets
     // a longer healthy window without anyone remembering to widen it here.
-    if (row.outcome && row.outcome.history_path) {
+    // POS-524: a keep row is judged from its own receipts (deploy/keep-history.mjs),
+    // so its healthy log is three scheduled ticks with every step ok, the newest
+    // at the heartbeat's own time.
+    if (row.outcome && row.outcome.kind === "keep_steps") {
+      const lines = [2, 1, 0].map((i) => JSON.stringify({
+        v: 1, kind: "office-keep", run: `healthy-${i}`, source: "scheduled",
+        started: new Date(beatAt - i * 15 * MINUTE - MINUTE).toISOString(), at: new Date(beatAt - i * 15 * MINUTE).toISOString(),
+        exit: 0, steps: Object.fromEntries(KEEP_STEPS.map((id) => [id, { s: "ok" }])),
+      }));
+      files[row.outcome.history_path] = { exists: true, mtime_ms: beatAt, text: `${lines.join("\n")}\n` };
+    } else if (row.outcome && row.outcome.history_path) {
       const n = Math.max(Number(row.outcome.zero_published_runs) || 3, 3) + 2;
       const lines = [];
       for (let i = n - 1; i >= 0; i--) {

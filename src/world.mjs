@@ -92,7 +92,7 @@ export const WORLD_CLONE = process.env.WORLD_CLONE
 // a clone, and pulls in graphology). Re-exported here so every caller that has
 // always read `currentCrossing` from `world.mjs` still does.
 export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
-import { arrivesAt, CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { arrivesAt, CROSSING_DERIVATION, crossingSailsAt, currentCrossing } from "./crossings.mjs";
 import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
 import { ringOf, ringBox, ringAgrees, ringMovedTo, RING_SHAPE_SENTENCE, RING_CLAIM_SENTENCE } from "./ring-box.mjs"; // POS-322: a mark's box is derived from its ring
 
@@ -1141,7 +1141,7 @@ export const MISTS_RETRY_AFTER_S = 30;
 // ring crosses it, and each piece is kept by which side of the other ring its
 // middle stands on; a piece lying along the other ring's boundary is shared ground,
 // not new. An amend that neither moves nor widens adds nothing.
-const groundRingOf = (mark) => {
+export const groundRingOf = (mark) => {
   const ring = ringOf(mark?.points);
   if (ring) return ring;
   const hw = (Number(mark?.extent?.w) || 0) / 2, hh = (Number(mark?.extent?.h) || 0) / 2;
@@ -3203,7 +3203,7 @@ async function foldConstants() {
 }
 
 // The town's parcel dial as a box, for the door's ring rule (POS-322).
-async function parcelDial() {
+export async function parcelDial() {
   const side = (await foldConstants()).PARCEL_EXTENT_M ?? 25;
   return { w: side, h: side };
 }
@@ -3773,7 +3773,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing(), guard = n
 }
 
 /** withdraw, as one later entry. The terminal supersession (edit-law § withdraw) — nothing is deleted, a row says it ended. */
-export async function journalWithdraw({ by, slug, household, cause = null }, { crossing = currentCrossing() } = {}) {
+export async function journalWithdraw({ by, slug, household, cause = null, guard: asked = null }, { crossing = currentCrossing() } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${by}/${slug}`;
   const canon = canonForGuards();
@@ -3787,6 +3787,13 @@ export async function journalWithdraw({ by, slug, household, cause = null }, { c
       const { markStandingStatus, withdrawRetiredRefusal } = await import("./world2-claims.mjs");
       const retired = withdrawRetiredRefusal(id, await markStandingStatus({ slug: id }).catch(() => null));
       if (retired) throw bounce(retired.code, retired.defect, retired.hint);
+      // A SET-DOWN UNIT'S MARK FROM A HOUSE ITS DROPPER HAS LEFT lands here too,
+      // and stays here by ruling (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
+      // WLD-27): the draft or pending claim belongs to the household that filed
+      // it, so the moved dropper's present house does not reach it and nothing is
+      // returned or retracted through it. Once published, the unit comes back by
+      // take-back like any published unit (test/withdraw-dropped-unit.test.mjs §
+      // ORIGINAL HOUSEHOLD). No visibility is widened to make it reachable.
       throw bounce(404, `no mark "${id}" in your world`, "ids are <by>/<slug> — you can withdraw your drafts and your published marks; check world_my_marks");
     }
 
@@ -3829,7 +3836,11 @@ export async function journalWithdraw({ by, slug, household, cause = null }, { c
     // (chest-lock.mjs § chestEmptyGuard), so no give or stock can slip contents
     // in behind the decision. Any other mark withdraws exactly as before.
     const isChest = (live.find((m) => m.id === id) ?? canon.marks.find((m) => m.id === id))?.class === "chest";
-    const guard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
+    const chestGuard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
+    // `asked` (WLD-27 A): the door's own check that must hold in this same
+    // transaction — the public withdrawal's escrow, read under the mark's lock.
+    const guards = [asked, chestGuard].filter(Boolean);
+    const guard = guards.length ? async (client) => { for (const g of guards) await g(client); } : null;
     let row;
     try {
       row = laneFlipped("mark")
@@ -3940,6 +3951,25 @@ async function placingOnBehalf(by, payload, key, bounce) {
 // family as `_act_id` and `_adopted`), so it reaches the act's payload and the
 // claim's `data` and never a mark file. It is not read off `payload`: a
 // resident cannot claim a drop they did not make by typing the key.
+/**
+ * THE PLACEMENT RECEIPT'S MISTS FORECAST (WLD-38): the one forecast
+ * (mists-forecast.mjs) for this mark's ground, or the named unavailability.
+ * `null` when there is nothing to say — no season on the record, or a season
+ * that never reaches this ground within its schedule.
+ */
+async function placementForecast({ worldClone, w, worldUnread, id, ring, mistsCrossing = null }) {
+  const { forecastMists, mistsEngine, MISTS_FORECAST_UNAVAILABLE } = await import("./mists-forecast.mjs");
+  if (!w) return { unavailable: `${MISTS_FORECAST_UNAVAILABLE}: the world could not be read (${String(worldUnread?.message ?? worldUnread ?? "no world").slice(0, 120)})` };
+  const skeleton = w?._raw?.skeleton ?? undefined;
+  const engine = skeleton?.mists ? await mistsEngine(worldClone) : null;
+  const nowMs = mistsCrossing == null ? Date.now() : Date.parse(crossingSailsAt(mistsCrossing));
+  const f = await forecastMists({ engine, skeleton, footprints: [{ id, ring }], nowMs });
+  if (f.unavailable) return { unavailable: f.unavailable };
+  if (f.season === false || !f.reaches.length) return null;
+  const [r] = f.reaches;
+  return { as_of: f.as_of, fringe: r.fringe, wall: r.wall, says: r.says };
+}
+
 export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, { setDown = null, mistsCrossing = null, dropUnit = null } = {}) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
@@ -4194,36 +4224,36 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // rule on it (the ground question is a canon question). The ledger move is
     // still the stake verb's; this is the declaration saying what was asked for.
     ...(payload.stamps === undefined || payload.stamps === null ? {} : { stamps: stakeLands }) };
-  // ── NO NEW GROUND BEHIND THE MISTS (POS-468 B) ───────────────────────────
-  // From the Mists' first crossing, a mark may not be placed, nor moved by its
-  // amend, onto ground behind the wall: the wall hides everything behind it,
-  // and a mark there would be a way to stand something where no one can see or
-  // reach. Its whole ground is asked (its outline, else its box), here after
-  // every other judgment and before either pen writes. Marks already standing
-  // are not touched by this; only a write that would put ground behind the wall
-  // is refused. No Mists, a clone without them, or a world that will not load:
-  // no check at all.
+  // ── THE MISTS ON THE PLACEMENT RECEIPT (WLD-38; was POS-468 B's veto) ─────
+  // A sited or parcel mark's whole ground (its outline, else its box) is asked
+  // the Mists forecast here, after every other judgment and before either pen
+  // writes; the answer rides the receipt as `mists`. Nothing is refused for the
+  // Mists any more — see below. A parcel whose dial cannot be read has unknown
+  // ground, and says so rather than guessing a box.
+  let mistsWarning = null;
   if (kind === "sited" || kind === "parcel") {
-    const box = kind === "parcel" ? (await parcelDial().catch(() => ({ w: 25, h: 25 }))) : extent;
+    let box = extent, dialUnread = null;
+    if (kind === "parcel") { try { box = await parcelDial(); } catch (e) { dialUnread = e; } }
     const hw = (Number(box?.w) || 0) / 2, hh = (Number(box?.h) || 0) / 2;
     const ground = ringOf(points) ? ringOf(points)
       : [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([dx, dy]) => ({ x: Number(at.x) + dx, y: Number(at.y) + dy }));
-    // AN AMEND IS ASKED ONLY ABOUT THE GROUND IT ADDS. The town's own great marks
-    // (its sea, its channel, the root's box) already reach behind the wall, and
-    // re-filing one in place must not be refused for ground it always held: so the
-    // wall is asked only about the points of the new ground that stand outside the
-    // mark's old footprint. An amend that neither moves nor widens it asks nothing.
-    let w = null;
-    try { w = await world(); } catch { w = null; }
-    const old = payload.amend === true ? (w?.marks ?? []).find((m) => m.id === `${by}/${slug}`) ?? null : null;
-    const fresh = mistsNewGround(old, ground);
-    const seen = fresh.points.length || fresh.edges.length
-      ? await mistsGroundCheck(worldClone, async () => w?._raw?.skeleton ?? null, fresh, mistsCrossing ?? currentCrossing())
-      : null;
-    if (seen?.unreadable) throw bounce(503, MISTS_UNREADABLE,
-      `the office could not read the world or its engine to see where the wall of the Mists stands, so it will not place this mark until it can. Nothing was written; send the same request again after ${MISTS_RETRY_AFTER_S} seconds (Retry-After).`);
-    if (seen?.wall) throw bounce(422, "this ground stands behind the wall of the Mists",
-      `a mark may not be placed or moved behind the wall while the Mists stand: its ground reaches (${seen.wall.x}, ${seen.wall.y}), which no one can see or reach. Choose ground on the clear side of the wall; marks already standing stay as they are.`);
+    // An amend is forecast for its WHOLE new ground: a warning, unlike the old
+    // veto, has no reason to spare ground the mark already held.
+    let w = null, worldUnread = null;
+    try { w = await world(); } catch (e) { w = null; worldUnread = e; }
+    // THE MISTS WARN; THEY DO NOT VETO (WLD-38, Wright 2026-10-13T05:16:12Z).
+    // This door used to refuse ground behind the wall (422) and refuse to place
+    // anything while it could not read the wall (503). Both are gone from
+    // placement: a valid mark is written, and its receipt carries the Mists
+    // forecast for its whole ground — when the fringe and the wall reach it, or
+    // that the wall already stands over it — or, when the forecast cannot be
+    // read, `mists-forecast-unavailable: <why>`, never a silent clear. It is
+    // computed HERE, before either pen writes and with no write of its own, so
+    // nothing after the commit can turn a written mark into an error. The walk,
+    // portal and spawn checks keep `mistsGroundCheck` exactly as it was.
+    mistsWarning = dialUnread
+      ? { unavailable: `mists-forecast-unavailable: the parcel dial could not be read, so this parcel's ground is unknown (${String(dialUnread?.message ?? dialUnread).slice(0, 120)})` }
+      : await placementForecast({ worldClone, w, worldUnread, id: `${by}/${slug}`, ring: ground, mistsCrossing });
   }
   const exec = join(HERE, "leave-exec.mjs");
   let result;
@@ -4248,6 +4278,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
   }
   if (outline) result.outline = outline; // POS-322: one line, only when the door moved or derived the box
+  if (mistsWarning) result.mists = mistsWarning; // WLD-38: the forecast, computed before the write
   await discloseOverhang(result, by, key);
   await discloseYourGround(result, clean);             // before the publish note, which strips _ground_min
   await disclosePublishing(result, by);
@@ -4315,7 +4346,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
 // exec cannot: WHOSE hand (the mark's by must be on your key — only the hand
 // that left a mark may withdraw it) and the LEDGER (escrow anchors a mark; the
 // stake ledger lives town-side, so the check runs here before anything spawns).
-export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
+export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, { units = null, escrowOf = null } = {}) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const mark = String(args.mark ?? "").trim();
@@ -4354,7 +4385,11 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
   // you can take back yourself; another's is their word standing behind your
   // mark, and it must come back to them before the mark can go.
   try {
-    const sr = await callWorldStakeTool("world_stake_read", { mark });
+    // read SETTLED (WLD-27, Bevel's first review R1): under the mark's lock, so
+    // a stake or unstake still landing — or about to roll back — is not counted
+    // either way; the guard below reads again in the write's own transaction
+    const { withMarkHeld } = await import("./mark-stake-lock.mjs");
+    const sr = await withMarkHeld(mark, () => callWorldStakeTool("world_stake_read", { mark }), { refusal: "your mark is exactly as it was", connection: "pool" });
     if (Number(sr?.escrow) > 0) {
       const holders = (sr.holders ?? []).map((h) => `${h.handle} (${h.stamps}✦)`).join(", ");
       throw bounce(409, `${sr.escrow}✦ stand in escrow on "${mark}" — a staked mark cannot be withdrawn`,
@@ -4365,8 +4400,41 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
   const exec = join(HERE, "leave-exec.mjs");
   let result;
   if (singleLogEnabled()) {
-    try { return await journalWithdraw({ by, slug, household }); }
+    // THE ESCROW AGAIN, UNDER THE MARK'S LOCK, IN THE WRITE'S OWN TRANSACTION
+    // (Wright, WLD-27 A: "the public withdraw door has the same read-then-write
+    // gap"). The read above answers early and names the holders; this one
+    // decides. A stake admitted before it has its line on the ledger, and one
+    // after it finds this withdrawal committed and is refused at the exec
+    // (mark-stake-lock.mjs). Both pens take it.
+    const { withdrawEscrowGuard } = await import("./mark-stake-lock.mjs");
+    const { ledgerEscrowOf } = await import("./world-stake.mjs");
+    // `escrowOf` and `units` are injectable only so a falsifier can make the
+    // ledger read fail and hand in the class law; the office passes neither.
+    const guard = withdrawEscrowGuard({ mark, escrow: escrowOf ?? ((m) => ledgerEscrowOf(m)) });
+    try {
+      // A SET-DOWN UNIT'S MARK (WLD-27 D): withdrawn before publication, the
+      // unit comes back to its dropper — an add, judged against the carry cap
+      // in the hold queue — in the withdrawal's own transaction; published, it
+      // is taken back, not withdrawn. Any other mark: null, and on as before.
+      const { withdrawDroppedUnit, liveUnitDeps } = await import("./world-units.mjs");
+      const viaUnit = await withdrawDroppedUnit({ mark, by, household, caller: by, guard,
+        withdraw: ({ guard: g }) => journalWithdraw({ by, slug, household, guard: g }) }, units ?? await liveUnitDeps());
+      if (viaUnit) return viaUnit;
+      return await journalWithdraw({ by, slug, household, guard });
+    }
     catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", String(e?.message ?? e).slice(0, 300)); }
+  }
+  // THE GIT LANE TAKES NO SET-DOWN UNIT (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
+  // on Bevel's first review of #503, R3): a dropped unit's mark is withdrawn only
+  // on the store's single-log path, where the unit comes back in the
+  // withdrawal's own transaction under the carry cap (WLD-27 D). This lane has
+  // no such return, so it refuses by name, before anything is written — never a
+  // best-effort refund, never a silent withdrawal that leaves the unit nowhere.
+  // Any other mark goes on exactly as before.
+  {
+    const { droppedUnitOnGitLane } = await import("./world-units.mjs");
+    const refusal = await droppedUnitOnGitLane({ mark, by, household }, units ?? null);
+    if (refusal) throw Object.assign(bounce(refusal.code, refusal.defect, refusal.hint), { reason: refusal.reason });
   }
   try {
     result = await draftWrite(worldClone, exec, JSON.stringify({ op: "withdraw", by, slug, household }), household, mark);
@@ -4374,7 +4442,8 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
     if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
     throw bounce(500, "the withdrawal tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
   }
-  if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
+  // the exec's named reason rides through (the git lane's set-down refusal, R3)
+  if (result.error) throw Object.assign(bounce(result.error.code ?? 500, result.error.defect, result.error.hint), result.error.reason ? { reason: result.error.reason } : {});
   return result;
 }
 

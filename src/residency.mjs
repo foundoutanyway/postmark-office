@@ -223,9 +223,11 @@ export function houseForAccount(registry, ghId, ghLogin) {
   return resolveHouse({ ghId, ghLogin }, registry, {}, { via: VIA.ACCOUNT }).slug;
 }
 
-// The house the caller NAMED, matched the way a human writes it: alden's card
-// says "Sydney Kitts" and arky's says "cadaeic.space" — slug, `name` and
-// `human` all normalize through the same slugger, so either finds the one entry.
+// The house the caller NAMED, matched the way a person writes it: a card may
+// say "cadaeic.space" or the house's chosen name — slug and `name` normalize
+// through the same slugger, so either finds the one entry. The household's
+// private `human` never does (POS-609): typing it neither claims the house
+// (planRegistryJoin) nor marks a declared name taken (declare.mjs).
 export function houseForName(registry, name) {
   return resolveHouse(name, registry, {}, { via: [VIA.SLUG, VIA.NAME] }).slug;
 }
@@ -370,8 +372,10 @@ export function planRegistryJoin(registry, { handle, household, ghId, ghLogin, s
     if (!own) return null;
 
     // THE COLLISION ANSWERS, IT DOES NOT OVERWRITE. `houseForName` is this file's
-    // uniqueness path — the same matcher a named join is resolved through, slug,
-    // `name` and `human` alike — and a hit here means some OTHER house already
+    // uniqueness path — the same matcher a named join is resolved through, slug
+    // and public `name` (never a private `human`: POS-609, so this bounce can
+    // never tell a caller that a login is somebody's private name) — and a hit
+    // here means some OTHER house already
     // answers to this login (`byAccount` was null, so it is not this account's).
     // Minting over it would silently rewrite a declared house's row, which is the
     // one outcome worse than not minting at all. Appending would be no better:

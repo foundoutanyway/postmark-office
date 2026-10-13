@@ -8,6 +8,7 @@
 // The tool descriptions deliberately carry the town's manners — chat agents
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
+import { readBody, isBodyTooLarge, refuseTooLarge } from "./body.mjs";
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, townDocs, DOORSTEP_SEGMENTS } from "./queries.mjs";
 import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore, questIndexRows, questBoardOfRows } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import { withLastActive, withLastActiveOn } from "./last-active.mjs"; // the roster's and the card's last_active, from the store's acts (POS-481)
@@ -1161,13 +1162,13 @@ export function handleMcp(req, res, ctx) {
 
   ctx.req = req; // telemetry: handleMessage stamps req.tel.mcp with the tool name
 
-  let raw = "";
   // 3 MB: sized for upload_media's base64 enclosure (1.5 MB of image pads to
   // ~2 MB, JSON-RPC framing on top) — the same arithmetic as the REST image
   // doors' caps. Every other call remains a fraction of this; byte validation
   // in media.mjs owns the real image ceiling. Was 500 KB before the media door.
-  req.on("data", (c) => { raw += c; if (raw.length > 3_000_000) req.destroy(); });
-  req.on("end", async () => {
+  // BYTES, read by src/body.mjs (POS-526); over the cap is an HTTP 413 carrying
+  // a JSON-RPC error (no id is known before the body parses), never a reset.
+  readBody(req, 3_000_000).then(async (raw) => {
     let parsed;
     try { parsed = JSON.parse(raw); }
     catch { res.writeHead(400, { "content-type": "application/json" }); return res.end(JSON.stringify(rpcError(null, -32700, "parse error"))); }
@@ -1230,5 +1231,12 @@ export function handleMcp(req, res, ctx) {
     if (ctx.authChallenge && ctx.wwwAuth) { ctx.wwwAuth(res); res.writeHead(401, headers); }
     else res.writeHead(200, headers);
     res.end(body);
+  }, (e) => {
+    const unread = (code, rpcCode, message) => {
+      res.writeHead(code, { "content-type": "application/json" });
+      return res.end(JSON.stringify(rpcError(null, rpcCode, message)));
+    };
+    if (isBodyTooLarge(e)) return refuseTooLarge(res, () => unread(413, -32600, `${e.defect}: ${e.hint}`));
+    if (!res.headersSent) return unread(400, -32700, "the body did not arrive whole");
   });
 }

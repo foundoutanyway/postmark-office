@@ -32,6 +32,7 @@ import { judgeRoute, withRenamed, PATCH_PAPER_DOORS, markRefused } from "./one-c
 import { sendAtDoor } from "./send-at-door.mjs";
 import { TOWN_TOOL, townDispatchToolFor } from "./town-apex.mjs";
 import { householdApex, APEX_ONLY_FIELDS } from "./household-apex.mjs"; // the third door (2026-08-15)
+import { readBody, isBodyTooLarge, refuseTooLarge } from "./body.mjs";
 import { handleOauth, oauthLookup, oauthSchema, mintHouseholdKey, keyLookup, mintBerth, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims, SignInUnreadable } from "./oauth.mjs";
 import { staticLookup, staticKeyCount } from "./static-keys.mjs"; // POS-352: an operator's static key is a store row, no longer an env var
 import { requestResidency, isReservedHandle } from "./residency.mjs";
@@ -806,12 +807,14 @@ const rateResponse = (res, rate) => {
   return j(res, 429, rate);
 };
 
-const readJsonBody = (req, cap = 200_000) => new Promise((resolve, reject) => {
-  let raw = "";
-  req.on("data", (c) => { raw += c; if (raw.length > cap) req.destroy(); });
-  req.on("end", () => resolve(raw));
-  req.on("error", reject);
-});
+// Every body is read by src/body.mjs (POS-526): bytes counted, decoded once,
+// and an oversize body is a 413 answer, never a reset. Caps are unchanged.
+const readJsonBody = (req, cap = 200_000) => readBody(req, cap);
+// A body over its door's cap, answered in the bounce shape (the rest drains; no reset).
+const bodyTooLarge = (res, e) => refuseTooLarge(res, () => bounce(res, 413, e.defect, e.hint));
+// A body that could not be read: 413 when it was too large, else the door's own 400.
+const bodyUnread = (res, e, defect = "could not read the body", hint = "send a JSON object") =>
+  isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, defect, hint);
 
 // RFC 9728 discovery header: point unsigned writers at the protected-resource
 // metadata so the GitHub sign-in dance starts itself.
@@ -1164,7 +1167,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         console.error("[keys/claim]", e?.stack ?? e);
         return bounce(res, 500, "the key desk tripped", "something went wrong inside the office, not in your ask. Try again shortly. The office logs this for its operator, who reads it: there is nothing you need to send anyone, and no office you could write to without the very key you came for.");
       }
-    }).catch(() => bounce(res, 400, "the body never arrived", 'one small JSON object: {"handle": "…"}'));
+    }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "the body never arrived", 'one small JSON object: {"handle": "…"}'));
     return;
   }
 
@@ -1241,7 +1244,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         if (isUnreachable(e)) return bounce(res, 503, e.defect, e.hint); // the store's own words (POS-268)
         return bounceFault(res, "the gangplank tripped", e);
       }
-    }).catch(() => bounce(res, 400, "the body never arrived", "one small JSON object: {\"slug\": \"…\"}"));
+    }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "the body never arrived", "one small JSON object: {\"slug\": \"…\"}"));
     return;
   }
 
@@ -2307,7 +2310,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", "send a JSON object of the fields to set");
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2348,9 +2351,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
     // POST /residency — request_residency, the one write a visitor pass unlocks.
     // The office pen opens an ordinary join PR; admission is the Postmaster office's (delegated 2026-07-02, arrivals reported; ambiguity escalates to a human).
     if (req.method === "POST" && path === "/residency") {
-      let raw = "";
-      req.on("data", (c) => { raw += c; if (raw.length > 200_000) req.destroy(); });
-      req.on("end", async () => {
+      readBody(req, 200_000).then(async (raw) => {
         try {
           const judged = judgeOrBounce(res, "POST /residency", JSON.parse(raw || "{}"));
           if (!judged) return;
@@ -2361,7 +2362,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"handle","card", optional: agent, household, architecture, since, note}');
           return bounceFault(res, "the office tripped", e);
         }
-      });
+      }, (e) => bodyUnread(res, e));
       return;
     }
 
@@ -2392,7 +2393,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"handle","card","household", optional: agent, architecture, since, note}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send JSON"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send JSON"));
       return;
     }
 
@@ -2412,7 +2413,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"do": "begin", "args": { "household": "…", "card": "…" }}');
           return bounceFault(res, "the household door tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2424,9 +2425,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
 
     // POST /letters — the write spine (P2). Accepts mail; the ferry delivers.
     if (req.method === "POST" && path === "/letters") {
-      let raw = "";
-      req.on("data", (c) => { raw += c; if (raw.length > 200_000) req.destroy(); });
-      req.on("end", async () => {
+      readBody(req, 200_000).then(async (raw) => {
         try {
           // The contract first, the door's availability second — the apex's
           // order (household-apex § the act: fields are judged before `send`
@@ -2467,7 +2466,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"from","to","title","body"} (+ optional "thread")');
           return bounceFault(res, "the office tripped", e);
         }
-      });
+      }, (e) => bodyUnread(res, e));
       return;
     }
     // POST /votes/stake — the ballot is OPEN (gold plan postmark-ballot).
@@ -2489,7 +2488,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"from","topic","candidate","stamps"}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
     if (req.method === "POST" && path === "/blessings")
@@ -2516,7 +2515,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"handle","amount","slug"}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2545,7 +2544,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"image_path"|"image_url": "…", "by"?: "<handle>"}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2590,7 +2589,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"do":"say","args":{"text":"…"}} — GET this same path for the card');
           return doorTripped(res, "the office tripped", e, { retry: ACT_RETRY });
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2621,7 +2620,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"do":"post","args":{"class":"idea","slug":"…","body":"…"}} — GET this same path for the card');
           return bounceFault(res, "the town door tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2641,7 +2640,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"slug","kind","body", …}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2662,7 +2661,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"mark_id"} or {"x","y"} or {} for home');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2683,7 +2682,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"body", "handle"?}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2703,7 +2702,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"thing", "to"?, "handle"?}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
     // ⚑ `GET /world/holdings` USED TO SIT HERE and could never be reached: this
@@ -2754,7 +2753,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"text","handle"?} or {"text","human":true}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2774,7 +2773,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         const fn = path === "/world/stake" ? worldStakeViaOffice(payload, key) : worldUnstakeViaOffice(payload, key);
         return fn.then((r) => (r?.error === "bounce" ? bounce(res, r.code ?? 422, r.defect, r.hint) : j(res, 200, r)))
           .catch((e) => bounceFault(res, "the stake door tripped", e));
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2808,7 +2807,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"txhash","pot","handle"}');
           return bounceFault(res, "the fund door tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 

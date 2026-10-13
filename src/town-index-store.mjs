@@ -45,7 +45,7 @@ import { holdStoreProbe, UNREACHABLE_DEFECT, UNREACHABLE_HINT } from "./index-pr
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
 // readers call; only the SQL is written twice. A port that restated the shape
 // would be the private copy that drifts.
-import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
+import { freshnessFor, composeHome, composeFoundedHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
 
 export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard",
   "letter", "letterAnswer", "letterList", "mailList", "mailCorrespondents", "mailAwaiting", "search", "metricsMail", "outboxSettled",
@@ -820,7 +820,13 @@ export async function metricsMail(q, opts = {}) {
  */
 export async function home(q, handle, fresh = null) {
   const row = (await q.query("SELECT json FROM town_homes WHERE handle = $1", [handle])).rows[0];
-  if (!row) return null;
+  if (!row) {
+    // A page founded since this index was built (POS-603, paper-fresh.mjs §
+    // composeFoundedHome): only for a resident the store's index holds, and only
+    // with a checkout. An unreachable store throws from these queries, as before.
+    if (!fresh?.clone || !(await hasResident(q, handle))) return null;
+    return composeFoundedHome(handle, freshnessFor(handle, { ...fresh, asOf: await townIndexAsOf(q) }));
+  }
   const asOf = await townIndexAsOf(q);
   return composeHome(JSON.parse(row.json), freshnessFor(handle, { ...fresh, asOf }));
 }

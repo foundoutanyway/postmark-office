@@ -1363,8 +1363,10 @@ async function carryForThings({ who, attachments }) {
   const cap = thingDials()?.carry_cap;
   if (!Number.isInteger(cap)) return;
   const [{ storeHoldingRows }, { foldUnits, totalOf, isUnitRow, refuseOverCarry }] = await Promise.all([import("./world2-guards.mjs"), import("./world-stacks.mjs")]);
-  const { reservedFor } = await import("./world-units.mjs");
-  const units = totalOf(foldUnits((await storeHoldingRows()).filter(isUnitRow)), who) + reservedFor(who);
+  const { inFlightFor } = await import("./world-units.mjs");
+  const { officeRead } = await import("./world2-pen.mjs");
+  const dropsOut = async (h) => officeRead(async (c) => (await import("./drop-recovery.mjs")).dropsStillOut(c, h), { by: "dropsOut" });
+  const units = totalOf(foldUnits((await storeHoldingRows()).filter(isUnitRow)), who) + await inFlightFor(who, { dropsOut });
   refuseOverCarry({ who, units, things: holdingsOf(attachments, who).length, adding: 1, cap });
 }
 

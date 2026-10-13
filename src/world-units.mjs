@@ -36,6 +36,7 @@ import {
 } from "./world-stacks.mjs";
 import { holdingsOf, sameHousehold, holdTurn, liveHolder, rowsFor, holdingEntry } from "./world-hold.mjs";
 import { chestRoomGuard } from "./chest-lock.mjs";
+import { dropUndoGuard, undoNonce } from "./drop-recovery.mjs";
 
 // ── SLOTS HELD FOR AN ACT STILL IN FLIGHT (Bevel's review, finding 3) ───────
 //
@@ -47,6 +48,19 @@ import { chestRoomGuard } from "./chest-lock.mjs";
 // holds (the read workers refuse), so this map is the whole of the in-flight set.
 const reserved = new Map();
 export const reservedFor = (handle) => reserved.get(String(handle)) ?? 0;
+
+/**
+ * Units a resident has set down that are NOT YET KNOWN to be on the ground or
+ * back in hand — counted against their carry cap as if still held (Wright's
+ * independent review, F0). The in-memory reservation covers this process's own
+ * filings; the store's count (drop-recovery.mjs § dropsStillOut) covers a
+ * restart, a crashed filing, a failed undo. They name the same drops, so the
+ * larger stands.
+ */
+export async function inFlightFor(handle, deps) {
+  const durable = deps?.dropsOut ? await deps.dropsOut(String(handle)) : 0;
+  return Math.max(reservedFor(handle), Number(durable) || 0);
+}
 const reserve = (handle, n) => reserved.set(String(handle), reservedFor(handle) + n);
 const release = (handle, n) => { const left = reservedFor(handle) - n; if (left > 0) reserved.set(String(handle), left); else reserved.delete(String(handle)); };
 /** The id of the act that recorded this mark's exit, read back for a retry. */
@@ -135,6 +149,7 @@ export async function liveUnitDeps() {
     },
     unstake: (r) => stake.runExec({ verb: "unstake", handle: r.handle, mark: r.mark, n: r.stamps, date: new Date().toISOString().slice(0, 10) }),
     withdraw: (m) => world.journalWithdraw(m),
+    dropsOut: async (actor) => pen.officeRead(async (c) => (await import("./drop-recovery.mjs")).dropsStillOut(c, actor), { by: "dropsOut" }),
     onActs: () => pen.laneFlipped("hold"),
   };
 }
@@ -150,7 +165,7 @@ const sentenceOf = {
   [UNIT_ACTION.consumeInPlace]: (r) => `${r.actor} consumed the set-down unit where it stood; the mark it was leaves at the next crossing`,
 };
 
-async function writeUnits(deps, key, actor, { action, object, moves, payload = {} }, { guard = null } = {}) {
+async function writeUnits(deps, key, actor, { action, object, moves, payload = {}, nonce = null }, { guard = null } = {}) {
   const { at, witnesses } = await deps.stamp(actor);
   const m = moves[0] ?? {};
   const entry = {
@@ -158,6 +173,7 @@ async function writeUnits(deps, key, actor, { action, object, moves, payload = {
     cls: "holding", household: deps.household(key),
     payload: { units: true, moves, ...payload },
     effect: (sentenceOf[action] ?? (() => action))({ actor }, { ...m, ...payload, n: m.n, label: m.label ?? payload.label, from: m.from, to: m.to }),
+    ...(nonce ? { nonce } : {}),
   };
   const row = await deps.append(entry, guard ? { guard } : {});
   return { seq: row?.actId ?? row?.seq ?? null, effect: entry.effect };
@@ -239,7 +255,7 @@ export async function callUnits(route, args, key, actor, deps) {
         const fold = foldUnits(units);
         const plan = planTake({ fold, actor, from, label: args.label ?? null, n });
         refuseIfTaken(topClassOf(fold, from, view), view);
-        refuseOverCarry({ who: actor, units: totalOf(fold, actor) + reservedFor(actor), things: thingsCarried(attachments, actor), adding: n, cap });
+        refuseOverCarry({ who: actor, units: totalOf(fold, actor) + await inFlightFor(actor, deps), things: thingsCarried(attachments, actor), adding: n, cap });
         const w = await writeUnits(deps, key, actor, plan);
         const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
         return { did: "take", units: true, label: plan.label, count: n, from, ...w, holds: holdsBlock(after, actor, view), chest: await chestBlock(after, from, view, attachments, deps) };
@@ -258,7 +274,7 @@ export async function callUnits(route, args, key, actor, deps) {
         const capacityOfTo = chestCap == null ? null : chestCap - holdingsOf(attachments, to).length;
         const plan = planGive({ fold, actor, to, label: args.label ?? null, n, capacityOfTo });
         refuseIfTaken(topClassOf(fold, actor, view, plan.label), view);
-        if (!isChestId(to)) refuseOverCarry({ who: to, units: totalOf(fold, to) + reservedFor(to), things: thingsCarried(attachments, to), adding: n, cap });
+        if (!isChestId(to)) refuseOverCarry({ who: to, units: totalOf(fold, to) + await inFlightFor(to, deps), things: thingsCarried(attachments, to), adding: n, cap });
         // INTO A CHEST, the room is judged again under the chest's own lock inside
         // the write's transaction — the tick's stock is another process (finding 6)
         const w = await writeUnits(deps, key, actor, plan, isChestId(to) ? { guard: chestRoomGuard({ chest: to, capacity: chestCap, adding: n }) } : {});
@@ -326,16 +342,34 @@ export async function callUnits(route, args, key, actor, deps) {
         if (filed?.error) { why = filed.defect ?? filed.error; filed = null; }
       } catch (e) { why = String(e?.defect ?? e?.message ?? e).slice(0, 200); }
       if (!filed) {
-        // THE UNIT COMES BACK into the slot that was held for it. The drop's act
-        // stands in the record, and so does the act that undoes it — nothing is
-        // lost and nothing is rewritten.
-        const back = await holdTurn(async () => {
+        // THE CALL FAILED; WHAT COMMITTED? (Wright's independent review, F0.)
+        // `leaveMarkViaOffice` can throw after its claim committed, so the
+        // undo is decided under the drop's own lock by what the record holds:
+        // the mark filed → the unit is on the ground and NOTHING is undone; not
+        // filed → the unit comes back, once (the undo's nonce), into the slot
+        // held for it. If even the undo cannot be written, the unit stays out
+        // and the office tick returns it after one tick.
+        let back = null, committed = null, stuck = null;
+        await holdTurn(async () => {
           try {
-            return await writeUnits(deps, key, actor, { action: UNIT_ACTION.dropUndone, object: actor,
-              moves: [{ from: null, to: actor, label: dropped.label, n: 1 }], payload: { label: dropped.label, undoes: dropped.seq, why } });
+            back = await writeUnits(deps, key, actor, { action: UNIT_ACTION.dropUndone, object: actor, nonce: undoNonce(dropped.seq),
+              moves: [{ from: null, to: actor, label: dropped.label, n: 1 }], payload: { label: dropped.label, undoes: String(dropped.seq), why, by: "door" } },
+              { guard: dropUndoGuard({ actId: dropped.seq, actor, label: dropped.label }) });
+          } catch (e) {
+            if (e?.filed) committed = e.filed;
+            else if (e?.undoneAlready) back = { seq: e.undoneAlready, already: true };
+            else stuck = String(e?.defect ?? e?.message ?? e).slice(0, 200);
           } finally { release(actor, 1); }
         });
-        throw bounce(409, `the set-down's mark could not be filed: ${why}`, `your ${dropped.label} is back in your hands (act ${back.seq}); nothing stands on the ground.`);
+        if (committed)
+          return { did: "drop", units: true, label: dropped.label, count: 1, seq: dropped.seq, effect: dropped.effect,
+            mark: committed.slug, stands_at: stood, filed: { id: committed.slug, status: committed.status },
+            office_error_after_filing: why,
+            stands_note: `the mark WAS filed (${committed.status}) though the office answered with an error after filing it (${why}); the unit is on the ground as that mark, not back in your hands, and nothing was undone` };
+        if (back)
+          throw bounce(409, `the set-down's mark could not be filed: ${why}`, `your ${dropped.label} is back in your hands (act ${back.seq}); nothing stands on the ground.`);
+        throw bounce(503, `the set-down's mark could not be filed, and the unit could not be returned yet: ${why}; ${stuck}`,
+          `your ${dropped.label} is in neither your hands nor on the ground for now — the set-down (act ${dropped.seq}) stands in the record with no mark, and the office tick returns it to you after one tick. It still counts against what you can carry.`);
       }
       release(actor, 1);
       return { did: "drop", units: true, label: dropped.label, count: 1, seq: dropped.seq, effect: dropped.effect,
@@ -423,7 +457,7 @@ async function markExit(route, args, key, actor, deps, view, cap) {
     if (exitedMarks(units).has(id)) return { already: true, units };
     const fold = foldUnits(units);
     if (route === "take-back")
-      refuseOverCarry({ who: actor, units: totalOf(fold, actor) + reservedFor(actor), things: thingsCarried(attachments, actor), adding: 1, cap });
+      refuseOverCarry({ who: actor, units: totalOf(fold, actor) + await inFlightFor(actor, deps), things: thingsCarried(attachments, actor), adding: 1, cap });
     const plan = returnsAtExit({ mark: id, holders: await deps.holders(id) });
     const returned = [];
     for (const r of plan) {
@@ -623,7 +657,7 @@ async function thingFromChest(args, key, actor, deps, view, cap) {
     const { units, attachments } = await deps.readRows();
     const holder = liveHolder(attachments, thing);
     if (holder !== chestId) throw bounce(409, `${chestId} is not holding ${thing}`, holder ? `${holder} is. Nothing was recorded.` : "it stands on the ground. Nothing was recorded.");
-    refuseOverCarry({ who: actor, units: totalOf(foldUnits(units), actor) + reservedFor(actor), things: thingsCarried(attachments, actor), adding: 1, cap });
+    refuseOverCarry({ who: actor, units: totalOf(foldUnits(units), actor) + await inFlightFor(actor, deps), things: thingsCarried(attachments, actor), adding: 1, cap });
     const w = await writeThingHolding(deps, key, actor, attachments, { did: "take", thing, holder: actor, previous: chestId, madeBy: String(mark?.by ?? thing.split("/")[0]) });
     return { did: "take", thing, from: chestId, holder: actor, ...w };
   });

@@ -3401,7 +3401,7 @@ export async function markStandsOnOwnGround(clean, canon = null) {
  * the same fields the exec answers with — `branch` and `commit` become `seq`,
  * because under the flag the receipt for a write is its line in the log.
  */
-async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
+async function journalLeaveMark(clean, { crossing = currentCrossing(), guard = null } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${clean.by}/${clean.slug}`;
   const canon = canonForGuards();
@@ -3687,8 +3687,8 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     let row;
     try {
       row = laneFlipped("mark")
-        ? await appendActFlipped(null, entry)
-        : await appendJournal(null, entry);
+        ? await appendActFlipped(null, entry, guard ? { guard } : {})
+        : await appendJournal(null, entry, guard ? { guard } : {});
     } catch (err) {
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
@@ -4220,7 +4220,12 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // POS-5 slice 1. The journal door throws its bounces directly (they are the
     // same grammar the exec answers with, one process earlier), so only the
     // machinery tripping lands in the catch.
-    try { result = await journalLeaveMark(clean); }
+    // A DROPPED UNIT'S MARK is filed under its drop's own lock, and not at all
+    // once that drop was undone (WLD-27 F0, drop-recovery.mjs § dropLiveGuard):
+    // the unit is in hands or on the ground, never both.
+    const dropGuard = dropUnit != null && payload.dropped === `act:${dropUnit.actId}`
+      ? (await import("./drop-recovery.mjs")).dropLiveGuard({ actId: dropUnit.actId }) : null;
+    try { result = await journalLeaveMark(clean, dropGuard ? { guard: dropGuard } : {}); }
     catch (e) { if (e?.code) throw e; throw bounce(500, "the mark pass tripped", String(e?.message ?? e).slice(0, 300)); }
   } else {
     try {

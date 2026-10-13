@@ -93,6 +93,7 @@ import { resolve } from "node:path";
 import { SETTLEMENT_TAG, isRepoRoot } from "../../src/settlements.mjs";
 import { recordCarried, receiptLine, TICK_CAP } from "./mark-carried-backfill.mjs";
 import { stockChests } from "./chest-stock.mjs";
+import { recoverOrphanDrops } from "../../src/drop-recovery.mjs";
 import { currentCrossing } from "../../src/crossings.mjs";
 
 const NL = String.fromCharCode(10);
@@ -212,6 +213,22 @@ export async function stockedOnTick(client, { stock = stockChests, crossing = cu
   }
 }
 
+/**
+ * ORPHANED SET-DOWNS COME BACK (WLD-27 F0, drop-recovery.mjs): every
+ * `units:drop` older than one tick with neither a mark filed for it nor an
+ * undo is returned to its dropper, once, with a line. Not gated on the carried
+ * step — it reads acts and claims, not settlements. Non-fatal like its
+ * neighbours: an error is one named line and the next tick tries again.
+ */
+export async function dropsRecoveredOnTick(client, { recover = recoverOrphanDrops, now = Date.now, crossing = currentCrossing } = {}) {
+  try {
+    const r = await recover(client, { now: now(), crossing: crossing() });
+    return { verdict: "ok", line: r.line, result: r };
+  } catch (e) {
+    return { verdict: "error", line: `drops: NOT reconciled (non-fatal) — ${String(e?.message ?? e).slice(0, 200)}` };
+  }
+}
+
 /** The stock step, gated on the carried step that proves admission (finding 7). */
 export async function chestsAfterCarried(client, carried, { stock = stockedOnTick } = {}) {
   if (carried?.verdict !== "ok")
@@ -294,7 +311,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     const text = render(plan, extra, { dbName: who.d, user: who.u, repo, mode });
     if (!json && !quiet) console.log(text);
 
-    let wrote = 0, verdict = "ok", carried = null;
+    let wrote = 0, verdict = "ok", carried = null, drops = null;
     if (quiet && !apply && !verify) console.log(text.split(NL)[1]);   // the census line, nothing else
     if (conflicts.length) {
       verdict = "CONFLICT";
@@ -354,10 +371,19 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
         console.log(`${NL}EQUAL: ${plan.length} tag(s), ${plan.length} row(s), every column agrees (compared ${plan.length})`);
       }
     }
+    // ORPHANED SET-DOWNS (WLD-27 F0), on EVERY --apply tick — a new settlement
+    // or none, a refused tag or not: it reads acts and claims, not the tags.
+    // This is the office tick's one live step (postmark-office-keep.timer →
+    // office-keep.sh → here, every 15 minutes), so "older than one tick" is
+    // measured against that cadence (drop-recovery.mjs § TICK_MS).
+    if (apply) {
+      drops = await dropsRecoveredOnTick(client);
+      if (!json) console.log(drops.line);
+    }
     receipt = { mode, verdict, db: who.d, user: who.u, repo, tags: derived.length, new: fresh.length, present: plan.filter((r) => r.state === "present").length,
       drift: drift.map((r) => r.number), conflict: conflicts.map((r) => r.number), extra, wrote, compared: plan.length,
       rows: plan.map((r) => ({ number: r.number, state: r.state, tag_sha: r.tag_sha, published_at: iso(r.published_at), window_id: r.window_id, blessed_at: iso(r.blessed_at) })),
-      ...(carried ? { carried: carried.line } : {}) };
+      ...(carried ? { carried: carried.line } : {}), ...(drops ? { drops: drops.line } : {}) };
   } finally {
     await client.end();
   }

@@ -234,7 +234,11 @@ WEBROOT="${SITE_WEBROOT:-/var/www/postmark-town-site}"
 SITE_REMOTE="${SITE_REMOTE:-https://github.com/postmark-town/postmark-site.git}"
 TOWN_REMOTE="${TOWN_REMOTE:-https://github.com/postmark-town/postmark.git}"
 WORLD_REMOTE="${WORLD_REMOTE:-https://github.com/postmark-town/postmark-world.git}"
-API="${POSTMARK_API:-https://postmark.town/api}"
+# The office over loopback, never the public URL (Darko 2026-10-13): through
+# nginx every read of a pass spent the box's own keyless bucket, and a day of
+# refreshes drew 17,531 429s. Loopback with no X-Forwarded-For is box-local to
+# the office (src/bouncer.mjs boxLocal), and :4380 is not reachable from outside.
+API="${POSTMARK_API:-http://127.0.0.1:4380}"
 OUT="${SITE_REFRESH_REPORT:-/srv/postmark-harbor/site-refresh.json}"
 KEEP="${SITE_REFRESH_KEEP:-5}"
 MAX_PASSES="${SITE_REFRESH_MAX_PASSES:-3}"

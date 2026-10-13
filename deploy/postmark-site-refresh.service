@@ -34,7 +34,10 @@ TimeoutStartSec=45min
 # exactly as they do for an unauthenticated Actions run. The `-` means a missing
 # file is not a startup failure.
 EnvironmentFile=-/etc/postmark-site-refresh.env
-Environment=POSTMARK_API=https://postmark.town/api
+# Loopback, not https://postmark.town/api (Darko 2026-10-13): the box asking its
+# own office is not charged the keyless bucket (src/bouncer.mjs boxLocal); through
+# nginx a day of refreshes drew 17,531 429s. site-refresh.sh defaults to the same.
+Environment=POSTMARK_API=http://127.0.0.1:4380
 
 ExecStart=/usr/bin/env bash /srv/postmark-office/deploy/site-refresh.sh
 

@@ -77,9 +77,11 @@ test("GET /metrics/mail: deterministic as_of, 60 zero-filled days, totals, activ
 });
 
 test("keyless GETs are rate-limited with the exact 429 shape; a key has its own budget", async () => {
-  // Test burst=3: the first three keyless hits pass, the fourth trips.
+  // Test burst=3: the first three keyless hits pass, the fourth trips. The
+  // X-Forwarded-For is nginx's: loopback with none is the box asking itself,
+  // which the bucket does not charge (box-local-keyless.test.mjs).
   let last;
-  for (let i = 0; i < 4; i++) last = await fetch(`${BASE}/town`);
+  for (let i = 0; i < 4; i++) last = await fetch(`${BASE}/town`, { headers: { "x-forwarded-for": "198.51.100.7" } });
   assert.equal(last.status, 429);
   const body = await last.json();
   // `refused` joined 2026-10-06 (POS-427, Darko's option B): every refusal says so, last.

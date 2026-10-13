@@ -2479,7 +2479,7 @@ export async function thingStandsBlock(id, w, r) {
     ]);
     const rows = await standsRowsFromStore(id);
     if (!rows) return null; // the register was not asked — the same answer an absent store gave
-    const { attachments, journal } = rows;
+    const { attachments, journal, amends } = rows;
     if (!attachments.some((a) => a.target === id)) return null; // never held — nothing new to say
     const marks = w?.marks ?? [];
     const centreOf = (mid) => marks.find((m) => m.id === mid)?.at ?? null;
@@ -2498,6 +2498,17 @@ export async function thingStandsBlock(id, w, r) {
         try { const { stanceRows } = await import("./world-stance.mjs"); return await stanceRows(); }
         catch { return []; }
       })(),
+      // …and whether an amend from the latest drop is on the docket (POS-451),
+      // read in the same snapshot: the re-site is promised over a filed amend,
+      // never over the drop.
+      amends: amends ?? null,
+      // …and, for an accepted stranger's set-down with no amend on the docket,
+      // the escrow behind the mark (the stake read), which says what puts the
+      // author's draft forward. Asked only in that branch.
+      escrowOf: async (mid) => {
+        const sr = await callWorldStakeTool("world_stake_read", { mark: mid });
+        return Number.isFinite(Number(sr?.escrow)) ? Number(sr.escrow) : null;
+      },
       standpointOf: async (h) => {
         const s = await residentStandpoint(h, w).catch(() => null);
         return s?.placed ? { x: s.x, y: s.y } : null;

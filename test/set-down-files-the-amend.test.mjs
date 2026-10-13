@@ -318,9 +318,12 @@ test("THE READ: a stranger's set-down reads 'set down by ana at <place> — unac
   assert.deepEqual(s.canon_at, GARAGE_AT, "canon has not moved");
   assert.equal(s.says, "set down by ana at (176, 425.5) — unaccepted; canon stays at (3978, -398), where keith put it");
 
-  const own = await hold.whereThingStands(STOOL, { attachments, journal: [{ ...journal[0], actor: "keith" }], fold: GARAGE_AT, householdOf: HOUSES });
+  // The promise is made over the amend THIS drop filed, on the docket (POS-451;
+  // set-down-moves-the-stool.test.mjs § E drives the read with the real port).
+  const amends = [{ thing: STOOL, act_id: "9001", status: "pending" }];
+  const own = await hold.whereThingStands(STOOL, { attachments, journal: [{ ...journal[0], actor: "keith" }], fold: GARAGE_AT, householdOf: HOUSES, amends });
   assert.equal(own.accepted, undefined, "the author's own set-down is not a stance question");
-  assert.match(own.says, /the record re-sites the mark at the next fold/, "and its promise is kept now, so it stays word for word");
+  assert.match(own.says, /the record re-sites the mark at the next fold/, "and its promise is kept over its filed amend, word for word");
 });
 
 test("a household record that cannot be read decides neither way: nothing filed, and the read promises nothing", async () => {
@@ -466,12 +469,20 @@ async function speak(word, handle, key, extraDeps = {}) {
 }
 
 /** The read, over the record's own stance rows. */
-async function readStool(drop, fold = GARAGE_AT) {
+// THE DOCKET the read judges "canon follows" against (POS-451): the pen's
+// claims as `guard-reads.mjs § pgSetDownAmends` answers them (pending or
+// locked, carrying `_set_down`); the real query runs on a real store in
+// set-down-moves-the-stool.test.mjs § E and § F.
+const docketOf = (p) => p.claims()
+  .filter((c) => (c.status === "pending" || c.status === "locked") && parse(c.data)?._set_down)
+  .map((c) => ({ thing: c.slug, act_id: String(parse(c.data)._set_down.act_id), status: c.status }));
+
+async function readStool(drop, fold = GARAGE_AT, { escrow = stoolRecord.stamps } = {}) {
   const stances = await stance.stanceRows({ worldClone: repo });
   return hold.whereThingStands(STOOL, {
     attachments: [{ target: STOOL, entity: "ana", policy: "detach", born_at: "2026-09-24T01:00:00Z" }],
     journal: [{ object: STOOL, action: "drop", actor: "ana", seq: drop.id, at: { anchor: null, dx: ANA_AT.x, dy: ANA_AT.y } }],
-    fold, householdOf: HOUSES, stances,
+    fold, householdOf: HOUSES, stances, amends: docketOf(pen), escrowOf: () => escrow,
   });
 }
 
@@ -632,7 +643,33 @@ test("A WELCOME WHOSE AMEND THE DOOR REFUSES: the receipt says it was not filed,
   const s = await readStool(drop);
   assert.equal(s.accepted, true, "the word was spoken, and the read says so");
   assert.doesNotMatch(s.says, /is filed/, `the read claims a filing that did not happen: ${s.says}`);
-  assert.equal(s.says, "set down by ana at (4105, -305) — accepted by keith's house; canon follows when keith's amend publishes at a crossing");
+  // …nor a move nothing filed can make (POS-451): no amend on the docket.
+  assert.doesNotMatch(s.says, /canon follows/, `the read promised a move no amend can make: ${s.says}`);
+  assert.equal(s.says, `set down by ana at (4105, -305) — accepted by keith's house, but no amend from this set-down is on the docket, so canon stays at (3978, -398): keith's amend is a private draft or was refused, and a stake on ${STOOL} by keith's house puts a draft forward`);
+});
+
+// At ✦0 the refused welcome left NO draft, and the read cannot see that: it
+// must hedge exactly as it does at ✦2, never promise "keith's private draft",
+// and never say whose ground it is (it does not look).
+//
+// THE FLIP: restore "keith's amend is keith's private draft at escrow ✦0: on
+// ground that is not keith's household's …" and this reds.
+test("A WELCOME WHOSE AMEND THE DOOR REFUSES, AT ✦0: the read names no draft that does not exist, and asserts no ground it did not read", async () => {
+  const p = await fresh();
+  const drop = await anaDrops(p);
+  const refusingDoor = async () => { const e = new Error("the record carries `loot`"); Object.assign(e, { code: 409, defect: "the record carries `loot`" }); throw e; };
+  const r = await speak("welcomed", "keith", KEITH, { leave: refusingDoor });
+  assert.equal(r.amend.filed, false, "the amend door refused");
+  assert.equal(p.claims().length, 0, "no claim, so no draft either");
+
+  const s = await readStool(drop, GARAGE_AT, { escrow: 0 });
+  assert.equal(s.accepted, true);
+  assert.doesNotMatch(s.says, /canon follows/);
+  assert.doesNotMatch(s.says, /is keith's private draft/, `the read named a draft the door never filed: ${s.says}`);
+  assert.doesNotMatch(s.says, /ground that is not/, `the read asserted a ground it never read: ${s.says}`);
+  assert.equal(s.says, `set down by ana at (4105, -305) — accepted by keith's house, but no amend from this set-down is on the docket, so canon stays at (3978, -398): keith's amend is a private draft or was refused, and ${STOOL} has ✦0 behind it: a draft goes forward with ✦1 behind it, so a stake of ✦1 on ${STOOL} by keith's house puts a draft forward`);
+  assert.equal(s.escrow, 0);
+  assert.equal(s.stake_needed, 1);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

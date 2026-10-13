@@ -674,7 +674,15 @@ export async function standsRowsFromStore(thingId) {
       port.pgAttachmentsFor(client, { target: String(thingId) }),
       port.pgHoldingRowsFor(client, String(thingId)),
     ]);
-    return { attachments: held.rows, journal: holding.rows };
+    // `amends` (POS-451): the docket's set-down amends for this thing, in the
+    // same snapshot, so the read's "re-sites the mark" promise is judged against
+    // the docket as it stood when the drop was read. A docket that will not
+    // answer is `null` ("I could not look"), and the rest of the block stands:
+    // where the thing is never waited on the docket. Asked LAST, because a
+    // failed statement aborts the transaction, and asked first it would take
+    // the two halves above down with it.
+    const amends = await port.pgSetDownAmends(client, { thing: String(thingId) }).catch(() => null);
+    return { attachments: held.rows, journal: holding.rows, amends };
   });
 }
 

@@ -95,8 +95,8 @@ put("WORLD/skeleton.json", JSON.stringify({ features: [], physics_registry: {}, 
 put("WORLD/world-state.json", JSON.stringify({ tick: 0, dials: {}, marks: PUBLISHED, parcels: [],
   determined: {}, vague: [], rivalries: [], portfolios: {}, terrain_weight: {}, errors: [] }));
 git("init", "-q", "-b", "main");
-git("config", "user.email", "test@postmark.town"); git("config", "user.name", "WLD-38 falsifier");
-git("add", "-A"); git("commit", "-qm", "a bottled world with a synthetic Mists season");
+
+git("add", "-A"); git("-c", "user.name=WLD-38 falsifier", "-c", "user.email=test@postmark.town", "commit", "-qm", "a bottled world with a synthetic Mists season");
 
 process.env.WORLD_CLONE = repo;
 process.env.WORLD_SINGLE_LOG = "1";
@@ -269,4 +269,73 @@ test("PLACEMENT · what the door refused for other reasons it still refuses, and
   const notYours = await leave({ slug: "zeds-post", kind: "sited", by: "zed", at: { x: 900, y: 120 }, extent: { w: 10, h: 10 }, body: "not mine" }, { mistsCrossing: 307 });
   assert.equal(notYours.ok, false);
   assert.equal(pen.rows().length, before, "no write from a refused placement");
+});
+
+// ── Bevel's first review: coverage is exact, and unknown is named ───────────
+
+const { coverage, footprintState } = await import("../src/mists-forecast.mjs");
+
+test("COVERAGE · A POCKET OF WALL INSIDE AN OUTLINE whose every boundary point is clear (four clearings around it): the wall is found, with the engine's own witness", { skip }, () => {
+  const mists = { border_m: { minX: 1000, minY: 1000, maxX: 2000, maxY: 2000 }, fringe_m: 0,
+    clearings_m: [[-10, -10], [10, -10], [10, 10], [-10, 10]].map(([x, y], i) => ({ id: `c${i}`, x, y, r_m: 12 })),
+    schedule: [{ crossing: 300, front_m: 0 }, { crossing: 301, front_m: 0 }] };
+  const m = eng.mistsAt(300, mists);
+  const square = [{ x: -8, y: -8 }, { x: 8, y: -8 }, { x: 8, y: 8 }, { x: -8, y: 8 }];
+  assert.ok(samplesOf(square, 1).every((p) => !eng.mistsHere(p, m).inWall), "every boundary point, sampled every metre, is clear");
+  assert.equal(eng.mistsHere({ x: 0, y: 0 }, m).inWall, true, "the engine: the middle is wall (14.1 m from every centre, radius 12)");
+  const c = coverage(square, m.clear, m.clearings);
+  assert.equal(c.covered, false);
+  assert.equal(eng.mistsHere(c.witness, m).inWall, true, `the witness ${JSON.stringify(c.witness)} is the engine's wall`);
+  assert.equal(footprintState(eng, m, square), "wall");
+  assert.deepEqual(reachOf(eng, mists, square, 300), { fringe: 300, wall: 300 });
+});
+
+test("COVERAGE · the slit, through the whole forecast: walled at 300 (now), at the real arrival crossing, not clear", { skip }, async () => {
+  const mists = { border_m: { minX: 10, minY: -100, maxX: 100, maxY: 100 }, fringe_m: 0, clearings_m: [{ id: "c", x: 0, y: 0, r_m: 10 }],
+    schedule: [{ crossing: 300, front_m: 0 }, { crossing: 301, front_m: 0 }] };
+  const narrow = [{ x: 9, y: 1 }, { x: 11, y: 1 }, { x: 11, y: 2 }, { x: 9, y: 2 }];
+  const f = await forecastMists({ engine: eng, skeleton: { mists }, footprints: [{ id: "mira/slit-hut", ring: narrow }], nowMs: at(300) });
+  assert.deepEqual([f.reaches[0].wall.crossing, f.reaches[0].wall.now], [300, true]);
+  const c = coverage(narrow, eng.mistsAt(300, mists).clear, eng.mistsAt(300, mists).clearings);
+  assert.ok(c.witness.x > 9.79 && c.witness.x < 10 && c.witness.y > 1 && c.witness.y < 2, `witness ${JSON.stringify(c.witness)} lies in the slit`);
+});
+
+test("COVERAGE · a covered footprint is clear: a square wholly inside one clearing beyond the box, and one wholly inside the box", { skip }, () => {
+  const m = eng.mistsAt(300, MISTS);
+  assert.equal(coverage([{ x: -955, y: -5 }, { x: -945, y: -5 }, { x: -945, y: 5 }, { x: -955, y: 5 }], m.clear, m.clearings).covered, true);
+  assert.equal(coverage([{ x: -5, y: -5 }, { x: 5, y: -5 }, { x: 5, y: 5 }, { x: -5, y: 5 }], m.clear, m.clearings).covered, true);
+});
+
+test("A POINT MARK (an `at` with no box) is asked of the engine as the point it is", { skip }, () => {
+  assert.deepEqual(reachOf(eng, MISTS, [{ x: 720, y: 0 }], 300), { fringe: 304, wall: 306 });
+});
+
+test("UNKNOWN IS NAMED · a skeleton read as null, a season with no border the engine can read: unavailable, never no-season or clear", { skip }, async () => {
+  assert.match((await forecastMists({ engine: eng, skeleton: null, footprints: [fp(MARKS.edge)], nowMs: at(300) })).unavailable, /^mists-forecast-unavailable: the world's skeleton could not be read$/);
+  const { border_m: _b, ...noBorder } = MISTS;
+  assert.match((await forecastMists({ engine: eng, skeleton: { mists: noBorder }, footprints: [fp(MARKS.edge)], nowMs: at(300) })).unavailable, /^mists-forecast-unavailable: the engine could not answer \(the engine gives no Mists state for crossing 300\)$/);
+  assert.match((await forecastMists({ engine: eng, skeleton: { mists: noBorder }, footprints: [], nowMs: at(300) })).unavailable, /no Mists state/, "even with no footprints to ask about");
+});
+
+test("THE HOUSEHOLD, SAID: a registry that should answer and cannot is unavailable; an office with no registry says the block covers the handle alone; a mark with no place is no ground", { skip }, async () => {
+  assert.match((await householdMistsForecast("mira", { nowMs: at(300), deps: deps({ household: async () => null }) })).unavailable, /household registry could not be read/);
+  assert.match((await householdMistsForecast("mira", { nowMs: at(300), deps: deps({ household: async () => { throw new Error("store down"); } }) })).unavailable, /store down/);
+  const solo = await householdMistsForecast("mira", { nowMs: at(300), deps: deps({ household: async (h) => ({ residents: [h], unasked: true }) }) });
+  assert.equal(solo.household, "this office reads no household registry, so this covers mira's own marks only");
+  assert.ok(!solo.reaches.some((r) => r.mark.startsWith("ola/")));
+  const placeless = { id: "mira/a-thought", by: "mira", kind: "note", body: "no place" };
+  const b = await householdMistsForecast("mira", { nowMs: at(300), deps: deps({ publishedMarks: () => [...PUBLISHED, placeless], ringOf: async (m) => (m.at ? groundRingOf(m) : null) }) });
+  assert.ok(Array.isArray(b.reaches) && !b.unavailable, "a mark with no place on the map has no ground to reach: quiet, not a failure");
+  assert.match((await householdMistsForecast("mira", { nowMs: at(300), deps: deps({ ringOf: async (m) => { if (m.id === "ola/east-mill") throw new Error("dial unread"); return groundRingOf(m); } }) })).unavailable, /the ground of ola\/east-mill could not be read \(dial unread\)/);
+});
+
+// LAST in the file: it changes the bottled world's skeleton
+test("PLACEMENT · a season the engine cannot read reaches the RECEIPT as mists-forecast-unavailable, and the mark is still written", { skip }, async () => {
+  const { border_m: _b, ...noBorder } = MISTS;
+  put("WORLD/skeleton.json", JSON.stringify({ features: [], physics_registry: {}, mists: noBorder }));
+  git("add", "-A"); git("-c", "user.name=WLD-38 falsifier", "-c", "user.email=test@postmark.town", "commit", "-qm", "a season with no border");
+  const out = await leave({ slug: "borderless-post", kind: "sited", by: "mira", at: { x: 900, y: 160 }, extent: { w: 10, h: 10 }, body: "a post in an unreadable season" }, { mistsCrossing: 303 });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(written("mira/borderless-post"), 1);
+  assert.match(out.mists?.unavailable ?? "", /^mists-forecast-unavailable: the engine could not answer \(the engine gives no Mists state/, JSON.stringify(out.mists));
 });

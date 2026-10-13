@@ -790,7 +790,7 @@ test("THE CUT: psa keeps each notice's date, title and url, and never its body",
 // ── WLD-38: the Mists forecast rides the one finisher, on every door ─────────
 // The world reads are INJECTED (mists-forecast.mjs § __setMistsDepsForTest —
 // the doors build their own context, so a test reaches the forecast's world
-// there), and so is a two-line engine: a wall that creeps west from x = 1000 at
+// there), and so is a small stand-in engine (a clear box whose east side is the wall): a wall that creeps west from x = 1000 at
 // 100 m a crossing from crossing 300, with a 100 m fringe. The real engine's
 // readings are driven in test/mists-forecast.test.mjs; here what is proved is
 // the bundle: REST's context, the flat read_doorstep and household read:
@@ -798,7 +798,11 @@ test("THE CUT: psa keeps each notice's date, title and url, and never its body",
 import { __setMistsDepsForTest } from "../src/mists-forecast.mjs";
 import { crossingSailsAt } from "../src/crossings.mjs";
 const MISTS_ENGINE = {
-  mistsAt: (c, m) => (c < 300 ? null : { crossing: c, edge: 1000 - 100 * (Math.min(c, 310) - 300), fringeM: m.fringe_m }),
+  mistsAt: (c, m) => {
+    if (c < 300) return null;
+    const edge = 1000 - 100 * (Math.min(c, 310) - 300);
+    return { crossing: c, edge, clear: { minX: -1e6, maxX: edge, minY: -1e6, maxY: 1e6 }, clearings: [], fringeM: m.fringe_m };
+  },
   mistsHere: (p, m) => (p.x > m.edge ? { inWall: true, wallM: 0 } : { inWall: false, wallM: m.edge - p.x }),
 };
 const mistsDeps = (over = {}) => ({
@@ -841,4 +845,20 @@ test("WLD-38 · AN UNREADABLE FORECAST IS NAMED ON THE PAGE, AND THE REST OF THE
     for (const s of DOORSTEP_SEGMENTS) assert.deepEqual(d[s], plain[s], `segment ${s} is untouched`);
   } finally { __setMistsDepsForTest(null); }
   assert.equal("mists" in plain, false, "r000 has no mark the Mists reach (and locally no world at all): no key");
+});
+
+test("WLD-38 · A HOUSE OR A GROUND THAT CANNOT BE READ IS NAMED ON THE PAGE — never a partial list, never a missing block — and the segments stand", async () => {
+  const plain = await doorstepBundle(HANDLE, { ...ctx, nowMs: NOW_303 });       // the same clock: the segments are compared whole
+  for (const [why, over, said] of [
+    ["the registry", { household: async () => null }, /household registry could not be read/],
+    ["a footprint", { ringOf: async () => { throw new Error("parcel dial unread"); } }, /the ground of r000\/east-shed could not be read \(parcel dial unread\)/],
+  ]) {
+    __setMistsDepsForTest(mistsDeps(over));
+    try {
+      const d = await doorstepBundle(HANDLE, { ...ctx, nowMs: NOW_303 });
+      assert.match(d.mists?.unavailable ?? "", said, `${why}: ${JSON.stringify(d.mists)}`);
+      assert.equal("reaches" in d.mists, false, `${why}: no partial list beside it`);
+      for (const s of DOORSTEP_SEGMENTS) assert.deepEqual(d[s], plain[s], `${why}: segment ${s} is untouched`);
+    } finally { __setMistsDepsForTest(null); }
+  }
 });

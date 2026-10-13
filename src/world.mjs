@@ -92,7 +92,7 @@ export const WORLD_CLONE = process.env.WORLD_CLONE
 // a clone, and pulls in graphology). Re-exported here so every caller that has
 // always read `currentCrossing` from `world.mjs` still does.
 export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
-import { arrivesAt, CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { arrivesAt, CROSSING_DERIVATION, crossingSailsAt, currentCrossing } from "./crossings.mjs";
 import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
 import { ringOf, ringBox, ringAgrees, ringMovedTo, RING_SHAPE_SENTENCE, RING_CLAIM_SENTENCE } from "./ring-box.mjs"; // POS-322: a mark's box is derived from its ring
 
@@ -1141,7 +1141,7 @@ export const MISTS_RETRY_AFTER_S = 30;
 // ring crosses it, and each piece is kept by which side of the other ring its
 // middle stands on; a piece lying along the other ring's boundary is shared ground,
 // not new. An amend that neither moves nor widens adds nothing.
-const groundRingOf = (mark) => {
+export const groundRingOf = (mark) => {
   const ring = ringOf(mark?.points);
   if (ring) return ring;
   const hw = (Number(mark?.extent?.w) || 0) / 2, hh = (Number(mark?.extent?.h) || 0) / 2;
@@ -3192,7 +3192,7 @@ async function foldConstants() {
 }
 
 // The town's parcel dial as a box, for the door's ring rule (POS-322).
-async function parcelDial() {
+export async function parcelDial() {
   const side = (await foldConstants()).PARCEL_EXTENT_M ?? 25;
   return { w: side, h: side };
 }
@@ -3929,6 +3929,25 @@ async function placingOnBehalf(by, payload, key, bounce) {
 // family as `_act_id` and `_adopted`), so it reaches the act's payload and the
 // claim's `data` and never a mark file. It is not read off `payload`: a
 // resident cannot claim a drop they did not make by typing the key.
+/**
+ * THE PLACEMENT RECEIPT'S MISTS FORECAST (WLD-38): the one forecast
+ * (mists-forecast.mjs) for this mark's ground, or the named unavailability.
+ * `null` when there is nothing to say — no season on the record, or a season
+ * that never reaches this ground within its schedule.
+ */
+async function placementForecast({ worldClone, w, worldUnread, id, ring, mistsCrossing = null }) {
+  const { forecastMists, mistsEngine, MISTS_FORECAST_UNAVAILABLE } = await import("./mists-forecast.mjs");
+  if (!w) return { unavailable: `${MISTS_FORECAST_UNAVAILABLE}: the world could not be read (${String(worldUnread?.message ?? worldUnread ?? "no world").slice(0, 120)})` };
+  const skeleton = w?._raw?.skeleton ?? undefined;
+  const engine = skeleton?.mists ? await mistsEngine(worldClone) : null;
+  const nowMs = mistsCrossing == null ? Date.now() : Date.parse(crossingSailsAt(mistsCrossing));
+  const f = await forecastMists({ engine, skeleton, footprints: [{ id, ring }], nowMs });
+  if (f.unavailable) return { unavailable: f.unavailable };
+  if (f.season === false || !f.reaches.length) return null;
+  const [r] = f.reaches;
+  return { as_of: f.as_of, fringe: r.fringe, wall: r.wall, says: r.says };
+}
+
 export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, { setDown = null, mistsCrossing = null, dropUnit = null } = {}) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
@@ -4192,6 +4211,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   // are not touched by this; only a write that would put ground behind the wall
   // is refused. No Mists, a clone without them, or a world that will not load:
   // no check at all.
+  let mistsWarning = null;
   if (kind === "sited" || kind === "parcel") {
     const box = kind === "parcel" ? (await parcelDial().catch(() => ({ w: 25, h: 25 }))) : extent;
     const hw = (Number(box?.w) || 0) / 2, hh = (Number(box?.h) || 0) / 2;
@@ -4202,17 +4222,19 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // re-filing one in place must not be refused for ground it always held: so the
     // wall is asked only about the points of the new ground that stand outside the
     // mark's old footprint. An amend that neither moves nor widens it asks nothing.
-    let w = null;
-    try { w = await world(); } catch { w = null; }
-    const old = payload.amend === true ? (w?.marks ?? []).find((m) => m.id === `${by}/${slug}`) ?? null : null;
-    const fresh = mistsNewGround(old, ground);
-    const seen = fresh.points.length || fresh.edges.length
-      ? await mistsGroundCheck(worldClone, async () => w?._raw?.skeleton ?? null, fresh, mistsCrossing ?? currentCrossing())
-      : null;
-    if (seen?.unreadable) throw bounce(503, MISTS_UNREADABLE,
-      `the office could not read the world or its engine to see where the wall of the Mists stands, so it will not place this mark until it can. Nothing was written; send the same request again after ${MISTS_RETRY_AFTER_S} seconds (Retry-After).`);
-    if (seen?.wall) throw bounce(422, "this ground stands behind the wall of the Mists",
-      `a mark may not be placed or moved behind the wall while the Mists stand: its ground reaches (${seen.wall.x}, ${seen.wall.y}), which no one can see or reach. Choose ground on the clear side of the wall; marks already standing stay as they are.`);
+    let w = null, worldUnread = null;
+    try { w = await world(); } catch (e) { w = null; worldUnread = e; }
+    // THE MISTS WARN; THEY DO NOT VETO (WLD-38, Wright 2026-10-13T05:16:12Z).
+    // This door used to refuse ground behind the wall (422) and refuse to place
+    // anything while it could not read the wall (503). Both are gone from
+    // placement: a valid mark is written, and its receipt carries the Mists
+    // forecast for its whole ground — when the fringe and the wall reach it, or
+    // that the wall already stands over it — or, when the forecast cannot be
+    // read, `mists-forecast-unavailable: <why>`, never a silent clear. It is
+    // computed HERE, before either pen writes and with no write of its own, so
+    // nothing after the commit can turn a written mark into an error. The walk,
+    // portal and spawn checks keep `mistsGroundCheck` exactly as it was.
+    mistsWarning = await placementForecast({ worldClone, w, worldUnread, id: `${by}/${slug}`, ring: ground, mistsCrossing });
   }
   const exec = join(HERE, "leave-exec.mjs");
   let result;
@@ -4237,6 +4259,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
   }
   if (outline) result.outline = outline; // POS-322: one line, only when the door moved or derived the box
+  if (mistsWarning) result.mists = mistsWarning; // WLD-38: the forecast, computed before the write
   await discloseOverhang(result, by, key);
   await discloseYourGround(result, clean);             // before the publish note, which strips _ground_min
   await disclosePublishing(result, by);

@@ -109,9 +109,16 @@ const PORT = Number(arg("--port", "4380"));
 // all: the dev office (:4381) shares the box, and the train reaches dev before
 // prod, so a dev office holding 4390 would leave prod's refresh reading dev's
 // office. A test office opens one only when it asks.
+//
+// The door is the SERVER OBJECT, never the number: each socket the box server
+// accepts is recorded in BOX_SOCKETS, and only those are box-local. And a box
+// port equal to --port is refused by name at boot (no door, the office serves
+// on, every caller charged): on Windows a 127.0.0.1 bind can sit beside the
+// public *:port one and take its loopback traffic, nginx's included.
 const BOX_PORT = process.env.OFFICE_BOX_PORT != null && process.env.OFFICE_BOX_PORT !== ""
   ? Number(process.env.OFFICE_BOX_PORT)
   : (PORT === 4380 ? 4390 : 0);
+const BOX_SOCKETS = new WeakSet();
 
 // ── WHAT THIS PROCESS IS (runbook DEC-4, G3) ─────────────────────────────────
 //
@@ -1344,7 +1351,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
   // A bulk read is charged what its single reads would be (bulkCost), keyless
   // and keyed alike.
   const cost = req.method === "GET" ? bulkCost(path, url.searchParams) : 1;
-  if (!key && req.method === "GET" && !IN_READ_WORKER && !boxLocal(req, BOX_PORT)) {
+  if (!key && req.method === "GET" && !IN_READ_WORKER && !boxLocal(req, BOX_SOCKETS)) {
     const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET", cost });
     if (limited) return rateResponse(res, limited);
   }
@@ -3028,9 +3035,12 @@ else {
   // Bound first, so it is open by the time the boot line says "listening". A
   // door that cannot bind says so and the office serves on without it: the
   // refresh then fails to connect, loudly, rather than the office not starting.
-  const boxDoor = BOX_PORT > 0 && !READ_ONLY_ROLE;
+  const boxSame = BOX_PORT > 0 && BOX_PORT === PORT;
+  if (boxSame) console.error(`ERROR: OFFICE_BOX_PORT ${BOX_PORT} is this office's own --port; the box door must be a port of its own, so it is NOT opened and every caller is charged (set OFFICE_BOX_PORT to another port, e.g. 4390, or 0)`);
+  const boxDoor = BOX_PORT > 0 && !boxSame && !READ_ONLY_ROLE;
   if (boxDoor) {
     const box = createServer(handle);
+    box.on("connection", (socket) => BOX_SOCKETS.add(socket));
     box.on("error", (e) => console.error(`WARN: the box door 127.0.0.1:${BOX_PORT} could not open (${e.code ?? e.message}); the box reads through it will fail until it does`));
     box.listen(BOX_PORT, "127.0.0.1");
   }

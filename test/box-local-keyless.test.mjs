@@ -41,8 +41,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const BURST = 3;
 let PORT, BOX, child, tmp, bootLine = "";
 let plain, plainBoot = "";
+let same, SAME, sameErr = "";
 
-const boot = async (dbPath, IX_ENV, env, onOut) => bootOnFreePort((port) => {
+// `env` is an object, or a function of the port the office is given.
+const boot = async (dbPath, IX_ENV, env, onOut, onErr = () => {}) => bootOnFreePort((port) => {
   const c = spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", dbPath,
     "--bouncer-now-ms", String(Date.parse("2026-10-13T14:00:00Z")),
@@ -52,11 +54,12 @@ const boot = async (dbPath, IX_ENV, env, onOut) => bootOnFreePort((port) => {
       OFFICE_BOUNCER_KEYLESS_PER_MINUTE: String(BURST),
       OFFICE_BOUNCER_KEYLESS_BURST: String(BURST),
       TOWN_CLONE: join(tmp, "no-clone-here"),
-      ...env,
+      ...(typeof env === "function" ? env(port) : env),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
   c.stdout.on("data", (d) => onOut(String(d)));
+  c.stderr.on("data", (d) => onErr(String(d)));
   return c;
 });
 
@@ -69,10 +72,13 @@ before(async () => {
   ({ child, port: PORT } = await boot(dbPath, IX_ENV, { OFFICE_BOX_PORT: String(BOX) }, (s) => { bootLine += s; }));
   // An office with no OFFICE_BOX_PORT on a port that is not 4380: no box door.
   ({ child: plain } = await boot(dbPath, IX_ENV, { OFFICE_BOX_PORT: "" }, (s) => { plainBoot += s; }));
+  // The operator's slip (the second review of #516): OFFICE_BOX_PORT names the
+  // office's own --port. Its own bucket, its own office.
+  ({ child: same, port: SAME } = await boot(dbPath, IX_ENV, (port) => ({ OFFICE_BOX_PORT: String(port) }), () => {}, (s) => { sameErr += s; }));
 });
 
 after(async () => {
-  for (const c of [child, plain]) if (c && c.exitCode === null) {
+  for (const c of [child, plain, same]) if (c && c.exitCode === null) {
     const gone = new Promise((ok) => c.on("exit", ok));
     c.kill();
     await gone;
@@ -153,4 +159,20 @@ test("a non-loopback caller: charged on the public port, and the box door is not
 test("an office on a port other than 4380 opens no box door unless OFFICE_BOX_PORT names one", () => {
   assert.match(plainBoot, /listening on/);
   assert.doesNotMatch(plainBoot, /box door/, "the dev office (:4381) must never hold prod's 4390");
+});
+
+// ── the second review of #516 (its falsifiers, folded in) ───────────────────
+
+test("REVIEWER'S FALSIFIER: OFFICE_BOX_PORT equal to --port never makes the public port box-local", async () => {
+  assert.match(sameErr, new RegExp(`OFFICE_BOX_PORT ${SAME} is this office's own --port`), "the slip is refused by name at boot");
+  const got = await statuses("127.0.0.1", SAME, BURST + 1);
+  assert.deepEqual(got, [...Array(BURST).fill(200), 429], `public port with box port == public port: ${got}`);
+});
+
+test("REVIEWER'S FALSIFIER: the box door refuses IPv6 loopback and every LAN address", async () => {
+  await assert.rejects(fetch(`http://[::1]:${BOX}/town`), "IPv6 loopback must not reach the box door");
+  const lan6 = Object.values(networkInterfaces()).flat()
+    .find((i) => i && i.family === "IPv6" && !i.internal && !i.address.startsWith("fe80"))?.address;
+  if (lan6) await assert.rejects(fetch(`http://[${lan6}]:${BOX}/town`), `the box door refuses ${lan6}`);
+  // the LAN IPv4 refusal is asserted in the non-loopback test above
 });

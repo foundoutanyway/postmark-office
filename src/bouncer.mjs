@@ -168,18 +168,23 @@ export const clientIp = (req) => {
 //
 // BOX-LOCAL IS A DOOR, NOT A HEADER. The office opens a second listener, the
 // box door, bound to 127.0.0.1 only and named by no nginx location
-// (server.mjs § the box door). A request is box-local when it ARRIVED on that
-// listener (the socket's own local port) from a loopback address, and nothing a
-// caller writes can change either. The first build read "loopback with no
-// X-Forwarded-For" on the public port, and the review of #516 got through it:
+// (server.mjs § the box door). A request is box-local when its socket was
+// ACCEPTED BY THAT SERVER OBJECT (the box's own connection handler records each
+// one in `boxSockets`) and comes from a loopback address. Not a port number: a
+// number compares equal to the public port the day an env file names the same
+// one twice, and then every request nginx forwards would be box-local (the
+// second review of #516). Nothing a caller writes changes either.
+//
+// The first build read "loopback with no X-Forwarded-For" on the public port,
+// and the first review of #516 got through it:
 // nginx's two root .well-known locations proxy the raw URI with no XFF, and a
 // backslash path that nginx matches as /.well-known/oauth-… the office's URL
 // parse resolves to any door. Everything nginx forwards arrives on the public
 // port, so no path reaches the box door. Only the keyless GET bucket reads
 // this; keys, writes and the claim and berth desks keep every limit they had.
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-export const boxLocal = (req, boxPort) =>
-  boxPort > 0 && req.socket?.localPort === boxPort && LOOPBACK.has(req.socket?.remoteAddress);
+export const boxLocal = (req, boxSockets) =>
+  boxSockets?.has(req.socket) === true && LOOPBACK.has(req.socket?.remoteAddress);
 
 // THE BULK READS' PRICE (Darko 2026-10-13). A bulk read answers what n single
 // reads answer, so it spends what they would: the cards of a roster page cost

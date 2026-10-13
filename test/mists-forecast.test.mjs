@@ -379,6 +379,27 @@ test("LINES · the segment test is exact: the slit's witness is the engine's wal
   assert.equal(segmentCoverage({ x: -5, y: 0 }, { x: 5, y: 0 }, m.clear, m.clearings).covered, true, "inside the disc");
 });
 
+// ── Bevel's third review (2026-10-13T06:28Z): a shape is the same shape anywhere ──
+
+test("TRANSLATION · the same footprints and the same season, moved together across the map, give the same answer — a centimetre pocket, a metre fence, a zero-width line", { skip }, () => {
+  const s = 0.008;
+  for (const off of [0, 5000, -42000, 1e6]) {
+    const at = ([x, y]) => ({ x: off + x, y: off + y });
+    const pocketSeason = { border_m: { minX: off + 10, minY: off + 10, maxX: off + 20, maxY: off + 20 }, fringe_m: 0,
+      clearings_m: [[-10, -10], [10, -10], [10, 10], [-10, 10]].map(([x, y]) => ({ x: off + x * s, y: off + y * s, r_m: 12 * s })),
+      schedule: [{ crossing: 300, front_m: 0 }, { crossing: 301, front_m: 0 }] };
+    const pocket = [[-8, -8], [8, -8], [8, 8], [-8, 8]].map(([x, y]) => at([x * s, y * s]));
+    assert.equal(footprintState(eng, eng.mistsAt(300, pocketSeason), pocket), "wall", `a 0.128 m pocket at offset ${off}`);
+    // the slit season, moved: a zero-width line across it is walled; a 2 m square across it is walled; a line wholly in the box is clear
+    const slitSeason = { border_m: { minX: off + 10, minY: off - 100, maxX: off + 100, maxY: off + 100 }, fringe_m: 0,
+      clearings_m: [{ id: "c", x: off, y: off, r_m: 10 }], schedule: [{ crossing: 300, front_m: 0 }, { crossing: 301, front_m: 0 }] };
+    const m = eng.mistsAt(300, slitSeason);
+    assert.equal(footprintState(eng, m, [at([9, 1.5]), at([11, 1.5]), at([11, 1.5]), at([9, 1.5])]), "wall", `a flat line over the slit at offset ${off}`);
+    assert.equal(footprintState(eng, m, [at([9, 1]), at([11, 1]), at([11, 3]), at([9, 3])]), "wall", `a 2 m square over the slit at offset ${off}`);
+    assert.equal(footprintState(eng, m, [at([20, 0]), at([60, 0]), at([60, 0]), at([20, 0])]), "clear", `a line inside the box at offset ${off}`);
+  }
+});
+
 // LAST in the file: it changes the bottled world's skeleton
 test("PLACEMENT · a season the engine cannot read reaches the RECEIPT as mists-forecast-unavailable, and the mark is still written", { skip }, async () => {
   const { border_m: _b, ...noBorder } = MISTS;

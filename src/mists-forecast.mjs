@@ -206,8 +206,15 @@ export function segmentCoverage(a, b, box, discs = []) {
   return { covered: false, witness: { x: a.x + t * dx, y: a.y + t * dy } };
 }
 
-/** The ring's area (shoelace). */
-const areaOf = (ring) => Math.abs(ring.reduce((sum, p, i) => { const q = ring[(i + 1) % ring.length]; return sum + p.x * q.y - q.x * p.y; }, 0)) / 2;
+/**
+ * The ring's area (shoelace), taken about its OWN first corner: a footprint far
+ * from the world's origin would otherwise lose its area to cancellation
+ * between large equal terms (Bevel's third review).
+ */
+const areaOf = (ring) => {
+  const o = ring[0];
+  return Math.abs(ring.reduce((sum, p, i) => { const q = ring[(i + 1) % ring.length]; return sum + (p.x - o.x) * (q.y - o.y) - (q.x - o.x) * (p.y - o.y); }, 0)) / 2;
+};
 
 /** The engine's clear ground at state `m`, drawn in by `inset` metres: the box and the clearing discs. */
 const clearGround = (m, inset = 0) => {
@@ -237,8 +244,13 @@ export function footprintState(eng, m, poly) {
     const h = eng.mistsHere(distinct[0], m);
     return h.inWall ? "wall" : Number(m.fringeM) > 0 && h.wallM < m.fringeM ? "fringe" : "clear";
   }
-  const span = Math.max(...pts.map((p) => Math.abs(p.x)), ...pts.map((p) => Math.abs(p.y)), 1);
-  const flat = pts.length < 3 || areaOf(pts) <= EPS * span * span;
+  // FLAT is judged against the footprint's OWN size — its bounding box —
+  // never its distance from the world's origin: a shape moved across the map
+  // is the same shape (Bevel's third review). A ring with no area at its own
+  // scale is a line; a centimetre square is an area wherever it stands.
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  const size = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+  const flat = pts.length < 3 || areaOf(pts) <= EPS * size * size;
   const sides = flat ? pts.map((p, i) => [p, pts[(i + 1) % pts.length]]).filter(([a, b]) => a.x !== b.x || a.y !== b.y) : null;
   const leaves = (ground) => {
     if (!flat) return coverage(pts, ground.box, ground.discs);

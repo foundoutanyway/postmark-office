@@ -759,7 +759,7 @@ export function letterList(db, opts = {}) {
 // The site refresh re-read the whole corpus with bodies every pass: ~27 pages,
 // ~13 MB. Two filters let it read only what moved:
 //
-//   ?digests=1  each letter as { id, digest } and nothing else, up to 1000 a
+//   ?digests=1  each letter as { id, digest } and nothing else, up to 5000 a
 //               page. The digest is the sha256 of the letter's `full=1` answer
 //               itself (letterDigest), so two equal digests are two equal
 //               answers, whether the row moved or the office's shaping did.
@@ -770,7 +770,7 @@ export function letterList(db, opts = {}) {
 // fixed once dated: the ferry MOVES it outbox → inbox at delivery (path, box and
 // delivered_at change), and a letter merged late carries an older date than
 // letters already read. A digest sees both.
-export const LETTER_DIGEST_PAGE = 1000;
+export const LETTER_DIGEST_PAGE = 5000;
 export const LETTER_IDS_MAX = 200;
 export const letterPageCap = (opts) => (opts.digests ? LETTER_DIGEST_PAGE : 200);
 const fullLetter = (r) => ({ ...JSON.parse(r.json), ...excerpt(r) });

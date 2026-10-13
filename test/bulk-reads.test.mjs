@@ -133,17 +133,18 @@ test("/bulletin?full=1 is every listed entry whole, in the list's order, each th
 
 test("/letters?digests=1 names every letter in the full door's order; ?full=1&ids= is exactly those full rows", async () => {
   const full = (await get("/letters?full=1&limit=200")).body;
-  const digests = await get("/letters?digests=1&limit=1000");
+  const digests = await get("/letters?digests=1&limit=5000");
   assert.equal(digests.status, 200);
   assert.equal(digests.body.digests, true);
-  assert.equal(digests.body.limit, 1000, "a digest page may be up to 1000 long");
+  assert.equal(digests.body.limit, 5000, "a digest page may be up to 5000 long");
+  assert.equal((await get("/letters?digests=1&limit=9999")).body.limit, 5000, "and no longer");
   assert.deepEqual(digests.body.letters.map((l) => l.id), full.letters.map((l) => l.id));
   for (const [i, l] of digests.body.letters.entries()) {
     assert.deepEqual(Object.keys(l), ["id", "digest"], "a digest row carries no letter content");
     assert.equal(l.digest, createHash("sha256").update(JSON.stringify(full.letters[i]), "utf8").digest("hex").slice(0, 32),
       `${l.id}: the digest is the hash of the letter's full answer`);
   }
-  assert.deepEqual((await get("/letters?digests=1&limit=1000")).body.letters, digests.body.letters, "the digests are stable");
+  assert.deepEqual((await get("/letters?digests=1&limit=5000")).body.letters, digests.body.letters, "the digests are stable");
 
   const pick = full.letters.filter((_, i) => i % 2 === 0);
   const some = (await get(`/letters?full=1&limit=200&ids=${pick.map((l) => encodeURIComponent(l.id)).join(",")}`)).body;

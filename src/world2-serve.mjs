@@ -49,10 +49,11 @@ import { sessionKeysVia, resolveHouse, houseRowsVia } from "./household-deriver.
 /**
  * HOW MANY HOUSES the roster knows — counted as HOUSES, through the deriver.
  *
- * `identities` is one row per HANDLE and its `household` column carries
+ * `identities` is one row per HANDLE. Its `household` column used to carry
  * whichever spelling the world repo's copy held when the row landed (measured
  * 2026-09-22: 173 of 190 `gh:<id>`, 17 `hh:<slug>`, umbraliminalis both at
- * once). This figure used to be `idRows.length`, which is the handle count
+ * once); since 055 (POS-350) it is the registry's view and answers `hh:<slug>`
+ * or `solo:<handle>`, so the deriver below names each by its slug. This figure used to be `idRows.length`, which is the handle count
  * wearing a household's name — 190 where the town has 118 houses — and
  * `DISCLOSURES` has nothing to say about a number that is simply a different
  * quantity under the wrong word.
@@ -215,11 +216,10 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null, refus
   const p = injected ?? await pool();
   const { household, households = [], disclosure } = await keyHouseholdOf(p, key);
 
-  // The household's roster, from the store's own `identities` projection — the
-  // registry `roll-ingest.mjs` writes ("census decision 1: roster is
-  // REVIEW-class, repo-first"). 1.0 resolves the same question through the town
-  // clone's dated `currentHouseholdOf`; this is that resolution, already made
-  // at the ingested sha and stored.
+  // The household's roster, from the store's `identities`: since 055 (POS-350)
+  // the registry's VIEW over `households` and `household_pins`, housed by the
+  // office's one deriver, so it answers "which house NOW" as the ceremony last
+  // wrote it.
   // The spelling set, for `HOUSEHOLD_HANDLES_SQL`'s reason: the roster is keyed
   // in whichever spelling the world repo's copy carried, so asking for one
   // returns part of a house and the page silently loses the rest of it.

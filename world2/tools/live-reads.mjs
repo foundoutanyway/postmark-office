@@ -1249,7 +1249,7 @@ export const DISCLOSURES = Object.freeze({
   // answer reads two rosters for two questions and says so.
   roll_source: "the roll here is `town_roll` — the TOWN repo's WHITE_PAGES at the pinned town_sha, which is " +
                "the same roster 1.0's doors take (`ctx.roll`). Household grouping still comes from " +
-               "`identities` (the world repo's households.json): the roll says who to ask about, the " +
+               "`identities` (the store's household registry): the roll says who to ask about, the " +
                "identities say whose ground counts as yours. A resident in the roll with no identity row " +
                "is asked about and stands alone — registry lag never unplaces anyone.",
 });

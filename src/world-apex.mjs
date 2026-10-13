@@ -39,6 +39,7 @@
 import { renamedRow, DOOR_FIELDS, withRefused } from "./one-contract.mjs"; // POS-70: the one rename shape; POS-246: the door's own fields; POS-427: refused beside did
 import { actUnderNonce, nonceDefect } from "./act-nonce.mjs"; // POS-246: a world act's retry key
 import { readFileSync } from "node:fs";
+import { IDENTITIES_SQL } from "./world2-fold.mjs"; // POS-350: the household grain is the store's identities
 import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock
 import { cardsSchemaAt, describeAt, readShape, shapeRead } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
@@ -409,7 +410,7 @@ export function rideDeps() {
           // `test/world-ride.test.mjs` pins the key set for that reason.
           payload: entry.payload,
           effect: entry.effect,
-          household: worldHouseholdOf(entry.handle),
+          household: (await worldHouseholds())(entry.handle),
         });
       }
     },
@@ -1372,25 +1373,40 @@ const HELD_ROWS = `SELECT id, by,
 registerTwin(HELD_ROWS, (g, idsJson) => nodesIn(g, idsJson)
   .map((n) => ({ id: n.id, by: n.by, class: jx(n.p, "class"), held_grant: jx(n.p, "held_grant"), body: jx(n.p, "body") })));
 
-// ── the household grain, read from the world's own registry ─────────────────
+// ── the household grain, read from the store's `identities` (POS-350) ─────
 //
-// `WORLD/households.json` is the world clone's own pin registry — the same file
-// leave-exec reads for the fan-up grain. Used here for ONE question: whose
-// ground is this, and is the caller of that house? A handle with no registry
-// row is `solo:<handle>`, which is the grain the fold already assumes and is
-// why two accounts of one house compose here exactly as they do there.
+// Used here for ONE question: whose ground is this, and is the caller of that
+// house? The answer is the store's `identities` view (055): `hh:<slug>` for the
+// house the office's one deriver names (household-deriver.mjs § resolveHouse),
+// `solo:<handle>` for a handle no house holds, which is the grain the fold
+// already assumes. A handle the registry does not know is `solo:<handle>` too.
 //
-// UNREADABLE IS NULL, NOT A GUESS. `scopeAdmits` refuses on a null household
-// rather than admitting, so a missing registry closes the relation-scoped doors
-// instead of opening them to everyone. That direction is the whole point.
+// IT USED TO READ THE WORLD CLONE'S `WORLD/households.json`, the crossing's
+// printout of that same registry (world-households-export.mjs), so the door
+// judged by the copy a settlement last pulled while the store already held the
+// answer (Darko, 2026-10-04: the store is the record, and every reader reads it;
+// Wright, 2026-10-13, POS-350 gap 2).
 //
-// CACHED PER HEAD, NOT PER PROCESS (the Starling House, 2026-09-30). This used
-// to parse the file ONCE for the life of the process, and nothing in
-// production ever reset it: a settlement that re-derived the registry reached
-// this door only at the office's next restart, so a house split across two
-// keys stayed split here after the world had joined it. The parse is now keyed
-// on the clone's HEAD sha, read off disk (no git subprocess), so the checkout
-// moving is what re-reads it.
+// NO SILENT FALLBACK. An office pointed at the store (WORLD2_PG=1 and
+// WORLD2_PG_URL, which prod is) answers from the store or not at all: a read
+// that fails throws `HouseholdsUnreadable`, carrying the store's own error as
+// its cause, so a lost store answers 503 at the door and anything else 500 with
+// the reason. Falling back to the printout would answer under a stale source,
+// which is the disease this read was moved to cure. Only an office with NO store
+// configured (a test, a local office) reads the world clone's file, re-read
+// whenever the clone's HEAD moves.
+//
+// ASYNC AT THE EDGE, SYNC IN THE LADDER, as households.mjs § householdLookup:
+// `worldHouseholds()` reads once and hands back `(handle) => key`, because
+// `resolveForActor` asks `groundHouseholdOf` synchronously, once per ground.
+export class HouseholdsUnreadable extends Error {
+  constructor(cause) {
+    super(`the household registry (the store's identities) could not be read${cause ? `: ${cause.message ?? cause}` : ""} — the World's household is never guessed from WORLD/households.json`, { cause });
+    this.name = "HouseholdsUnreadable";
+    this.code = "households-unreadable";
+  }
+}
+
 function headShaOf(repo) {
   try {
     const head = readFileSync(join(repo, ".git", "HEAD"), "utf8").trim();
@@ -1398,9 +1414,8 @@ function headShaOf(repo) {
     return sym ? refShaFromDisk(repo, sym[1]) ?? null : head;
   } catch { return null; }
 }
-let _hh = null; // { head, map }
-export function worldHouseholdOf(handle, { repo = WORLD_CLONE } = {}) {
-  if (!handle) return null;
+let _hh = null; // { head, map }: the no-store road's file, per HEAD
+function fileHouseholds(repo) {
   const head = headShaOf(repo);
   if (_hh === null || _hh.head !== head) {
     let map = {};
@@ -1408,7 +1423,22 @@ export function worldHouseholdOf(handle, { repo = WORLD_CLONE } = {}) {
     catch { map = {}; }
     _hh = { head, map };
   }
-  return _hh.map[handle] ?? `solo:${handle}`;
+  return _hh.map;
+}
+
+/** One read of the household grain -> the synchronous `(handle) => key` (null for no handle). */
+export async function worldHouseholds({ repo = WORLD_CLONE, env = process.env } = {}) {
+  const { world2Enabled, actsQuery } = await import("./world2-acts.mjs");
+  if (!world2Enabled(env)) {
+    const map = fileHouseholds(repo);
+    return (handle) => (handle ? map[handle] ?? `solo:${handle}` : null);
+  }
+  let rows;
+  try { rows = await actsQuery(IDENTITIES_SQL, [], env); }
+  catch (e) { throw new HouseholdsUnreadable(e); }
+  if (!Array.isArray(rows)) throw new HouseholdsUnreadable(null);
+  const map = new Map(rows.map((r) => [String(r.handle), String(r.household)]));
+  return (handle) => (handle ? map.get(String(handle)) ?? `solo:${handle}` : null);
 }
 export const resetHouseholdCache = () => { _hh = null; };
 
@@ -2168,14 +2198,15 @@ async function apexRead(args, key, ctx = {}) {
     rows = amb.rows;
     const ground = gatherGroundActions(store.db, { spineIds, reachIds });
     const held = gatherHeldActions(store.db, await holdingsFor(args, key));
+    const houseOf = await worldHouseholds(); // POS-350: the store's identities, read once for every ground below
     // THE SEAT, and the read must gather it the same way the act does — "read:
     // is every action's shadow ... anything you can do, you can read, and never
     // the reverse." A read that showed a seated human less than the door admits
     // is that reverse, wearing an omission.
     const resolved = resolveForActor([...held.entries, ...ground.entries, ...amb.entries], {
       kind: actorKindOf(args),
-      actorHousehold: worldHouseholdOf(standingHandle(args, key)),
-      groundHouseholdOf: (id) => worldHouseholdOf(ground.byId?.get(id)?.by ?? null),
+      actorHousehold: houseOf(standingHandle(args, key)),
+      groundHouseholdOf: (id) => houseOf(ground.byId?.get(id)?.by ?? null),
       // root-first, so the seat lands on the OUTERMOST room that seats you
       spineIds,
       // ⚑ NO HANDOFF SEAT IS PASSED (parked 2026-09-10). `resolveForActor`
@@ -2201,8 +2232,8 @@ async function apexRead(args, key, ctx = {}) {
     // channels, so the roster cannot claim feet the door would refuse.
     const humanHere = resolveGrants([...held.entries, ...ground.entries, ...amb.entries], {
       kind: "human",
-      actorHousehold: worldHouseholdOf(standingHandle(args, key)),
-      groundHouseholdOf: (id) => worldHouseholdOf(ground.byId?.get(id)?.by ?? null),
+      actorHousehold: houseOf(standingHandle(args, key)),
+      groundHouseholdOf: (id) => houseOf(ground.byId?.get(id)?.by ?? null),
     });
     // GROUND-granted only. An ambient `say` reaches a human anywhere and says
     // nothing about whether this room gives them feet — counting it would light
@@ -2424,12 +2455,13 @@ async function apexDo(args, key, ctx = {}) {
     const amb = gatherActions(store.db, { spineIds, reachIds });
     const ground = gatherGroundActions(store.db, { spineIds, reachIds });
     const held = gatherHeldActions(store.db, await holdingsFor(args, key));
+    const houseOf = await worldHouseholds(); // POS-350: the store's identities, read once for every ground below
     const kind = actorKindOf(args);
     const { entries, refused: refusedGrants, seated: seatedAt, handoff: handoffSeat } = resolveForActor(
       [...held.entries, ...ground.entries, ...amb.entries], {
         kind,
-        actorHousehold: worldHouseholdOf(standingHandle(args, key)),
-        groundHouseholdOf: (id) => worldHouseholdOf(ground.byId?.get(id)?.by ?? null),
+        actorHousehold: houseOf(standingHandle(args, key)),
+        groundHouseholdOf: (id) => houseOf(ground.byId?.get(id)?.by ?? null),
         spineIds,
         // ⚑ THE THIRD SEATING GROUND (world#16) IS PARKED, 2026-09-10. No
         // handoff is passed, `resolveForActor` answers `handoff: null`, and the
@@ -2698,7 +2730,7 @@ async function apexDo(args, key, ctx = {}) {
         // it in its own finally. Handing the factory instead would open a
         // second store per act and read the world twice in one call.
         db: store.db, spineIds, handle: standingHandle(args, key),
-        household: worldHouseholdOf(standingHandle(args, key)),
+        household: houseOf(standingHandle(args, key)),
         crossing: currentCrossing(), witnessStamp, nowMs: Date.now(),
       };
       // ── THE HAND, NOT A FLAG (2026-08-27) ─────────────────────────────────
@@ -3157,10 +3189,11 @@ async function apexReadAction(args, key, ctx = {}) {
     const amb = gatherActions(store.db, { spineIds, reachIds });
     const ground = gatherGroundActions(store.db, { spineIds, reachIds });
     const held = gatherHeldActions(store.db, await holdingsFor(args, key));
+    const houseOf = await worldHouseholds(); // POS-350: the store's identities, read once for every ground below
     const { entries } = resolveGrants([...held.entries, ...ground.entries, ...amb.entries], {
       kind: actorKindOf(args),
-      actorHousehold: worldHouseholdOf(standingHandle(args, key)),
-      groundHouseholdOf: (id) => worldHouseholdOf(ground.byId?.get(id)?.by ?? null),
+      actorHousehold: houseOf(standingHandle(args, key)),
+      groundHouseholdOf: (id) => houseOf(ground.byId?.get(id)?.by ?? null),
     });
     const rows = [...amb.rows, ...ground.classRows];
     const match = entries.find((e) => e.action === action);

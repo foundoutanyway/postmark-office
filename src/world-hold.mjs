@@ -254,12 +254,17 @@ export function declareHolding({ db, thing, to = null, actor, roster = null, gro
 
 export const HOLD_TOOLS = [
   { name: "world_hold",
-    description: "Declare who holds a thing — the one act behind give, drop and take. Name a thing and, to hand it over, the resident who takes it; omit `to` and you either SET IT DOWN where you stand (if you are holding it) or PICK IT UP (if it is standing on the ground). Which of the three happens is read off the thing's current holder, not from what you call it — and a `to:` on a thing you are NOT holding is refused by name rather than performed as something else. THE REACH OF A HOLD (the-town/the-reach): a take is a threshold act — you stand within the thing's extent to take it, exactly as an entry stands at a threshold you truly stand before, and a take from further off is refused naming the distance and the walk that closes it. A set-down stands where you stood: the act carries your standpoint and the thing stands there, not where it was last folded. A give is a take at arm's length — giver and receiver within earshot of each other. And only what stands on the world changes hands: a private draft is on no docket and in no public answer, so nobody outside its author's household can take it or be given it until it publishes. WHO MADE IT IS NOT WHO HOLDS IT: authorship is the mark's `by` and never moves; holding is this edge and moves freely; where it stands is a third answer again, derived from the holder, then from the set-down, then from canon's fold. BY LAW, taking from another household's ground also answers to that ground's word; the door does not yet resolve which ground you are standing on, so today it does not enforce that — what it does instead is RECORD every take with the resident who made it, so a ground-holder who objects has the record to point at. The enforcement lands with ground resolution.",
+    description: "Declare who holds a thing — the one act behind give, drop and take. Name a thing and, to hand it over, the resident who takes it; omit `to` and you either SET IT DOWN where you stand (if you are holding it) or PICK IT UP (if it is standing on the ground). Which of the three happens is read off the thing's current holder, not from what you call it — and a `to:` on a thing you are NOT holding is refused by name rather than performed as something else. THE REACH OF A HOLD (the-town/the-reach): a take is a threshold act — you stand within the thing's extent to take it, exactly as an entry stands at a threshold you truly stand before, and a take from further off is refused naming the distance and the walk that closes it. A set-down stands where you stood: the act carries your standpoint and the thing stands there, not where it was last folded. A give is a take at arm's length — giver and receiver within earshot of each other. And only what stands on the world changes hands: a private draft is on no docket and in no public answer, so nobody outside its author's household can take it or be given it until it publishes. WHO MADE IT IS NOT WHO HOLDS IT: authorship is the mark's `by` and never moves; holding is this edge and moves freely; where it stands is a third answer again, derived from the holder, then from the set-down, then from canon's fold. BY LAW, taking from another household's ground also answers to that ground's word; the door does not yet resolve which ground you are standing on, so today it does not enforce that — what it does instead is RECORD every take with the resident who made it, so a ground-holder who objects has the record to point at. The enforcement lands with ground resolution. COUNTED UNITS (candy): one edge per label, holder to label. Take from a chest with from: (and label: when it holds several, else the refusal lists them), give with to: a resident or a chest, set ONE unit down with label: alone (it becomes a sited mark under the standard one-stamp rule), take a set-down unit back by naming its mark as thing:, use one up with act: \"consume\", and — as a label's creator — top a chest up with act: \"refill\". Every unit carried is one slot of the thing class's carry_cap; a portable chest is one slot whatever it holds, and a fixed one is not carried.",
     inputSchema: { type: "object", properties: {
-      thing: { type: "string", description: "the thing's mark id, <by>/<slug> — as ids appear in the telling" },
-      to: { type: "string", description: "the resident who takes it (a give). Omit to set it down where you stand, or to pick up a thing standing on the ground" },
+      thing: { type: "string", description: "the thing's mark id, <by>/<slug> — as ids appear in the telling. A unit that was set down is a mark too: name it to take it back, or with act: \"consume\" to eat it where it stands" },
+      to: { type: "string", description: "the resident who takes it (a give), or a chest's id to put counted units into it. Omit to set it down where you stand, or to pick up a thing standing on the ground" },
+      label: { type: "string", description: "COUNTED UNITS (candy): which label — e.g. a candy's slug. With one label in hand or in the chest it may be omitted; with several it must be named, and an omission is refused listing what is there" },
+      count: { type: "number", description: "COUNTED UNITS: how many, a whole number (default 1). A set-down is always one unit, one mark, one stamp" },
+      from: { type: "string", description: "COUNTED UNITS: the chest to take from, <by>/<slug> — you stand within its extent to take" },
+      act: { type: "string", enum: ["consume", "refill"], description: "consume: use up ONE held consumable unit (name label: when you hold several), or name thing: to consume a set-down unit where it stands. refill: the creator of a candy label tops a chest up to its capacity with their own label (name chest:)" },
+      chest: { type: "string", description: "with act: \"refill\" — the chest's id, <by>/<slug>" },
       handle: { type: "string", description: "which of YOUR residents acts (omit if your key holds one; a multi-resident key must name one)" },
-    }, required: ["thing"], additionalProperties: false } },
+    }, additionalProperties: false } },
   { name: "world_holdings",
     description: "What you are carrying. Every thing whose live holding edge names one of your residents, with what each one is and who made it. A thing you made and gave away is not here; a thing someone gave you is, whoever authored it.",
     inputSchema: { type: "object", properties: {
@@ -477,7 +482,7 @@ export async function refuseOutOfReach({ thing, to, actor, act, holder, ctx: giv
  * of an arm's-length rule would be two answers to "how far is beside", which is
  * the split this lane exists to close.
  */
-async function armsLengthOrThrow({ thing, to, here, actor, standpointOfOther = null }) {
+export async function armsLengthOrThrow({ thing, to, here, actor, standpointOfOther = null }) {
   const { withinArmsLength } = await import("./reach.mjs");
   if (!here)
     throw bounce(409, "the record does not place you anywhere",
@@ -662,6 +667,9 @@ export function holdEffectsFrom({ rows = [], handles = [], sinceCrossing, nowCro
   const out = [];
   for (const r of rows) {
     if (r?.class !== "holding") continue;
+    // A counted unit's act (WLD-27, `units:*`) names no thing changing hands;
+    // its effects are not this shelf's sentence, so it is not read as one.
+    if (String(r.action ?? "").startsWith("units:")) continue;
     const thing = r.object;
     if (!thing) continue;                       // an act naming no thing names nothing
     const c = r.crossing == null ? null : Number(r.crossing);
@@ -898,7 +906,7 @@ const placeText = (p) => `(${Number(p.x)}, ${Number(p.y)})`;
  * amend). Any key in neither list is an authored line the door cannot carry,
  * and the amend is refused rather than made to drop it.
  */
-export const AMEND_CARRIES = Object.freeze(["kind", "extent", "points", "body", "slot", "value", "class", "ask", "reward", "status", "image"]);
+export const AMEND_CARRIES = Object.freeze(["kind", "extent", "points", "body", "slot", "value", "class", "ask", "reward", "status", "image", "capacity", "portable", "welcome"]);
 export const AMEND_LEAVES = Object.freeze([
   "id", "by", "at", "tier", "sovereign", "placementParent", "household", "declared_household",
   "stamps", "weight", "weight_parts", "ledger_weight", "date", "signal",
@@ -1105,6 +1113,8 @@ export async function callHoldTool(name, args = {}, key = null) {
               more_note: `${held.length - next} more thing${held.length - next === 1 ? "" : "s"} in your hands — call again with offset: ${next}` }
           : {}),
         holding: page.map((id) => ({ thing: id, made_by: id.split("/")[0] })),
+        // THE COUNTED HOLDING (WLD-27): one edge per label, and what it shows.
+        units: await unitsHeldBy(actor),
       };
     }
     // ── TWO INPUTS THIS DOOR DOES NOT YET COMPUTE ──────────────────────────
@@ -1133,6 +1143,18 @@ export async function callHoldTool(name, args = {}, key = null) {
     // — a door that promised enforcement it does not perform would be the exact
     // schema-vs-runtime defect this branch flagged on `leave_mark`'s `tier:`, and
     // it is not better for being mine.
+    // ── COUNTED UNITS (WLD-27) — their own door, the same lane and queue ─────
+    if (args.thing == null && args.to == null && args.from == null && args.label == null && args.count == null && args.act == null)
+      throw bounce(422, "which thing?", "a thing's mark id, <by>/<slug> — or label:/count:/from: for counted units");
+    {
+      const { unitRouteOf, callUnits, liveUnitDeps } = await import("./world-units.mjs");
+      let thingMark = null;
+      if (args.thing != null && args.to == null && args.act == null) {
+        try { thingMark = (await (await import("./world.mjs")).worldMarkById(String(args.thing))).mark; } catch { thingMark = null; }
+      }
+      const route = unitRouteOf(args, { thingMark });
+      if (route) return await callUnits(route, args, key, actor, await liveUnitDeps());
+    }
     const dials = thingDials();
     // ── LANE TWO OF THE PEN FLIP (W2_PEN=hold; runbook C2, 2026-09-03) ────────
     // The record is Postgres `acts`, committed and awaited. Unreachable
@@ -1164,6 +1186,13 @@ export async function callHoldTool(name, args = {}, key = null) {
     refuseGiveOfUnheld({ thing: args.thing, to: args.to ?? null, actor, holder: preHolder });
     const face = faceOf(preHolder, args.to ?? null);
     const reached = await refuseOutOfReach({ thing: args.thing, to: args.to ?? null, actor, act: face, holder: preHolder });
+    // A FIXED CHEST IS NOT CARRIED (WLD-27): a bowl stands where it was set.
+    if (face === "take") {
+      let m = null;
+      try { m = (await (await import("./world.mjs")).worldMarkById(String(args.thing))).mark; } catch { m = null; }
+      if (m?.class === "chest" && m.portable === false)
+        throw bounce(409, `${args.thing} is fixed where it stands`, "a chest declared portable: false (a bowl) is not carried — take from it instead: world { do: \"take\", args: { from: \"" + args.thing + "\" } }. Nothing was recorded.");
+    }
 
     // The hold lane is flipped here — the door refused above if it was not —
     // so there is one pen: the holding act, awaited. (The unflipped pen, which
@@ -1171,7 +1200,7 @@ export async function callHoldTool(name, args = {}, key = null) {
     // dynamic.db, POS-269.)
     {
       const stood = await standpointOfActor(actor);
-      const out = await declareHoldingFlipped({ db: null, thing: args.thing, to: args.to ?? null, actor, dials, key, reached, stood });
+      const out = await declareHoldingFlipped({ db: null, thing: args.thing, to: args.to ?? null, actor, dials, key, reached, stood, carry: carryForThings });
       if (out?.did !== "drop") return out;
       // AFTER the drop's COMMIT, never inside its transaction: the amend is the
       // mark lane's own act on the mark lane's own pen, and holding the hold
@@ -1238,7 +1267,7 @@ export function holdingEntry(did, { crossing, at, witnesses, cls, household }) {
 // off the hold lane this refuses as the door does. `deps` exist so the
 // ordering can be proven with no world db and no Postgres; the door injects the
 // real ones.
-export async function declareHoldingFlipped({ db, thing, to = null, actor, dials = {}, key = null, deps = {}, reached = null, stood = null }) {
+export async function declareHoldingFlipped({ db, thing, to = null, actor, dials = {}, key = null, deps = {}, reached = null, stood = null, carry = null }) {
   // THE QUEUE IS ONE THREAD'S. `holdingQueue` serializes the holder check
   // against the commit only among the holds THIS thread runs; a hold written
   // from a read worker would run beside the main thread's with no lock between
@@ -1281,6 +1310,10 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
     // and no Postgres, and a world read inside the transaction would take that
     // away from the three tests that exist to prove the pen's ordering.
     const did = declareHolding({ db, thing, to, actor, roster: null, groundOwner: null, dials, rows, writeEdge: false }); // throws the door's own bounce on refusal
+    // THE CARRY CAP (WLD-27), asked of whoever ends up holding it, inside the
+    // turn so two holds cannot both pass a cap only one of them fits. Absent
+    // (`carry: null`) for a caller that measures no load.
+    if (carry && (did.did === "take" || did.did === "give")) await carry({ who: did.holder, attachments: rows });
     const { at, witnesses } = await witnessStamp(did.declared_by);
     const row = await appendActFlipped(db, holdingEntry(did, { crossing: currentCrossing(), at, witnesses, cls: CLASS_HOLDING, household: resolvedWorldHousehold(key) }));
     // Which store is the RECORD for this act — said in the answer, as the stance
@@ -1302,3 +1335,40 @@ export async function declareHoldingFlipped({ db, thing, to = null, actor, dials
 // One flipped hold at a time, in this process (see THE FLIPPED HOLD above).
 // A turn that refuses or throws still hands the queue on.
 let holdingQueue = Promise.resolve();
+
+/**
+ * ONE TURN OF THE HOLDING QUEUE, for a door that is not `declareHoldingFlipped`
+ * (WLD-27's counted units, world-units.mjs). Units and things are one hold
+ * lane, so they serialize on one queue: a give of a thing and a take of units
+ * that both read the carrier's load cannot both pass a cap only one of them fits.
+ */
+export function holdTurn(fn) {
+  if (IN_READ_WORKER) throw new Error("a hold is written on the main thread only — the holding queue serializes one thread, and this is a read worker");
+  const turn = holdingQueue.then(() => fn());
+  holdingQueue = turn.catch(() => {});
+  return turn;
+}
+
+/**
+ * THE CARRY CAP FOR A THING TAKEN OR GIVEN (WLD-27): every thing held whole is
+ * one slot — a portable chest included, whatever it holds — and every counted
+ * unit is one. The cap is the thing class's declared `carry_cap`, read here.
+ */
+async function carryForThings({ who, attachments }) {
+  const cap = thingDials()?.carry_cap;
+  if (!Number.isInteger(cap)) return;
+  const [{ storeHoldingRows }, { foldUnits, totalOf, isUnitRow, refuseOverCarry }] = await Promise.all([import("./world2-guards.mjs"), import("./world-stacks.mjs")]);
+  const units = totalOf(foldUnits((await storeHoldingRows()).filter(isUnitRow)), who);
+  refuseOverCarry({ who, units, things: holdingsOf(attachments, who).length, adding: 1, cap });
+}
+
+/** The counted holding, for the holdings read: one edge per label and what it shows. */
+async function unitsHeldBy(handle) {
+  try {
+    const [{ storeHoldingRows }, { foldUnits, isUnitRow }, { classViewOf, holdsBlock }, { lawSnapshot }] = await Promise.all([
+      import("./world2-guards.mjs"), import("./world-stacks.mjs"), import("./world-units.mjs"), import("./law-snapshot.mjs")]);
+    return holdsBlock(foldUnits((await storeHoldingRows()).filter(isUnitRow)), handle, classViewOf(lawSnapshot()));
+  } catch (e) {
+    return { unreadable: `the counted holding could not be read (${String(e?.message ?? e).slice(0, 160)})` };
+  }
+}

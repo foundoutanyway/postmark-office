@@ -3759,7 +3759,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
 }
 
 /** withdraw, as one later entry. The terminal supersession (edit-law § withdraw) — nothing is deleted, a row says it ended. */
-async function journalWithdraw({ by, slug, household }, { crossing = currentCrossing() } = {}) {
+export async function journalWithdraw({ by, slug, household }, { crossing = currentCrossing() } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${by}/${slug}`;
   const canon = canonForGuards();
@@ -3915,7 +3915,7 @@ async function placingOnBehalf(by, payload, key, bounce) {
 // family as `_act_id` and `_adopted`), so it reaches the act's payload and the
 // claim's `data` and never a mark file. It is not read off `payload`: a
 // resident cannot claim a drop they did not make by typing the key.
-export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, { setDown = null, mistsCrossing = null } = {}) {
+export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, { setDown = null, mistsCrossing = null, dropUnit = null } = {}) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const handles = [...(key?.handles ?? [])];
@@ -4037,7 +4037,16 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // door is a resident household; the town's own class marks arrive by the
     // town's pen, never here. Found 2026-08-22 when a resident's class: home
     // sailed through and the settlement shadow caught it as a would-refuse.
-    if (!residentMayInstantiate(klass))
+    // ── A HELD UNIT SET DOWN IS NOT A RESIDENT PLACING CANDY (WLD-27; Wright,
+    // 2026-10-13T00:09Z). Candy stays off the whitelist: town alone makes it.
+    // The one road a resident's candy mark arrives by is the hold door's drop
+    // (world-hold.mjs § THE UNIT SET DOWN), which hands its own act in as
+    // `dropUnit` — a parameter no caller's payload can set — and the mark it
+    // files must name that very act and label. Anything else carrying class:
+    // candy falls to the whitelist refusal below, exactly as before.
+    const droppedUnit = klass === "candy" && dropUnit != null
+      && payload.dropped === `act:${dropUnit.actId}` && payload.label === dropUnit.label && kind === "sited";
+    if (!droppedUnit && !residentMayInstantiate(klass))
       throw bounce(422, `class "${klass}" is town-only`,
         `residents may instantiate only [${RESIDENT_INSTANTIABLE.join(", ")}] today (#1797) — the class exists in the law, but citing it on your own mark is the town's act, not a resident's`);
   }
@@ -4052,6 +4061,26 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     if (kind !== "sited") throw bounce(422, "a thing is a sited mark", `got kind: ${JSON.stringify(kind)} — a thing stands somewhere and has a footprint`);
     if (ask !== undefined || reward !== undefined || status !== undefined)
       throw bounce(422, "ask/reward/status belong to a bounty notice, not a thing", "a thing carries a body and nothing else it does not want");
+  }
+
+  // ── the chest grammar (WLD-27): a chest is a sited thing with its own three
+  // dials — capacity (the class's default, or a whole number in its range),
+  // portable, and its welcome. Each is optional; an absent one is the class's.
+  let chestFields = null;
+  if (klass === "chest") {
+    if (kind !== "sited") throw bounce(422, "a chest is a sited mark", `got kind: ${JSON.stringify(kind)} — a chest stands somewhere and has a footprint`);
+    const { capacityOf, WELCOMES } = await import("./world-stacks.mjs");
+    const dials = classDials("chest");
+    chestFields = {};
+    if (payload.capacity !== undefined) chestFields.capacity = capacityOf(payload.capacity, dials); // throws the 422 naming the range
+    if (payload.portable !== undefined) {
+      if (typeof payload.portable !== "boolean") throw bounce(422, "portable is true or false", "a fixed chest — a bowl — is portable: false; leave it off to be carried");
+      chestFields.portable = payload.portable;
+    }
+    if (payload.welcome !== undefined) {
+      if (!WELCOMES.includes(String(payload.welcome))) throw bounce(422, `welcome is ${WELCOMES.join(" or ")}`, "open (the default) lets anyone take from it; closed keeps it to your household");
+      chestFields.welcome = String(payload.welcome);
+    }
   }
 
   if (klass === "bounty") {
@@ -4125,7 +4154,9 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   const classFields = klass === undefined ? {}
     : klass === "bounty"
       ? { class: klass, ask: String(ask).trim(), reward: Number(reward), status: status === undefined ? "open" : String(status).trim() }
-      : { class: klass };
+      : klass === "chest" ? { class: klass, ...chestFields }
+        : klass === "candy" ? { class: klass, label: String(payload.label), dropped: String(payload.dropped) }
+          : { class: klass };
   const clean = { slug, kind, at, extent, points, body: String(body).trim(), slot, value, parent_id, by, household, date: new Date().toISOString(),
     ...classFields, ...(image !== undefined ? { image } : {}), ...(payload.amend === true ? { amend: true } : {}),
     ...(payload.preview === true ? { preview: true } : {}),

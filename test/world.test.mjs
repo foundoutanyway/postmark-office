@@ -234,7 +234,11 @@ test('town-only classes: "residents may instantiate only [bounty, thing, note] t
   // + idea (the Think Tank ruling, 2026-08-30) — the door-side twin of the
   // world repo's whitelist; the two move together or the door refuses what
   // the law allows. This assert is the tripwire for the stale-twin class.
-  assert.deepEqual([...RESIDENT_INSTANTIABLE], ["bounty", "thing", "note", "idea"]);
+  // + chest (WLD-27, 2026-10-12) — and NOT candy (Wright, 2026-10-13T00:09Z: town
+  // alone makes candy; a resident's candy mark is only a held unit set down).
+  assert.deepEqual([...RESIDENT_INSTANTIABLE], ["bounty", "thing", "note", "idea", "chest"]);
+  assert.ok(residentMayInstantiate("chest"));
+  assert.ok(!residentMayInstantiate("candy") && !residentMayInstantiate("consumable"), "candy stays off the whitelist");
   assert.ok(residentMayInstantiate("bounty") && residentMayInstantiate("thing") && residentMayInstantiate("note"));
   assert.ok(residentMayInstantiate("idea"), "stage 1 is a resident's own hand — the announcement's whole mechanic");
   assert.ok(!residentMayInstantiate("home"), '"home" is town-only — the 2026-08-22 shadow catch');

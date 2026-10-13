@@ -1,0 +1,342 @@
+// world-units.mjs — THE UNIT DOOR: give, take, drop, consume and refill of
+// counted units (WLD-27). The adjudication is world-stacks.mjs's, pure; this
+// file reads the record, asks the reach, serializes on the hold lane's queue
+// and writes the act. Reached through `world_hold` (world-hold.mjs §
+// callHoldTool), because "give, take, drop" are the hold verbs whatever they
+// hold (the brief: "reuse give/take/drop"), and `consume`/`refill` ride the
+// same tool as `act:`.
+//
+// WHICH ACT A CALL IS — read off its arguments, never guessed:
+//
+//   act: "consume"                     one held unit used up (from your hands)
+//   act: "consume", thing: <unit mark> a dropped unit consumed where it stands
+//   act: "refill", chest: <chest id>   the label's creator tops a chest up
+//   from: <chest>, label?, count?      take units out of a chest
+//   to: <resident|chest>, label?, count?   give units
+//   label (no to, no from)             set ONE unit down: it becomes a mark
+//   thing: <a dropped unit's mark>     take it back into your hands
+//
+// ⚑ THE MARK'S EXIT RETURNS STAKES THROUGH THE TOWN'S OWN UNSTAKE. When a
+// dropped unit stops being a mark (taken back, or consumed in place), each
+// actual staker's open position on that mark comes home as that staker's own
+// unstake line — the engine's line, one per staker — so the ledger itself is
+// the memory that makes it once: a retry reads positions already closed and
+// plans nothing (world-stacks.mjs § returnsAtExit). This file never writes a
+// ledger line of its own and never runs in a lane against a real ledger: the
+// tests drive it with a synthetic one.
+
+import {
+  UNIT_ACTION, foldUnits, edgesOf, totalOf, exitedMarks, unitCount, candyLabels, labelOfCreator, labelRecord,
+  capacityOf, portableOf, welcomeOf, holdingDisplay, refuseOverCarry, takenRefusal,
+  planGive, planTake, planConsume, planRefill, droppedUnitMark, isDroppedUnitMark, returnsAtExit, isChestId, isUnitRow,
+} from "./world-stacks.mjs";
+import { holdingsOf, sameHousehold, holdTurn } from "./world-hold.mjs";
+
+const bounce = (code, defect, hint, extra = {}) => {
+  const e = new Error(defect);
+  Object.assign(e, { code, defect, hint, ...extra });
+  return e;
+};
+
+/** Which unit act this call is, or null when it is the thing door's (a thing changing hands). */
+export function unitRouteOf(args = {}, { thingMark = null } = {}) {
+  const a = args.act == null ? null : String(args.act);
+  if (a === "consume") return args.thing != null ? "consume-in-place" : "consume";
+  if (a === "refill") return "refill";
+  if (a != null) throw bounce(422, `act is consume or refill — got "${a}"`, "give, take and drop are read off to:/from:/label:, as they always were");
+  if (args.from != null) return "take";
+  if (args.label != null || args.count != null) return args.to != null ? "give" : "drop";
+  if (args.to != null && isChestId(String(args.to)) && args.thing == null) return "give";
+  if (args.thing != null && args.to == null && isDroppedUnitMark(thingMark)) return "take-back";
+  return null;
+}
+
+/** The class layer the unit door reads, from one law snapshot. */
+export function classViewOf(snap) {
+  const rec = (name) => (snap?.classes?.get(String(name)) ?? null);
+  const dialsOf = (name) => {
+    const d = rec(name)?.dials;
+    const v = typeof d === "string" ? (() => { try { return JSON.parse(d); } catch { return null; } })() : d;
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  };
+  return {
+    record: (name) => { const r = rec(name); return r ? { ...r, dials: dialsOf(name) } : null; },
+    extendsOf: (name) => (rec(name)?.extends ? String(rec(name).extends) : null),
+    dials: dialsOf,
+    labels: () => candyLabels(rec("candy")),
+    readable: Boolean(snap?.classes?.size),
+  };
+}
+
+/** The live collaborators. Every one is injectable; a falsifier hands in its own. */
+export async function liveUnitDeps() {
+  const [{ lawSnapshot }, world, guards, journal, pen, hold, stake, branches, crossings] = await Promise.all([
+    import("./law-snapshot.mjs"), import("./world.mjs"), import("./world2-guards.mjs"), import("./world-journal.mjs"),
+    import("./world2-pen.mjs"), import("./world-hold.mjs"), import("./world-stake.mjs"), import("./world-branches.mjs"), import("./crossings.mjs"),
+  ]);
+  const { WORLD_CLONE } = await import("./world-store.mjs");
+  return {
+    classes: () => classViewOf(lawSnapshot()),
+    readRows: async () => {
+      const [units, attachments] = await Promise.all([guards.storeHoldingRows(), guards.guardedAttachments()]);
+      return { units: units.filter(isUnitRow), attachments };
+    },
+    markById: async (id) => (await world.worldMarkById(String(id))).mark,
+    reachTake: async (thing, actor) => hold.refuseOutOfReach({ thing, to: null, actor, act: "take", holder: null }),
+    // A give of units is a take at arm's length, clause 3's measure in its one home.
+    reachGive: async (to, actor) => {
+      const s = await world.residentStandpoint(String(actor)).catch(() => null);
+      return hold.armsLengthOrThrow({ thing: "units", to, here: s?.placed ? { x: s.x, y: s.y } : null, actor });
+    },
+    standpoint: async (actor) => { const s = await world.residentStandpoint(String(actor)).catch(() => null); return s?.placed ? { x: s.x, y: s.y } : null; },
+    householdOf: await (async () => { try { return await (await import("./households.mjs")).householdLookup(); } catch { return null; } })(),
+    append: (entry) => journal.appendActFlipped(null, entry),
+    stamp: (actor) => world.witnessStamp(actor),
+    crossing: () => crossings.currentCrossing(),
+    household: (key) => branches.resolvedWorldHousehold(key),
+    leave: (payload, key, opts) => world.leaveMarkViaOffice(WORLD_CLONE, payload, key, opts),
+    holders: async (mark) => {
+      const sr = await stake.callWorldStakeTool("world_stake_read", { mark });
+      if (sr?.error) throw bounce(503, "the stakes on this mark could not be read", String(sr.defect ?? sr.error));
+      return sr?.holders ?? [];
+    },
+    unstake: (r) => stake.runExec({ verb: "unstake", handle: r.handle, mark: r.mark, n: r.stamps, date: new Date().toISOString().slice(0, 10) }),
+    withdraw: (m) => world.journalWithdraw(m),
+    onActs: () => pen.laneFlipped("hold"),
+  };
+}
+
+const sentenceOf = {
+  [UNIT_ACTION.give]: (r, p) => `${r.actor} gave ${p.n} ${p.label} to ${p.to}`,
+  [UNIT_ACTION.take]: (r, p) => `${r.actor} took ${p.n} ${p.label} from ${p.from}`,
+  [UNIT_ACTION.consume]: (r, p) => `${r.actor} consumed 1 ${p.label}; a held unit carries no stakes, so nothing was returned`,
+  [UNIT_ACTION.refill]: (r, p) => `${r.actor} refilled ${p.to} with ${p.n} ${p.label}`,
+  [UNIT_ACTION.drop]: (r, p) => `${r.actor} set 1 ${p.label} down; it is filed as a sited mark and stands at the next crossing`,
+  [UNIT_ACTION.dropUndone]: (r, p) => `the set-down's mark could not be filed, so 1 ${p.label} came back to ${p.to}`,
+  [UNIT_ACTION.takeBack]: (r, p) => `${r.actor} took the set-down ${p.label} back into a holding; the mark it was leaves at the next crossing`,
+  [UNIT_ACTION.consumeInPlace]: (r) => `${r.actor} consumed the set-down unit where it stood; the mark it was leaves at the next crossing`,
+};
+
+async function writeUnits(deps, key, actor, { action, object, moves, payload = {} }) {
+  const { at, witnesses } = await deps.stamp(actor);
+  const m = moves[0] ?? {};
+  const entry = {
+    crossing: deps.crossing(), actor, action, object: object == null ? null : String(object), at, witnesses,
+    cls: "holding", household: deps.household(key),
+    payload: { units: true, moves, ...payload },
+    effect: (sentenceOf[action] ?? (() => action))({ actor }, { ...m, ...payload, n: m.n, label: m.label ?? payload.label, from: m.from, to: m.to }),
+  };
+  const row = await deps.append(entry);
+  return { seq: row?.actId ?? row?.seq ?? null, effect: entry.effect };
+}
+
+/** What a holder holds now, as a resident reads it. */
+export function holdsBlock(fold, holder, view) {
+  const labels = view.labels();
+  const components = edgesOf(fold, holder).map((e) => ({ class: labelRecord(labels, e.label) ? "candy" : null, label: e.label, name: labelRecord(labels, e.label)?.name ?? e.label, count: e.count }));
+  const shown = holdingDisplay(components, view.extendsOf);
+  return { holder: String(holder), edges: edgesOf(fold, holder), count: shown.count, class: shown.class, shows: shown.text };
+}
+
+const classOfLabelIn = (view) => (label) => (labelRecord(view.labels(), label) ? "candy" : null);
+
+/** The holding's top class, for the taken-class hook. */
+function topClassOf(fold, holder, view, label = null) {
+  const labels = view.labels();
+  const edges = edgesOf(fold, holder).filter((e) => label == null || e.label === label);
+  const comps = edges.map((e) => ({ class: labelRecord(labels, e.label) ? "candy" : null, label: e.label, count: e.count }));
+  return holdingDisplay(comps, view.extendsOf).class;
+}
+const refuseIfTaken = (klass, view) => { const r = takenRefusal(klass, view.record, view.extendsOf); if (r) throw r; };
+
+const carryOf = (view) => { const cap = view.dials("thing")?.carry_cap; return Number.isInteger(cap) ? cap : null; };
+
+async function chestOrThrow(deps, id, view) {
+  const mark = await deps.markById(id);
+  if (!mark) throw bounce(404, `${id} does not stand on the world`, "a chest is a published mark; a private draft holds nothing yet. Nothing was recorded.");
+  if (mark.class !== "chest") throw bounce(422, `${id} is not a chest`, `it is ${mark.class ? `a ${mark.class}` : "an unclassed mark"}; units go into chests and residents' hands. Nothing was recorded.`);
+  return { mark, capacity: capacityOf(mark, view.dials("chest")) };
+}
+
+/**
+ * THE UNIT DOOR. `route` is `unitRouteOf`'s answer; `actor` is already the
+ * key's own resident (callHoldTool § actingHandle); the freeze was asked.
+ */
+export async function callUnits(route, args, key, actor, deps) {
+  const view = deps.classes();
+  if (!view.readable) throw bounce(503, "the class layer could not be read, so the office cannot tell candy from anything else",
+    "counted units read the candy, chest and thing classes from the record; nothing was recorded — try again when the law is loaded");
+  const cap = carryOf(view);
+
+  switch (route) {
+    case "take": {
+      const from = String(args.from);
+      const { mark } = await chestOrThrow(deps, from, view);
+      if (welcomeOf(mark, view.dials("chest")) !== "open") {
+        const same = sameHousehold(String(mark.by ?? from.split("/")[0]), actor, deps.householdOf);
+        if (!same.same) throw bounce(403, `${from} is closed to other households`, "its welcome is closed: only its maker's household takes from it. Nothing was recorded.");
+      }
+      const n = unitCount(args.count);
+      await deps.reachTake(from, actor);
+      return holdTurn(async () => {
+        const { units, attachments } = await deps.readRows();
+        const fold = foldUnits(units);
+        const plan = planTake({ fold, actor, from, label: args.label ?? null, n });
+        refuseIfTaken(topClassOf(fold, from, view), view);
+        refuseOverCarry({ who: actor, units: totalOf(fold, actor), things: holdingsOf(attachments, actor).length, adding: n, cap });
+        const w = await writeUnits(deps, key, actor, plan);
+        const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
+        return { did: "take", units: true, label: plan.label, count: n, from, ...w, holds: holdsBlock(after, actor, view), chest: holdsBlock(after, from, view) };
+      });
+    }
+    case "give": {
+      const to = String(args.to);
+      const n = unitCount(args.count);
+      let capacityOfTo = null;
+      if (isChestId(to)) { capacityOfTo = (await chestOrThrow(deps, to, view)).capacity; await deps.reachTake(to, actor); }
+      else await deps.reachGive(to, actor);
+      return holdTurn(async () => {
+        const { units, attachments } = await deps.readRows();
+        const fold = foldUnits(units);
+        const plan = planGive({ fold, actor, to, label: args.label ?? null, n, capacityOfTo });
+        refuseIfTaken(topClassOf(fold, actor, view, plan.label), view);
+        if (!isChestId(to)) refuseOverCarry({ who: to, units: totalOf(fold, to), things: holdingsOf(attachments, to).length, adding: n, cap });
+        const w = await writeUnits(deps, key, actor, plan);
+        const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
+        return { did: "give", units: true, label: plan.label, count: n, to, ...w, holds: holdsBlock(after, actor, view), receiver: holdsBlock(after, to, view) };
+      });
+    }
+    case "consume": {
+      return holdTurn(async () => {
+        const { units } = await deps.readRows();
+        const fold = foldUnits(units);
+        const plan = planConsume({ fold, actor, label: args.label ?? null, classOfLabel: classOfLabelIn(view), extendsOf: view.extendsOf });
+        refuseIfTaken(topClassOf(fold, actor, view, plan.label), view);
+        const w = await writeUnits(deps, key, actor, { ...plan, payload: { label: plan.label, returns: [], returns_note: plan.returns_note } });
+        const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
+        return { did: "consume", units: true, label: plan.label, count: 1, returns: [], returns_note: plan.returns_note, ...w, holds: holdsBlock(after, actor, view) };
+      });
+    }
+    case "refill": {
+      const chest = String(args.chest ?? args.thing ?? "");
+      if (!isChestId(chest)) throw bounce(422, "refill which chest?", "chest: its id, <by>/<slug>");
+      const { capacity } = await chestOrThrow(deps, chest, view);
+      await deps.reachTake(chest, actor);
+      return holdTurn(async () => {
+        const { units } = await deps.readRows();
+        const fold = foldUnits(units);
+        const plan = planRefill({ fold, actor, chest, capacity, labels: view.labels() });
+        if (plan.noop) return { did: "refill", units: true, noop: true, note: plan.note, chest: holdsBlock(fold, chest, view) };
+        refuseIfTaken(topClassOf(fold, chest, view) ?? "candy", view);
+        const w = await writeUnits(deps, key, actor, { ...plan, payload: { label: plan.label, capacity } });
+        const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
+        return { did: "refill", units: true, label: plan.label, count: plan.moves[0].n, ...w, chest: holdsBlock(after, chest, view) };
+      });
+    }
+    case "drop": {
+      // ONE UNIT, ONE MARK, ONE STAMP. Each unit set down is its own sited mark
+      // under the standard 1-stamp rule, so a count above one is refused rather
+      // than filed as one mark standing for several units.
+      const n = args.count == null ? 1 : unitCount(args.count);
+      if (n !== 1) throw bounce(422, "set units down one at a time", "each unit set down becomes its own mark with its own stamp — count: 1. Nothing was recorded.");
+      if (args.to != null) throw bounce(422, "a set-down names no one", "to hand units over, give them; to set one down, name only its label");
+      const stood = await deps.standpoint(actor);
+      if (!stood) throw bounce(409, "the record does not place you anywhere", `a unit set down stands where you stood, and the walk ledger has no position for ${actor} — walk somewhere first. Nothing was recorded.`);
+      const dropped = await holdTurn(async () => {
+        const { units } = await deps.readRows();
+        const fold = foldUnits(units);
+        const edge = (await import("./world-stacks.mjs")).selectLabel(edgesOf(fold, actor), args.label ?? null, { where: "your hands", verb: "set down" });
+        refuseIfTaken(topClassOf(fold, actor, view, edge.label), view);
+        const moves = [{ from: actor, to: null, label: edge.label, n: 1 }];
+        const w = await writeUnits(deps, key, actor, { action: UNIT_ACTION.drop, object: actor, moves, payload: { label: edge.label, at: stood } });
+        return { label: edge.label, ...w };
+      });
+      const name = labelRecord(view.labels(), dropped.label)?.name ?? dropped.label;
+      const payload = droppedUnitMark({ actor, label: dropped.label, name, actId: dropped.seq, at: stood });
+      let filed = null, why = null;
+      try {
+        filed = await deps.leave(payload, key, { dropUnit: { actId: dropped.seq, label: dropped.label } });
+        if (filed?.error) { why = filed.defect ?? filed.error; filed = null; }
+      } catch (e) { why = String(e?.defect ?? e?.message ?? e).slice(0, 200); }
+      if (!filed) {
+        // THE UNIT COMES BACK. The drop's act stands in the record, and so does
+        // the act that undoes it — nothing is lost and nothing is rewritten.
+        const back = await holdTurn(() => writeUnits(deps, key, actor, { action: UNIT_ACTION.dropUndone, object: actor,
+          moves: [{ from: null, to: actor, label: dropped.label, n: 1 }], payload: { label: dropped.label, undoes: dropped.seq, why } }));
+        throw bounce(409, `the set-down's mark could not be filed: ${why}`, `your ${dropped.label} is back in your hands (act ${back.seq}); nothing stands on the ground.`);
+      }
+      return { did: "drop", units: true, label: dropped.label, count: 1, seq: dropped.seq, effect: dropped.effect,
+        mark: `${payload.by}/${payload.slug}`, stands_at: stood, put_forward: filed.put_forward === true,
+        filed: { id: filed.id ?? `${payload.by}/${payload.slug}`, put_forward: filed.put_forward ?? null, ...(filed.to_publish ? { to_publish: filed.to_publish } : {}) },
+        stands_note: filed.put_forward === true
+          ? "it is a sited mark at the next crossing, staked with your one stamp; until then it is on no public map"
+          : "it is filed as your private draft (no stamp stood behind it), so it is on no public map until it is staked and crosses" };
+    }
+    case "take-back":
+    case "consume-in-place":
+      return markExit(route, args, key, actor, deps, view, cap);
+    default:
+      throw bounce(422, "not a unit act", "give, take, drop, consume or refill");
+  }
+}
+
+/**
+ * A DROPPED UNIT STOPS BEING A MARK (Wright, 2026-10-13T00:01Z): taken back
+ * into a holding, or consumed where it stands. Its escrow and every stake on it
+ * go home to their stakers first — one unstake line each, the engine's own —
+ * then the act, then the mark's withdrawal. Once on retry, by construction: the
+ * returns read the positions still open, and the act is refused for a mark the
+ * record already shows leaving (`exitedMarks`) — the retry still finishes any
+ * return a first attempt left open.
+ */
+async function markExit(route, args, key, actor, deps, view, cap) {
+  const id = String(args.thing);
+  const mark = await deps.markById(id);
+  if (!isDroppedUnitMark(mark)) throw bounce(422, `${id} is not a unit that was set down`, "only a dropped unit's mark goes back into a holding or is consumed where it stands. Nothing was recorded.");
+  const label = String(mark.label);
+  if (route === "consume-in-place") {
+    const klass = classOfLabelIn(view)(label) ?? String(mark.class);
+    if (!(await import("./world-stacks.mjs")).ancestry(klass, view.extendsOf).includes("consumable"))
+      throw bounce(422, `${label} is not a consumable`, "Nothing was recorded.");
+  }
+  refuseIfTaken(String(mark.class), view);
+  await deps.reachTake(id, actor);
+
+  // 1 · THE RETURNS, from the positions as they stand now.
+  const plan = returnsAtExit({ mark: id, holders: await deps.holders(id) });
+  const returned = [];
+  for (const r of plan) {
+    const out = await deps.unstake(r);
+    if (out?.error) throw bounce(503, `the return to ${r.handle} could not be recorded: ${out.defect ?? out.error}`,
+      `${returned.length} of ${plan.length} returns are recorded; the mark stands and nothing else moved. Ask again: the returns already made are not made twice.`, { returned });
+    returned.push({ handle: r.handle, stamps: Number(out?.applied ?? r.stamps), line: out?.line ?? null });
+  }
+
+  // 2 · THE ACT, inside the hold queue's turn — the exit is once.
+  const acted = await holdTurn(async () => {
+    const { units, attachments } = await deps.readRows();
+    if (exitedMarks(units).has(id)) return { already: true };
+    const fold = foldUnits(units);
+    if (route === "take-back")
+      refuseOverCarry({ who: actor, units: totalOf(fold, actor), things: holdingsOf(attachments, actor).length, adding: 1, cap });
+    const moves = route === "take-back" ? [{ from: null, to: actor, label, n: 1 }] : [];
+    const action = route === "take-back" ? UNIT_ACTION.takeBack : UNIT_ACTION.consumeInPlace;
+    const w = await writeUnits(deps, key, actor, { action, object: id, moves, payload: { label, mark: id, returns: returned } });
+    return { ...w, after: foldUnits([...units, { class: "holding", action, payload: { moves } }]) };
+  });
+  if (acted.already)
+    return { did: route, units: true, mark: id, label, duplicate: true, returns: returned,
+      note: `${id} already left the counts; nothing was recorded a second time${returned.length ? `, and the ${returned.length} return(s) still open were made now` : ""}` };
+
+  // 3 · THE MARK LEAVES (its author's withdrawal, by the door that owns it).
+  let withdrawn = null;
+  try {
+    const by = String(mark.by ?? id.split("/")[0]);
+    const household = mark.household ?? deps.householdOf?.(by)?.key ?? null;
+    withdrawn = await deps.withdraw({ by, slug: id.slice(id.indexOf("/") + 1), household });
+  } catch (e) { withdrawn = { withdrawn: false, why: String(e?.defect ?? e?.message ?? e).slice(0, 200) }; }
+
+  return { did: route, units: true, mark: id, label, seq: acted.seq, effect: acted.effect, returns: returned,
+    returns_note: returned.length ? `${returned.length} staker(s) had their stamps on this mark returned, one line each` : "no stake stood on this mark, so nothing was returned",
+    withdrawn, ...(route === "take-back" ? { holds: holdsBlock(acted.after, actor, view) } : {}) };
+}

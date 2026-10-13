@@ -313,6 +313,26 @@ export async function doorstepBundle(handle, ctx = {}) {
     if (world2Enabled()) d.holds = { serves: "world.holdings", args: { handle },
       unavailable: `what ${handle} holds could not be read (${String(e?.message ?? e).slice(0, 160)}) — unknown, not empty` };
   }
+  // ── WHEN THE MISTS REACH THE HOUSE'S MARKS (WLD-38) — beside the segments ─
+  //
+  // `mists`: for every published mark the household's residents made that the
+  // advancing Mists reach within their schedule, the first crossing the FRINGE
+  // reaches it (sight shortened) and the first the WALL does (hidden), each
+  // with its date — or that it stands there now — and that it stays theirs and
+  // comes back when they lift. One forecast, the World engine's own reading,
+  // computed at this read with this page's one clock; nothing is stored or
+  // sent (mists-forecast.mjs). Published marks only, so a stranger's view
+  // shows nothing the map does not. Like `holds`: only when there is something
+  // to say, and an office pointed at a world it cannot read says
+  // `mists-forecast-unavailable`, never a quiet clear.
+  try {
+    const { householdMistsForecast } = await import("./mists-forecast.mjs");
+    const m = await householdMistsForecast(handle, { nowMs });
+    if (m) d.mists = m;
+  } catch (e) {
+    const { MISTS_FORECAST_UNAVAILABLE } = await import("./mists-forecast.mjs");
+    d.mists = { serves: "world.mists", args: { handle }, unavailable: `${MISTS_FORECAST_UNAVAILABLE}: ${String(e?.message ?? e).slice(0, 160)}` };
+  }
   // The manifest, republished now that every segment is on the page. A reader
   // walks `segments` to find them, so it must name all ten or none.
   d.segments = [...DOORSTEP_SEGMENTS];

@@ -357,3 +357,96 @@ test("F2 · [SHOWN TO BEVEL, NOT DECIDED HERE] the existing label-presence guard
   r.seedUnits(F2_CHEST, 5, "test-drops");
   await assert.rejects(callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps), (e) => e.code === 403 && /holds no test-comets/.test(e.defect));
 });
+
+// ── F4 (Wright's independent review, 03:01:29Z): every stake is returned before
+// the mark leaves — a stake that lands after the exit read its holders too, on
+// a fresh exit and on a cleanup retry. THESE USE INJECTED LEDGER COLLABORATORS
+// (the rig's `holders`/`unstake`, which clip to the open position as the
+// engine's unstake does) — not the town's engine, not a real ledger. ────────
+
+/** After the exit's first holder read, `who` stakes `n` on the mark. */
+const stakeLandsAfterFirstRead = (r, who, n) => {
+  const read = r.deps.holders; let reads = 0;
+  r.deps.holders = async (m) => { const out = await read(m); if (++reads === 1) r.positions[m].push({ handle: who, stamps: n }); return out; };
+};
+
+function f4Rig() {
+  const r = rig({ marks: { [DROPPED]: droppedMark }, stakes: STAKES });
+  // reach the rig's open positions (the ledger the injected unstake clips against)
+  const positions = {}; let failUnstakeFor = null;
+  positions[DROPPED] = [{ handle: "sbx-ana", stamps: 1 }, { handle: "sbx-bo", stamps: 2 }];
+  r.positions = positions;
+  r.deps.holders = async (m) => (positions[m] ?? []).filter((p) => p.stamps > 0).map((p) => ({ ...p }));
+  r.deps.unstake = async (x) => {
+    if (failUnstakeFor === x.handle) { failUnstakeFor = null; return { error: "bounce", defect: "the ledger could not be written" }; }
+    const p = (positions[x.mark] ?? []).find((y) => y.handle === x.handle);
+    const n = Math.min(p?.stamps ?? 0, x.stamps); if (p) p.stamps -= n;
+    if (n) r.ledger.push({ handle: x.handle, mark: x.mark, n });
+    return { applied: n };
+  };
+  r.failUnstakeOnceFor = (h) => { failUnstakeFor = h; };
+  return r;
+}
+const once = (ledger) => Object.fromEntries(ledger.map((l) => [l.handle, ledger.filter((x) => x.handle === l.handle).reduce((a, x) => a + x.n, 0)]));
+
+test("F4 · a stake that lands after the exit's first read is returned before the withdrawal — each staker once, clipped to what is open", async () => {
+  const r = f4Rig();
+  stakeLandsAfterFirstRead(r, "sbx-dee", 3);
+  const out = await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.deepEqual(out.returns.map((x) => [x.handle, x.stamps]), [["sbx-ana", 1], ["sbx-bo", 2]], "the exit's own returns");
+  assert.deepEqual(out.late_returns.map((x) => [x.handle, x.stamps]), [["sbx-dee", 3]], "the late stake, returned before the mark left");
+  assert.deepEqual(once(r.ledger), { "sbx-ana": 1, "sbx-bo": 2, "sbx-dee": 3 }, "each staker once");
+  assert.equal(out.withdrawn.withdrawn, true);
+  assert.equal(r.withdrawals.length, 1);
+  const [w] = r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn);
+  assert.deepEqual(w.payload.late_returns.map((x) => [x.handle, x.stamps]), [["sbx-dee", 3]], "the record says what was returned late");
+  assert.equal(totalOf(r.units(), "sbx-cy"), 1, "one unit");
+  assert.ok(r.positions[DROPPED].every((p) => p.stamps === 0), "nothing left open on a mark that left");
+});
+
+test("F4 · a late return that fails leaves the withdrawal pending and says so; the retry returns only what is open, then withdraws", async () => {
+  const r = f4Rig();
+  stakeLandsAfterFirstRead(r, "sbx-dee", 3);
+  r.failUnstakeOnceFor("sbx-dee");
+  const first = await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.equal(first.withdrawn.withdrawn, false);
+  assert.match(first.withdrawn.why, /a late stake by sbx-dee could not be returned/);
+  assert.equal(r.withdrawals.length, 0, "the mark was NOT withdrawn with a stake open on it");
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn).length, 0, "not marked complete");
+  const retry = await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.equal(retry.duplicate, true);
+  assert.deepEqual(retry.late_returns.map((x) => [x.handle, x.stamps]), [["sbx-dee", 3]]);
+  assert.equal(retry.withdrawn.withdrawn, true);
+  assert.deepEqual(once(r.ledger), { "sbx-ana": 1, "sbx-bo": 2, "sbx-dee": 3 }, "each staker once — the early ones not repaid on the retry");
+  assert.equal(totalOf(r.units(), "sbx-cy"), 1);
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn).length, 1);
+});
+
+test("F4 · an already-exited mark whose withdrawal is pending: a stake that lands meanwhile is returned before another resident's retry withdraws it — cause still the original exit", async () => {
+  const r = f4Rig();
+  r.failWithdrawals(1);
+  await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  const exit = r.acts.find((a) => a.action === UNIT_ACTION.takeBack);
+  r.positions[DROPPED].push({ handle: "sbx-eve", stamps: 2 });                // lands while the withdrawal is pending
+  const done = await callUnits("consume-in-place", { thing: DROPPED }, KEY("sbx-bo"), "sbx-bo", r.deps);
+  assert.deepEqual(done.late_returns.map((x) => [x.handle, x.stamps]), [["sbx-eve", 2]]);
+  assert.equal(done.withdrawn.withdrawn, true);
+  assert.deepEqual(r.withdrawals.at(-1).cause, { exit: "take-back", by: "sbx-cy", act: exit.id });
+  assert.deepEqual(once(r.ledger), { "sbx-ana": 1, "sbx-bo": 2, "sbx-eve": 2 });
+  const [w] = r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn);
+  assert.deepEqual([w.payload.finished_by, w.payload.late_returns.length], ["sbx-bo", 1]);
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.consumeInPlace).length, 0, "no consumption happened");
+});
+
+test("F4 · stakes that keep arriving refuse the withdrawal this time — pending, honest, every stake returned so far stays returned", async () => {
+  const r = f4Rig();
+  let k = 0;
+  const read = r.deps.holders;
+  r.deps.holders = async (m) => { const out = await read(m); r.positions[m].push({ handle: `sbx-late-${++k}`, stamps: 1 }); return out; };
+  const out = await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.equal(out.withdrawn.withdrawn, false);
+  assert.match(out.withdrawn.why, /stakes kept arriving/);
+  assert.equal(r.withdrawals.length, 0);
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn).length, 0);
+  assert.ok(r.ledger.every((l) => r.ledger.filter((x) => x.handle === l.handle).length === 1), "no staker returned twice");
+});

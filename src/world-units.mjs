@@ -366,6 +366,32 @@ export async function callUnits(route, args, key, actor, deps) {
  * record already shows leaving (`exitedMarks`) — the retry still finishes any
  * return a first attempt left open.
  */
+/**
+ * The stakes still open on an exiting mark, returned — F4. Reads the holders,
+ * returns each open position through the engine's unstake, and reads again,
+ * until a read finds nothing open (a few passes; a stake still arriving after
+ * them refuses the withdrawal this time, and a retry finishes it). Each return
+ * is recorded once, as the engine applied it. Throws, with what was returned,
+ * when a return fails or the stakes do not settle.
+ */
+const LATE_PASSES = 3;
+async function lateReturns(id, deps) {
+  const returned = [];
+  for (let pass = 0; pass < LATE_PASSES; pass++) {
+    const plan = returnsAtExit({ mark: id, holders: await deps.holders(id) });
+    if (!plan.length) return returned;
+    for (const r of plan) {
+      const out = await deps.unstake(r);
+      if (out?.error) throw bounce(503, `a late stake by ${r.handle} could not be returned: ${out.defect ?? out.error}`,
+        "the mark stands and its withdrawal waits; ask again — what was returned is not returned twice", { returned });
+      const n = Number(out?.applied ?? r.stamps);
+      if (n > 0) returned.push({ handle: r.handle, stamps: n, line: out?.line ?? null });
+    }
+  }
+  throw bounce(409, `stakes kept arriving on ${id} while it was leaving`,
+    "the mark stands and its withdrawal waits; ask again — every stake returned so far stays returned", { returned });
+}
+
 async function markExit(route, args, key, actor, deps, view, cap) {
   const id = String(args.thing);
   const mark = await deps.markById(id);
@@ -420,8 +446,19 @@ async function markExit(route, args, key, actor, deps, view, cap) {
   // act is missing, and stops asking once it is there.
   const withdrawnBefore = withdrawnMarks(acted.units).has(id);
   let withdrawn = withdrawnBefore ? { withdrawn: true, already: true } : null;
+  let late = [];
   if (!withdrawnBefore) {
     try {
+      // ── EVERY STAKE IS RETURNED BEFORE THE MARK LEAVES (Wright's independent
+      // review, F4). A stake can land after the exit read its holders; the
+      // withdrawal below goes straight to the journal, past the door that
+      // refuses to withdraw a staked mark. So the holders are read AGAIN right
+      // before it, and any open position is returned through the same engine
+      // unstake (clipped to what is open, so a staker already repaid is not
+      // repaid again) — on a fresh exit and on a cleanup retry alike. A return
+      // that fails, or stakes that keep arriving, leave the withdrawal pending
+      // and say so; it is finished only when it actually completes.
+      late = await holdTurn(() => lateReturns(id, deps));
       // the cause is the exit itself: this call's act when it made one, else the
       // ORIGINAL exit on the record, with its own actor and route — whoever asks
       // again only finishes that exit's withdrawal, and is named as such
@@ -429,14 +466,18 @@ async function markExit(route, args, key, actor, deps, view, cap) {
       withdrawn = await deps.withdraw({ by, slug, household, cause });
       if (withdrawn?.withdrawn !== false)
         await holdTurn(() => writeUnits(deps, key, actor, { action: UNIT_ACTION.exitWithdrawn, object: id, moves: [],
-          payload: { mark: id, by, exit: cause, ...(acted.already ? { finished_by: actor } : {}) } }));
-    } catch (e) { withdrawn = { withdrawn: false, why: String(e?.defect ?? e?.message ?? e).slice(0, 200), retry: "ask again: the unit is not gained and nothing is returned a second time; only the withdrawal is tried again" }; }
+          payload: { mark: id, by, exit: cause, ...(acted.already ? { finished_by: actor } : {}), ...(late.length ? { late_returns: late } : {}) } }));
+    } catch (e) {
+      late = e?.returned ?? late;
+      withdrawn = { withdrawn: false, why: String(e?.defect ?? e?.message ?? e).slice(0, 200),
+        retry: "ask again: the unit is not gained and no stake is returned a second time; only the withdrawal is tried again, after any stake still open on the mark is returned" };
+    }
   }
 
   if (acted.already)
-    return { did: route, units: true, mark: id, label, duplicate: true, returns: [], withdrawn,
+    return { did: route, units: true, mark: id, label, duplicate: true, returns: [], ...(late.length ? { late_returns: late } : {}), withdrawn,
       note: `${id} already left the counts; nothing was gained or returned a second time${withdrawnBefore ? "" : ", and the mark's withdrawal was tried again"}` };
-  return { did: route, units: true, mark: id, label, seq: acted.seq, effect: acted.effect, returns: acted.returned,
+  return { did: route, units: true, mark: id, label, seq: acted.seq, effect: acted.effect, returns: acted.returned, ...(late.length ? { late_returns: late } : {}),
     returns_note: acted.returned.length ? `${acted.returned.length} staker(s) had their stamps on this mark returned, one line each` : "no stake stood on this mark, so nothing was returned",
     withdrawn, ...(route === "take-back" ? { holds: holdsBlock(acted.after, actor, view) } : {}) };
 }

@@ -227,11 +227,12 @@ const INSERT_UNDO_SQL = `
 const labelOf = (p) => p?.label ?? (Array.isArray(p?.moves) ? p.moves[0]?.label : null) ?? null;
 
 /** The filed drop's one resolution act, in the hold lane's unit shape (no move: the unit is on the ground). */
-export function resolvedEntry({ actId, actor, household, filed }) {
+export function resolvedEntry({ actId, actor, household }) {
   return {
     actor, action: UNIT_ACTION.dropResolved, object: null, cls: "holding", household,
     nonce: resolvedNonce(actId),
-    payload: { units: true, moves: [], resolves: String(actId), as: "filed", ...(filed?.status ? { status: filed.status } : {}) },
+    // no slug and no claim status: the act log leaves the box, and a private draft is the household's own
+    payload: { units: true, moves: [], resolves: String(actId), as: "filed" },
     effect: `the set-down of act ${actId} is filed as its mark; the office tick has settled it`,
   };
 }
@@ -286,7 +287,7 @@ export async function recoverOrphanDrops(client, { now = Date.now(), crossing = 
       if (err?.filed) {
         // FILED: its one resolution act, in the transaction that still holds the drop's lock
         try {
-          const r = resolvedEntry({ actId: d.id, actor: String(d.actor), household: d.household, filed: err.filed });
+          const r = resolvedEntry({ actId: d.id, actor: String(d.actor), household: d.household });
           const { rows: ins } = await client.query(INSERT_UNDO_SQL, [crossing, r.actor, r.action, JSON.stringify(r.payload), r.effect, r.household, r.nonce]);
           await client.query("COMMIT");
           filed.push({ act: d.id, ...err.filed, resolution: ins[0]?.id ?? null });

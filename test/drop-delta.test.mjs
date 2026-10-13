@@ -92,6 +92,8 @@ test("C · MANY RESOLVED, A SMALL DELTA: the first tick decides the history once
   assert.equal(resolutions.length, 250);
   assert.deepEqual([...new Set(resolutions.map((r) => r.household))], [HH], "under the drop's own household");
   assert.equal(resolutions.find((r) => r.payload.resolves === pending[0]).nonce, resolvedNonce(pending[0]));
+  const draftRes = resolutions.find((r) => r.payload.resolves === drafts[0]);
+  assert.deepEqual(Object.keys(draftRes.payload).sort(), ["as", "moves", "resolves", "units"], "a private draft's resolution names no slug and no status: the act log leaves the box");
 
   const acts = await actCount();
   const t2 = await tick();

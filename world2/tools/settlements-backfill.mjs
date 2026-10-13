@@ -92,6 +92,8 @@ import { resolve } from "node:path";
 
 import { SETTLEMENT_TAG, isRepoRoot } from "../../src/settlements.mjs";
 import { recordCarried, receiptLine, TICK_CAP } from "./mark-carried-backfill.mjs";
+import { stockChests } from "./chest-stock.mjs";
+import { currentCrossing } from "../../src/crossings.mjs";
 
 const NL = String.fromCharCode(10);
 const arg = (n, d = null) => { const i = process.argv.indexOf(`--${n}`); return i === -1 ? d : process.argv[i + 1]; };
@@ -191,6 +193,22 @@ export async function carriedOnTick(client, repo) {
   } catch (e) {
     if (e?.code === "42P01") return { verdict: "absent", line: "carried: no `mark_carried` table yet (049 not applied) — nothing recorded" };
     return { verdict: "error", line: `carried: NOT recorded (non-fatal) — ${String(e?.message ?? e).slice(0, 200)}` };
+  }
+}
+
+/**
+ * THE FIRST STOCK OF EVERY CHEST THE SETTLEMENTS ADMITTED (WLD-27,
+ * chest-stock.mjs): once per chest, ever, by the plan and by the nonce. Like
+ * the carried step, its failure is one named line and never undoes the
+ * settlement rows already committed; a store without the unit acts or the law
+ * says so. An unstocked chest is a line, not a failure.
+ */
+export async function stockedOnTick(client, { stock = stockChests, crossing = currentCrossing } = {}) {
+  try {
+    const r = await stock(client, { crossing: crossing() });
+    return { verdict: "ok", line: r.line, result: r };
+  } catch (e) {
+    return { verdict: "error", line: `chests: NOT stocked (non-fatal) — ${String(e?.message ?? e).slice(0, 200)}` };
   }
 }
 
@@ -308,6 +326,10 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
       // git cannot answer. Before it, the cap skips and says so.
       carried = await carriedOnTick(client, repo);
       if (!json) console.log(carried.line);
+      // THE FIRST STOCK (WLD-27), after the settlement rows: a chest the newest
+      // settlement admitted is stocked by the tick that first sees it.
+      const chests = await stockedOnTick(client);
+      if (!json) console.log(chests.line);
       if (carried.verdict === "DISAGREE") verdict = "CONFLICT";
     } else if (verify) {
       const missing = fresh.map((r) => r.number);

@@ -97,6 +97,22 @@ function arg(name, fallback) {
 
 const PORT = Number(arg("--port", "4380"));
 
+// ── THE BOX DOOR (Darko 2026-10-13, after the review of #516) ────────────────
+//
+// A second listener, bound to 127.0.0.1 only, for the box asking its own
+// office (the site refresh). A keyless GET that arrives HERE is not charged the
+// keyless bucket (bouncer.mjs § boxLocal). No nginx location names this port,
+// so nothing public can arrive on it, whatever its path or headers.
+//
+// OFFICE_BOX_PORT names it; "0" turns it off. Unset, it is 4390 for the office
+// on 4380 (prod) and OFF for every other port. Not port+10 and not 4390 for
+// all: the dev office (:4381) shares the box, and the train reaches dev before
+// prod, so a dev office holding 4390 would leave prod's refresh reading dev's
+// office. A test office opens one only when it asks.
+const BOX_PORT = process.env.OFFICE_BOX_PORT != null && process.env.OFFICE_BOX_PORT !== ""
+  ? Number(process.env.OFFICE_BOX_PORT)
+  : (PORT === 4380 ? 4390 : 0);
+
 // ── WHAT THIS PROCESS IS (runbook DEC-4, G3) ─────────────────────────────────
 //
 // `--role read` (or OFFICE_ROLE=read) makes this process a READ WORKER: it
@@ -1323,11 +1339,12 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
   // outer layer. Invalid/stale credentials deliberately land in this tier.
   // A read worker admits nothing: the main thread charged this request to the
   // bucket before it handed it over, and the buckets are the main thread's RAM.
-  // The box asking itself over loopback (the site refresh) is not charged:
-  // boxLocal in bouncer.mjs says why only the socket and a missing XFF count.
-  // A bulk read is charged what its single reads would be (bulkCost).
+  // A GET that arrived on the box door (the site refresh) is not charged:
+  // boxLocal in bouncer.mjs says why only the door counts.
+  // A bulk read is charged what its single reads would be (bulkCost), keyless
+  // and keyed alike.
   const cost = req.method === "GET" ? bulkCost(path, url.searchParams) : 1;
-  if (!key && req.method === "GET" && !IN_READ_WORKER && !boxLocal(req)) {
+  if (!key && req.method === "GET" && !IN_READ_WORKER && !boxLocal(req, BOX_PORT)) {
     const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET", cost });
     if (limited) return rateResponse(res, limited);
   }
@@ -2244,7 +2261,12 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         // names and the entry read cannot find is left out, as the site does
         // with that 404. The site refresh read them one request each.
         if (url.searchParams.get("full") === "1") {
-          const whole = async (list, entry) => (await Promise.all(list.map((b) => entry(b.slug)))).filter((e) => e != null);
+          // One entry at a time: the store reads share one client.
+          const whole = async (list, entry) => {
+            const out = [];
+            for (const b of list) { const e = await entry(b.slug); if (e != null) out.push(e); }
+            return out;
+          };
           if (townIndexReads()) return fromTownIndex(res, async (c) => whole(await townIndexStore.bulletinList(c), (s) => townIndexStore.bulletinEntry(c, s)));
           return whole(bulletinList(db), async (s) => bulletinEntry(db, s)).then((entries) => j(res, 200, entries));
         }
@@ -3001,6 +3023,17 @@ import("./world-graph-snapshot.mjs").then((m) => {
 if (IN_READ_WORKER) serveReadsInWorker(handle);
 else {
   const server = createServer(handle);
+  // The box door (§ THE BOX DOOR, at PORT): the writer only. A read-role
+  // process is a reader the writer's nginx routes to, never the box's own door.
+  // Bound first, so it is open by the time the boot line says "listening". A
+  // door that cannot bind says so and the office serves on without it: the
+  // refresh then fails to connect, loudly, rather than the office not starting.
+  const boxDoor = BOX_PORT > 0 && !READ_ONLY_ROLE;
+  if (boxDoor) {
+    const box = createServer(handle);
+    box.on("error", (e) => console.error(`WARN: the box door 127.0.0.1:${BOX_PORT} could not open (${e.code ?? e.message}); the box reads through it will fail until it does`));
+    box.listen(BOX_PORT, "127.0.0.1");
+  }
   server.listen(PORT, () => {
     // Only the writer starts a pool. A read-role process (DEC-4's kit) is a
     // reader already, and a pool inside it would be readers of a reader.
@@ -3009,6 +3042,7 @@ else {
     console.log(
       `postmark-office listening on :${server.address().port} — as-of ${AS_OF.slice(0, 12)}`
       + (READ_ONLY_ROLE ? ` — ROLE read (sqlite read-only, no write grant; writes → ${WRITER_URL})` : "")
-      + (size > 0 ? ` — ${size} read worker${size === 1 ? "" : "s"}` : ""));
+      + (size > 0 ? ` — ${size} read worker${size === 1 ? "" : "s"}` : "")
+      + (boxDoor ? ` — box door 127.0.0.1:${BOX_PORT}` : ""));
   });
 }

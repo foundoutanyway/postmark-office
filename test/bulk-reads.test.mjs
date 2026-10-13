@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { fixtureDb } from "./fixture.mjs";
 import { indexStore } from "./helpers/office-under-test.mjs";
-import { bootOnFreePort } from "./spawn-office.mjs";
+import { bootOnFreePort, freePort } from "./spawn-office.mjs";
 import { seedStaticKeys } from "./helpers/static-keys.mjs";
 import { letterDigest } from "../src/queries.mjs";
 
@@ -35,23 +35,28 @@ test.after(async () => { for (const x of STORES) await x.stop(); });
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KEY = "bulk-reads-key";
-let BASE, child, tmp;
+// BASE is the box door, as the site refresh reads it, so the equality reads
+// spend no keyless bucket; PUBLIC is the port nginx forwards to, where the
+// price test charges a caller.
+let BASE, PUBLIC, child, tmp;
 
 before(async () => {
   tmp = mkdtempSync(join(tmpdir(), "postmark-office-bulk-"));
   const dbPath = join(tmp, "fixture.db");
   fixtureDb(dbPath).close();
   const IX_ENV = await storeFor(dbPath);
+  const box = await freePort();
   let port;
   ({ child, port } = await bootOnFreePort((p) => spawn(process.execPath, [
     join(ROOT, "src", "server.mjs"), "--port", String(p), "--db", dbPath,
     "--bouncer-now-ms", String(Date.parse("2026-10-13T14:00:00Z")),
     "--oauth-db", seedStaticKeys(join(tmp, "oauth.db"), `${KEY}=keemin:wright`),
   ], {
-    env: { ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV, TOWN_CLONE: join(tmp, "no-clone-here") },
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV, TOWN_CLONE: join(tmp, "no-clone-here"), OFFICE_BOX_PORT: String(box) },
     stdio: ["ignore", "pipe", "pipe"],
   })));
-  BASE = `http://127.0.0.1:${port}`;
+  BASE = `http://127.0.0.1:${box}`;
+  PUBLIC = `http://127.0.0.1:${port}`;
 });
 
 after(async () => {
@@ -63,10 +68,12 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-const get = async (path, headers = {}) => {
-  const r = await fetch(`${BASE}${path}`, { headers });
+const get = async (path, headers = {}, base = BASE) => {
+  const r = await fetch(`${base}${path}`, { headers });
   return { status: r.status, body: await r.json() };
 };
+// A public caller, as nginx forwards one: the public port, with XFF.
+const getPublic = (path, from, headers = {}) => get(path, { "x-forwarded-for": from, ...headers }, PUBLIC);
 const keyed = { authorization: `Bearer ${KEY}` };
 // What the single keyless door answers: the body, or null where it says 404.
 const single = async (path) => {
@@ -165,12 +172,20 @@ test("a letter's digest moves with everything its full answer is built from", ()
 });
 
 test("a bulk read costs what its single reads would: 200 cards spend 200 of a keyless caller's 240", async () => {
-  const from = { "x-forwarded-for": "198.51.100.40" };
-  assert.equal((await get("/residents?cards=1&limit=200", from)).status, 200);
-  assert.equal((await get("/residents?cards=1&limit=200", from)).status, 429, "the second 200 does not fit in the 40 left");
-  const other = { "x-forwarded-for": "198.51.100.41" };
+  assert.equal((await getPublic("/residents?cards=1&limit=200", "198.51.100.40")).status, 200);
+  assert.equal((await getPublic("/residents?cards=1&limit=200", "198.51.100.40")).status, 429, "the second 200 does not fit in the 40 left");
   const many = `/doorsteps?handles=${Array(25).fill("wright").join(",")}`;
-  for (let i = 0; i < 9; i++) assert.equal((await get(many, other)).status, 200, `doorstep read ${i + 1} of 25`);
-  assert.equal((await get(many, other)).status, 429, "nine reads of 25 spent 225; 25 more do not fit in the 15 left");
-  assert.equal((await get("/doorsteps?handles=wright,limen", other)).status, 200, "two do");
+  for (let i = 0; i < 9; i++) assert.equal((await getPublic(many, "198.51.100.41")).status, 200, `doorstep read ${i + 1} of 25`);
+  assert.equal((await getPublic(many, "198.51.100.41")).status, 429, "nine reads of 25 spent 225; 25 more do not fit in the 15 left");
+  assert.equal((await getPublic("/doorsteps?handles=wright,limen", "198.51.100.41")).status, 200, "two do");
+  // a digest page of 5000 shapes as many letters as 25 full pages, and costs that
+  for (let i = 0; i < 9; i++) assert.equal((await getPublic("/letters?digests=1&limit=5000", "198.51.100.42")).status, 200, `digest page ${i + 1}`);
+  assert.equal((await getPublic("/letters?digests=1&limit=5000", "198.51.100.42")).status, 429, "nine pages spent 225; the tenth's 25 do not fit");
+  // A keyed caller pays the same cost from its key's 240 reads a minute. The
+  // key has spent 203 in the keyed test above (a 200-card page and three
+  // single reads; the clock is frozen), so one digest page fits in the 37 left
+  // and a second does not, while a one-token read still does.
+  assert.equal((await get("/letters?digests=1&limit=5000", keyed)).status, 200);
+  assert.equal((await get("/letters?digests=1&limit=5000", keyed)).status, 429, "keyed GETs are charged bulkCost too");
+  assert.equal((await get("/town", keyed)).status, 200, "the refusal was the digest page's 25, not an empty budget");
 });

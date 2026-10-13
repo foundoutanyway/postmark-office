@@ -116,28 +116,28 @@ export async function stockChests(client, { crossing = null } = {}) {
       const used = await lockedChestUse(client, s.chest);
       // min(first_stock, capacity), never past what is already inside (units and things)
       const room = Math.min(Math.min(plan.dials.first_stock, s.capacity), s.capacity - (used.units + used.things));
-      if (room <= 0) {
-        // ZERO ROOM: nothing is written and the nonce is not spent, so a later
-        // tick that finds room stocks it then. Whether a full chest should
-        // instead close its first stock is an owner call on WLD-27 (Bevel's
-        // review, owner call 2) — not decided here.
-        await client.query("ROLLBACK");
-        skipped.push({ chest: s.chest, why: `no room under the lock (${used.units} units, ${used.things} things in ${s.capacity})` });
-        continue;
-      }
-      const payload = { units: true, moves: [{ from: null, to: s.chest, label: s.label, n: room }], label: s.label,
-        capacity: s.capacity, creator: s.handle, settlement: s.settlement, first_stock: true };
-      const effect = `the town stocked ${s.chest} with ${room} ${s.label} at the settlement that admitted it (S${s.settlement})`;
+      // ZERO ROOM COMPLETES THE FIRST STOCK (Wright, 2026-10-13T01:19Z): a
+      // labelled, admitted chest that is already full is stocked ZERO — the act
+      // is written with no move (so the fold mints no zero edge and names no
+      // anomaly), the nonce is spent, and the line says so. The gift is never
+      // deferred to a later tick that finds room; refill is the creator's after.
+      const n = Math.max(0, room);
+      const payload = { units: true, moves: n > 0 ? [{ from: null, to: s.chest, label: s.label, n }] : [], label: s.label, stocked: n,
+        capacity: s.capacity, creator: s.handle, settlement: s.settlement, label_found_at: plan.law?.settlement ?? null, first_stock: true };
+      const effect = n > 0
+        ? `the town stocked ${s.chest} with ${n} ${s.label} at the settlement that admitted it (S${s.settlement})`
+        : `chest-stock: 0, chest full at S${s.settlement} — the first stock of ${s.chest} is complete; refill is its creator's`;
       const { rows } = await client.query(INSERT_SQL, [crossing, TOWN_PEN, UNIT_ACTION.stock, s.chest, JSON.stringify(payload), effect, TOWN_HOUSEHOLD, stockNonce(s.chest)]);
       await client.query("COMMIT");
-      if (rows.length) stocked.push({ ...s, n: room, act: Number(rows[0].id) }); else skipped.push({ chest: s.chest, why: "already stocked (the nonce was spent)" });
+      if (rows.length) stocked.push({ ...s, n, act: Number(rows[0].id) }); else skipped.push({ chest: s.chest, why: "already stocked (the nonce was spent)" });
     } catch (e) {
       await client.query("ROLLBACK").catch(() => {});
       throw e;
     }
   }
   const parts = [
-    `chests: stocked ${stocked.length}${stocked.length ? ` (${stocked.map((s) => `${s.chest} +${s.n} ${s.label} at S${s.settlement}`).join(", ")})` : ""}`,
+    `chests: stocked ${stocked.filter((s) => s.n > 0).length}${stocked.some((s) => s.n > 0) ? ` (${stocked.filter((s) => s.n > 0).map((s) => `${s.chest} +${s.n} ${s.label} at S${s.settlement}`).join(", ")})` : ""}`,
+    ...stocked.filter((s) => s.n === 0).map((s) => `chest-stock: 0, chest full at S${s.settlement} (${s.chest})`),
     ...plan.unstocked.map((u) => u.line),
     ...plan.refused.map((r) => r.line),
   ];

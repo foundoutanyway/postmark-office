@@ -74,6 +74,7 @@ import { CLEARING_TAKES_THE_CANDLE } from "./candle-lock.mjs";
 // written here as claims of their own. See step 5.7 and step 6.
 import { carryPlan, carrySentence } from "./carry.mjs";
 import { boxOf } from "./seed-import.mjs";
+import { checkDroppedUnits } from "./drop-provenance.mjs";
 import { OVERLAP } from "./overlap.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -376,6 +377,13 @@ try {
     const { check } = await houseOrRefusal(q, c.claimant);
     if (check) refuseAlone(c, check);
   }
+
+  // 5.45 · A DROPPED UNIT'S MARK IS PROVED AGAINST ITS ACT (WLD-27; Wright,
+  //     2026-10-13T01:19Z). A resident's candy claim names the units:drop act
+  //     that set it down; that act must exist and match the claimant and the
+  //     label, or THIS claim alone is refused `dropped-unit-unproven: act <N>`
+  //     (drop-provenance.mjs). Never the window: refused alone, like 5.4.
+  await checkDroppedUnits(q, pending, { decided: (c) => outcomes.has(c.id), refuse: refuseAlone });
 
   // 5.5 · A COMMONS MARK NEEDS SOMEBODY'S STAMPS BEHIND IT (postmark#2594's
   //     second half; ruled a G1 blocker 2026-09-08 after lane 2's reviewer found

@@ -183,3 +183,24 @@ test("5c · only what you hold goes in; no chest inside itself, however deep", a
   r.hold("sbx-cy", "sbx-cy/a-tin"); r.hold("sbx-cy/a-tin", CHEST);
   await assert.rejects(callUnits("thing-into-chest", { thing: "sbx-cy/a-tin", to: CHEST }, KEY("sbx-cy"), "sbx-cy", r.deps), /is inside/);
 });
+
+// ── Wright, 2026-10-13T01:19Z: refill reach stays — the REAL reach, not a stub ─
+import { refuseOutOfReach } from "../src/world-hold.mjs";
+import { standsWithin } from "../src/reach.mjs";
+
+test("REFILL REACH: the creator must stand at the chest — the real threshold check refuses from 500 m and admits at the chest", async () => {
+  const CHEST = "sbx-ana/the-bowl";
+  const chest = { id: CHEST, by: "sbx-ana", class: "chest", kind: "sited", at: { x: 100, y: 100 }, extent: { w: 2, h: 2 } };
+  let standing = { placed: true, x: 600, y: 100 };
+  const r = rig({ marks: { [CHEST]: chest } });
+  r.seedUnits(CHEST, 10);
+  r.deps.reachTake = (thing, actor) => refuseOutOfReach({ thing, to: null, actor, act: "take", holder: null,
+    ctx: { mark: chest, canon_readable: true, within: null, standing, standsWithin, householdOf: null } });
+  const before = r.acts.length;
+  await assert.rejects(callUnits("refill", { chest: CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps), (e) => e.code === 409 && /you are not standing where/.test(e.defect));
+  await assert.rejects(callUnits("give", { to: CHEST, label: LABEL }, KEY("sbx-cy"), "sbx-cy", r.deps), (e) => e.code === 409 && /you are not standing where/.test(e.defect), "give-into-chest has the same reach");
+  assert.equal(r.acts.length, before, "nothing recorded from afar");
+  standing = { placed: true, x: 100, y: 100 };
+  const ok = await callUnits("refill", { chest: CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.equal(ok.count, 20, "at the chest, the creator fills the room");
+});

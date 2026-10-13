@@ -202,3 +202,36 @@ test("6b · a give after the stock is refused under the same lock, and its trans
     assert.equal(other.rows[0].got, true, "another chest's lock is free");
   } finally { await a.query("ROLLBACK"); await b.query("ROLLBACK"); await a.end(); await b.end(); }
 });
+
+// ── Wright, 2026-10-13T01:19Z: zero room completes the first stock ─────────
+
+test("ZERO ROOM: a labelled chest already full is stocked 0 — the nonce is spent, the line says so, and nothing is minted later", { skip }, async () => {
+  await seed();
+  await asOffice((c) => stockChests(c, { crossing: 250.5 }));               // eve: unlabelled, unstocked
+  // gifts fill eve's 20-slot chest before her label exists
+  await asOffice((c) => c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, effect, household)
+     VALUES (now(), 250.8, 'sbx-cy', 'units:give', 'sbx-eve/her-chest', 'holding', '{"units":true,"moves":[{"from":null,"to":"sbx-eve/her-chest","label":"test-comets","n":20}]}', 'gifts', 'hh:sbx-cy')`));
+  await owner((c) => law(c, SHA_B, 251, LABELS_B));
+  const r = await asOffice((c) => stockChests(c, { crossing: 251.5 }));
+  assert.match(r.line, /chest-stock: 0, chest full at S250 \(sbx-eve\/her-chest\)/);
+  const zero = (await units()).filter((a) => a.object === "sbx-eve/her-chest" && a.action === UNIT_ACTION.stock);
+  assert.equal(zero.length, 1);
+  assert.deepEqual([zero[0].payload.moves, zero[0].payload.stocked, zero[0].nonce], [[], 0, stockNonce("sbx-eve/her-chest")]);
+  const fold = foldUnits(await units());
+  assert.deepEqual(fold.anomalies, [], "a zero stock is no bad move");
+  assert.deepEqual(edgesOf(fold, "sbx-eve/her-chest"), [{ label: "test-comets", count: 20 }], "no zero-count edge minted");
+  // someone takes 5; later ticks add nothing — the gift is not deferred
+  await asOffice((c) => c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, effect, household)
+     VALUES (now(), 251.6, 'sbx-cy', 'units:take', 'sbx-eve/her-chest', 'holding', '{"units":true,"moves":[{"from":"sbx-eve/her-chest","to":"sbx-cy","label":"test-comets","n":5}]}', 'a take', 'hh:sbx-cy')`));
+  for (const x of [251.7, 251.8]) assert.equal((await asOffice((c) => stockChests(c, { crossing: x }))).stocked.length, 0);
+  assert.equal(totalOf(foldUnits(await units()), "sbx-eve/her-chest"), 15);
+});
+
+test("ZERO ROOM, RACED: two ticks finding the same full chest spend the gift once", { skip }, async () => {
+  await seed();
+  await asOffice((c) => c.query(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, effect, household)
+     VALUES (now(), 250.8, 'sbx-cy', 'units:give', 'sbx-eve/her-chest', 'holding', '{"units":true,"moves":[{"from":null,"to":"sbx-eve/her-chest","label":"test-comets","n":20}]}', 'gifts', 'hh:sbx-cy')`));
+  await owner((c) => law(c, SHA_B, 251, LABELS_B));
+  await Promise.all([asOffice((c) => stockChests(c, { crossing: 251.5 })), asOffice((c) => stockChests(c, { crossing: 251.5 }))]);
+  assert.equal((await units()).filter((a) => a.object === "sbx-eve/her-chest" && a.action === UNIT_ACTION.stock).length, 1);
+});

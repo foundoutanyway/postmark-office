@@ -6,7 +6,7 @@
 //   world.db `events` (the walk ledger, hydrated) -> the governing departure per
 //   actor -> tools/walk.mjs `positionAt(departure, clock)` -> one entities row
 //
-// Three laws this module obeys, all of them from LOGOS/kinds.md:
+// Three laws this module obeys, all of them from LOGOS/lifetimes.md:
 //
 //   1. LATEST WINS. A resident's current departure is their last recorded one.
 //      Superseding is a new departure from the derived position, never a

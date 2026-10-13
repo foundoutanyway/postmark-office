@@ -132,6 +132,21 @@ export function readAddress(clone, handle) {
 // declare and the parser never infers (#865, Keemin 2026-07-29).
 const IMAGE_RE = /\.(png|jpe?g|webp|gif|avif|svg)$/i;
 
+/**
+ * ADDRESS.md's raw text as the checkout currently holds it, through the read's
+ * own freshness context (POS-603): no checkout, or a suspended handle (whose
+ * context carries none), answers null — the same gate every overlay keeps.
+ * The text is raw because the town's card rule (ownProse) strips the
+ * frontmatter itself.
+ */
+export function addressTextIn(ctx, handle) {
+  if (!ctx?.clone) return null;
+  try {
+    const file = join(ctx.clone, "WHITE_PAGES", handle, "ADDRESS.md");
+    return existsSync(file) ? readFileSync(file, "utf8") : null;
+  } catch { return null; }
+}
+
 /** HOME/HOME.md as the checkout currently holds it: `{ data, body, images }`. */
 export function readHomeFile(clone, handle) {
   try {
@@ -377,7 +392,7 @@ export function composeHome(row, ctx) {
 export function composeFoundedHome(handle, ctx) {
   if (!ctx?.clone) return null;
   if (!readHomeFile(ctx.clone, handle)) return null;
-  return composeHome({ handle, title: handle, region: null, description: "", images: [] }, ctx);
+  return composeHome({ handle, title: handle, region: null, description: "", images: [], picture: null }, ctx);
 }
 
 /**

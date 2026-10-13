@@ -646,14 +646,15 @@ export const householdDispatchToolFor = (act) => ACTS[String(act ?? "").trim()]?
  *  the town's onboarding row already speaks for (2026-08-21): one obligation,
  *  one voice, rather than the same missing paper worded twice by two surfaces.
  *  The ids are the town quest-registry's own row ids, deliberately. */
-export async function paperGapRows(handle, { db, clone, worldBlock = worldBlockForHandle, key = null, parcelClaim = parcelClaimForHandle, ix = null, odb = null, asOf = null } = {}) {
+export async function paperGapRows(handle, { db, clone, worldBlock = worldBlockForHandle, key = null, parcelClaim = parcelClaimForHandle, ix = null, odb = null, asOf = null, fresh: given = null } = {}) {
   const gaps = [];
   let home = null;
   // READ-THROUGH (POS-603): the HOME check reads the page through the same
   // freshness context as read: "home", so a page tended a minute ago is not
   // still owed. (The window check below already reads the checkout.) freshFor
   // never throws; an unreachable store index still throws from the read.
-  const fresh = await freshFor(handle, { odb, clone, asOf });
+  // a caller that already built the context (nextStepsFor, POS-603) hands it over: one standing read, not two
+  const fresh = given ?? await freshFor(handle, { odb, clone, asOf });
   try { home = ix ? await ix.home(handle, fresh) : homeQ(db, handle, fresh); }
   catch (e) { if (e?.name === "TownIndexUnreachable") throw e; home = null; }
   if (!home || !home.description)

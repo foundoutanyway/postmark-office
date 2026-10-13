@@ -2,6 +2,7 @@
 // One implementation, two doors: whatever REST serves, MCP serves identically.
 
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isPrincipal } from "./ops.mjs";
 import { householdOf, giverLookup } from "./households.mjs";
@@ -9,7 +10,7 @@ import { HOLO_CAPTION, TEACH, postingsWithoutPots } from "./funding.mjs";
 import { isResidentHandle } from "./residency.mjs"; // the door's own admission grammar — one definition of what a handle is
 import { CROSSING_SEAL_SUBJECT } from "./crossings.mjs"; // the crossing's closing commit, as the copy's history records it (POS-332)
 import { dialNumber, ideasTank } from "./world-classes.mjs"; // the doorstep's own dials, read off the record — never held here; the tank is the first-idea fact (questBoardFor)
-import { freshnessFor, composeResidentCard, composeHome, composeWindow, composeFoundedHome } from "./paper-fresh.mjs"; // the freshness ladder
+import { freshnessFor, freshFor, addressTextIn, composeResidentCard, composeHome, composeWindow, composeFoundedHome } from "./paper-fresh.mjs"; // the freshness ladder
 import { readPane, paneRelPath, WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // the pane's frame — one owner, read by this door and by the act
 import { STANDING } from "./town-mail.mjs"; // what a letter written but not sailed is called, said once (POS-375)
 
@@ -1999,6 +2000,39 @@ export function doorstepOf(parts, handle, asOf, { conversationsOffset = 0, slim 
  * Degrades rather than throws: a checkout too old to carry the onboarding fold
  * yields a null, and the doorstep simply carries no next-steps block.
  */
+/**
+ * The owner's onboarding facts with the record's evidence folded in (POS-603):
+ * a COPY of the indexed facts in which only card, home and window may move,
+ * and only from "not done" to "done".
+ *   · home, window — complete when the paper-gap read SUCCEEDED (an array) and
+ *     names no tend-your-home / hang-your-window gap. A read that could not run
+ *     is never proof that everything is done.
+ *   · card — complete when ONE fresh read of the resident's ADDRESS.md, through
+ *     the read's own freshness context (no checkout or a suspended handle reads
+ *     nothing), meets the TOWN'S rule: tools.ownProse against the clone's
+ *     WHITE_PAGES/TEMPLATE/ADDRESS.md, at least tools.CARD_MIN_CHARS. An older
+ *     checkout without those exports keeps the index's card fact.
+ * Every other fact (sent, received, welcomed) is the index's, untouched.
+ */
+function ownerFacts(facts, { handle, tools, paperRows, ctx, clone }) {
+  if (!facts) return facts;
+  const out = { ...facts };
+  if (Array.isArray(paperRows)) {
+    const gaps = new Set(paperRows.map((r) => r.id));
+    if (!out.home && !gaps.has("tend-your-home")) out.home = true;
+    if (!out.window && !gaps.has("hang-your-window")) out.window = true;
+  }
+  if (!out.card && typeof tools.ownProse === "function" && Number.isFinite(tools.CARD_MIN_CHARS)) {
+    const text = addressTextIn(ctx, handle);
+    if (text != null) {
+      let template = null;
+      try { template = readFileSync(join(clone, "WHITE_PAGES", "TEMPLATE", "ADDRESS.md"), "utf8"); } catch { template = null; }
+      if (tools.ownProse(text, template).length >= tools.CARD_MIN_CHARS) out.card = true;
+    }
+  }
+  return out;
+}
+
 export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null, ix = null, odb = null, asOf = null } = {}) {
   try {
     const tools = await questTools(clone);
@@ -2058,8 +2092,19 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // office never looked up cannot leak through a later refactor of the filter,
     // and the saved world read is the expensive half of this call besides.
     const worldSited = own ? await worldSitedFor(handle, { worldBlock }) : null;
-    const onboarding = tools.onboardingBoard(registry, facts, handle, { worldSited });
-    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix, odb, asOf }) : null;
+    // THE OWNER'S LINE FROM THE RECORD (POS-603). The facts above are the
+    // index's, and the town's composer drops a paper gap whose id is an
+    // onboarding id — so a stale index kept "write your card", "tend your home"
+    // and "hang your window" on the owner's next steps after the record showed
+    // them done. For the OWNER only, the paper gaps are read FIRST (the same
+    // read the steps below carry, the same memoized world read) and the facts
+    // the line is built from are a COPY where card, home and window are
+    // complete when the record says so. A stranger's line stays the index's,
+    // with no new read.
+    const fresh = own ? await freshFor(handle, { odb, clone, asOf }) : null;
+    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix, odb, asOf, fresh }) : null;
+    const lineFacts = own ? ownerFacts(facts, { handle, tools, paperRows, ctx: freshnessFor(handle, { ...fresh, asOf }), clone }) : facts;
+    const onboarding = tools.onboardingBoard(registry, lineFacts, handle, { worldSited });
     // THE VERDICT RIDES DOWN, NOT THE READER (#2773, and the 08-15 gate is why).
     // `worldSited` above is already this doorstep's decision: the world read for
     // an own door, and a deliberate NON-read — null, nobody looked — for a

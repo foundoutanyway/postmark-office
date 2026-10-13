@@ -376,9 +376,10 @@ export function refillerLabel({ actor, chest, labels, maker }) {
  */
 export function planRefill({ fold, actor, chest, capacity, labels, maker }) {
   const mine = refillerLabel({ actor, chest, labels, maker });
+  // No third condition (Wright, 2026-10-13T03:38:35Z): the maker refills her
+  // own chest with her own label whatever else it holds — another resident's
+  // gifts beside it read as their nearest common class.
   const held = edgesOf(fold, chest);
-  if (held.length && !held.some((e) => e.label === mine.label))
-    throw bounce(403, `${chest} holds no ${mine.label}`, `only the creator of a label the chest holds may refill it — it holds ${listing(held)}. Nothing was recorded.`);
   const room = capacity - totalOf(fold, chest);
   if (room <= 0) return { noop: true, chest, label: mine.label, capacity, holds: held, note: `${chest} is full (${capacity} of ${capacity}); nothing was added and nothing was recorded` };
   return { action: UNIT_ACTION.refill, object: String(chest), label: mine.label, capacity,

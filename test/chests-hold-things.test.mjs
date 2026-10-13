@@ -349,13 +349,14 @@ test("F2 · an outsider still gives into the chest", async () => {
   assert.deepEqual([gave.count, gave.receiver.count], [2, 2]);
 });
 
-test("F2 · [SHOWN TO BEVEL, NOT DECIDED HERE] the existing label-presence guard: the maker's chest holding ONLY another label's gifts refuses her refill", async () => {
-  // Wright's F2 names two conditions; this guard (a nonempty chest must already
-  // hold the refiller's label) is the original refill's third. Kept as it was,
-  // and surfaced: it stands against "the maker refills to capacity".
+test("F2 · Ana's own chest holding only Bo's gifts: Ana fills the rest with her own label (Wright 03:38:35Z — the label-presence guard is dropped); Bo still cannot refill it", async () => {
   const r = f2Rig();
   r.seedUnits(F2_CHEST, 5, "test-drops");
-  await assert.rejects(callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps), (e) => e.code === 403 && /holds no test-comets/.test(e.defect));
+  await assert.rejects(callUnits("refill", { chest: F2_CHEST }, KEY("sbx-bo"), "sbx-bo", r.deps), (e) => e.code === 403 && /sbx-bo did not make/.test(e.defect));
+  const filled = await callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.deepEqual([filled.label, filled.count, filled.chest.count], [LABEL, 25, 30], "30 − 5 of her own beside Bo's 5");
+  assert.deepEqual(filled.chest.edges.map((e) => [e.label, e.count]).sort(), [[LABEL, 25], ["test-drops", 5]]);
+  assert.equal(filled.chest.class, "candy", "the mixed chest reads as the nearest common class");
 });
 
 // ── F4 (Wright's independent review, 03:01:29Z): every stake is returned before

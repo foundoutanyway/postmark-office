@@ -296,16 +296,21 @@ export async function doorstepBundle(handle, ctx = {}) {
   // held stack is drawn HERE and on the card, never as a pip on the map. The
   // same block answers GET /world/chests's rows; both are the fold of the
   // record's acts at this read. Public, like where a resident stands.
+  //
+  // ⚑ ONLY WHEN THERE IS SOMETHING TO SAY. Every byte here is served on every
+  // doorstep (foyer-shrink F7c5 holds the page still), and most residents hold
+  // nothing and made no chest — so empty hands add no key at all, and the card
+  // reads an absent block as nothing to show. An office not pointed at the
+  // record has no holding to read and says nothing either; one that IS pointed
+  // at it and cannot read it says so, because there "unknown" must not read as
+  // "empty".
   try {
     const { residentHolds } = await import("./world-units.mjs");
     const h = await residentHolds(handle);
-    // EMPTY HANDS ARE ONE NUMBER: most residents hold nothing and made no chest,
-    // and the morning page does not fatten by a block that says so at length.
-    d.holds = h.holds.count === 0 && !h.chests.length && !h.label
-      ? { serves: "world.holdings", args: { handle }, count: 0 }
-      : { serves: "world.holdings", args: { handle }, ...h };
+    if (h.holds.count > 0 || h.chests.length || h.label) d.holds = { serves: "world.holdings", args: { handle }, ...h };
   } catch (e) {
-    d.holds = { serves: "world.holdings", args: { handle },
+    const { world2Enabled } = await import("./world2-acts.mjs");
+    if (world2Enabled()) d.holds = { serves: "world.holdings", args: { handle },
       unavailable: `what ${handle} holds could not be read (${String(e?.message ?? e).slice(0, 160)}) — unknown, not empty` };
   }
   // The manifest, republished now that every segment is on the page. A reader

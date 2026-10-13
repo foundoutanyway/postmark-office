@@ -337,11 +337,9 @@ REGISTRY_FILE="$SNAP/registry.json"
 # (049, `mark_carried`) and adds a `carried:` line; a refusal there exits 1 with
 # the settlement rows already committed, so the failure line names both tables.
 if settled="$(node world2/tools/settlements-backfill.mjs --apply --prod --quiet --world-repo "$WORLD_CLONE" 2>&1)"; then
-  keep_step settlements ok
-  echo "[office-keep] settlements: $settled"
+  keep_step settlements ok; echo "[office-keep] settlements: $settled"
 else
-  keep_step settlements refused "exit:$?"
-  echo "[office-keep] settlements or carried rows NOT written (non-fatal) — $settled — the next tick tries again; world2/tools/settlements-backfill.mjs --verify and mark-carried-backfill.mjs --verify say where the tables stand" >&2
+  keep_step settlements refused "exit:$?"; echo "[office-keep] settlements or carried rows NOT written (non-fatal) — $settled — the next tick tries again; world2/tools/settlements-backfill.mjs --verify and mark-carried-backfill.mjs --verify say where the tables stand" >&2
 fi
 
 # ── the positions snapshot, once per clearing (POS-302, 053) ─────────────────
@@ -351,11 +349,9 @@ fi
 # failed snapshot never blocks a clearing or this tick, and the office reads the
 # whole record until one exists. Same connection as the settlements rows above.
 if snapped="$(node world2/tools/position-snapshot.mjs --apply --prod --quiet --world-repo "$WORLD_CLONE" 2>&1)"; then
-  keep_step positions ok
-  echo "[office-keep] $snapped"
+  keep_step positions ok; echo "[office-keep] $snapped"
 else
-  keep_step positions refused "exit:$?"
-  echo "[office-keep] positions snapshot NOT written (non-fatal) — $snapped — the next tick tries again; world2/tools/position-snapshot.mjs --verify says where it stands" >&2
+  keep_step positions refused "exit:$?"; echo "[office-keep] positions snapshot NOT written (non-fatal) — $snapped — the next tick tries again; world2/tools/position-snapshot.mjs --verify says where it stands" >&2
 fi
 
 # ── one household, one mint key: the alarm's log line (Darko, 2026-10-04) ────

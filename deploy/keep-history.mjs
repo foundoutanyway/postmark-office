@@ -19,9 +19,8 @@
 // The reader here is this log's own: it judges the RAW text, so a newest line
 // that is torn, oversize or not a keep-v1 receipt is a finding, never skipped.
 
-import { readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync, realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const KEEP_V = 1;
 export const KIND = "office-keep";
@@ -191,7 +190,14 @@ export function writeReceipt(argv) {
   return receipt;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// The realpath compare (test/cli-guard.test.mjs): an import is inert, and the
+// entry is recognised through a junction too.
+const isMain = (() => {
+  if (!process.argv[1]) return false;
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return pathToFileURL(process.argv[1]).href === import.meta.url; }
+})();
+if (isMain) {
   if (process.argv[2] !== "write") { console.error("usage: keep-history.mjs write --log <path> --steps <file> --source <s> --run <id> --started <iso> --exit <n> [--signal NAME]"); process.exit(2); }
   try { writeReceipt(process.argv.slice(3)); }
   catch (e) { console.error(`keep-history: ${String(e?.message ?? e).slice(0, 200)}`); process.exit(1); }

@@ -292,3 +292,68 @@ test("D · the withdrawal's cause is always the exit itself: the first try names
   assert.equal(totalOf(r.units(), "sbx-cy"), 1);
   assert.equal(r.ledger.length, 2, "two returns, ever");
 });
+
+// ── F2 (Wright's independent review, AUTHORITY 2026-10-13T03:01:29Z): refill
+// needs the chest's MAKER who is also the CREATOR of the label used. Authorship
+// is not possession or household; giving into a chest stays open. ───────────
+
+const BO_LABEL = { label: "test-drops", name: "Test Drops", creator: "sbx-bo" };
+const twoLabels = () => classViewOf({ classes: new Map([...CLASSES, ["candy", { ...CLASSES.get("candy"), labels: [...CLASSES.get("candy").labels, BO_LABEL] }]]) });
+const F2_CHEST = "sbx-ana/f2-bowl";
+const f2Rig = (extra = {}) => {
+  const r = rig({ marks: { [F2_CHEST]: { id: F2_CHEST, by: "sbx-ana", class: "chest", capacity: 30 } } });
+  r.deps.classes = twoLabels;
+  r.deps.householdOf = (h) => ({ key: "hh:ana-and-bo", house: "hh:ana-and-bo" });     // Bo shares Ana's house
+  Object.assign(r.deps, extra);
+  return r;
+};
+
+test("F2 · Bo cannot refill Ana's chest — empty, partly full, full (a would-be no-op), carried by Bo, same household, with a label of his own — and nothing is recorded", async () => {
+  for (const [what, setup] of [
+    ["empty", () => {}],
+    ["partly full of Ana's", (r) => r.seedUnits(F2_CHEST, 10)],
+    ["holding Bo's own label", (r) => r.seedUnits(F2_CHEST, 4, "test-drops")],
+    ["full", (r) => r.seedUnits(F2_CHEST, 30)],
+    ["carried by Bo", (r) => r.hold("sbx-bo", F2_CHEST)],
+  ]) {
+    const r = f2Rig(); setup(r);
+    let reached = 0; r.deps.reachTake = async () => { reached += 1; };
+    const before = r.acts.length;
+    await assert.rejects(callUnits("refill", { chest: F2_CHEST }, KEY("sbx-bo"), "sbx-bo", r.deps),
+      (e) => e.code === 403 && /sbx-bo did not make sbx-ana\/f2-bowl/.test(e.defect), what);
+    assert.equal(r.acts.length, before, `${what}: nothing recorded`);
+    assert.equal(reached, 0, `${what}: refused before anything else is asked`);
+  }
+});
+
+test("F2 · the maker with no registered label cannot refill her own chest", async () => {
+  const r = rig({ marks: { "sbx-eve/her-tin": { id: "sbx-eve/her-tin", by: "sbx-eve", class: "chest" } } });
+  await assert.rejects(callUnits("refill", { chest: "sbx-eve/her-tin" }, KEY("sbx-eve"), "sbx-eve", r.deps), (e) => e.code === 403 && /sbx-eve has no candy label/.test(e.defect));
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.refill).length, 0);
+});
+
+test("F2 · the maker who created the label refills to capacity — a mixed chest with another label's gifts and a whole thing included; full is a no-op", async () => {
+  const r = f2Rig();
+  r.deps.markById = async (id) => ({ [F2_CHEST]: { id: F2_CHEST, by: "sbx-ana", class: "chest", capacity: 30 }, "sbx-bo/f2-toaster": { id: "sbx-bo/f2-toaster", class: "toaster" } })[id] ?? null;
+  r.seedUnits(F2_CHEST, 6); r.seedUnits(F2_CHEST, 5, "test-drops"); r.hold(F2_CHEST, "sbx-bo/f2-toaster");
+  const filled = await callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.deepEqual([filled.label, filled.count, filled.chest.count], [LABEL, 18, 30], "6 + 5 + 1 thing + 18 = 30");
+  const noop = await callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.equal(noop.noop, true);
+});
+
+test("F2 · an outsider still gives into the chest", async () => {
+  const r = f2Rig({ householdOf: (h) => ({ key: `hh:${h}`, house: `hh:${h}` }) });
+  r.seedUnits("sbx-cy", 3);
+  const gave = await callUnits("give", { to: F2_CHEST, count: 2 }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.deepEqual([gave.count, gave.receiver.count], [2, 2]);
+});
+
+test("F2 · [SHOWN TO BEVEL, NOT DECIDED HERE] the existing label-presence guard: the maker's chest holding ONLY another label's gifts refuses her refill", async () => {
+  // Wright's F2 names two conditions; this guard (a nonempty chest must already
+  // hold the refiller's label) is the original refill's third. Kept as it was,
+  // and surfaced: it stands against "the maker refills to capacity".
+  const r = f2Rig();
+  r.seedUnits(F2_CHEST, 5, "test-drops");
+  await assert.rejects(callUnits("refill", { chest: F2_CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps), (e) => e.code === 403 && /holds no test-comets/.test(e.defect));
+});

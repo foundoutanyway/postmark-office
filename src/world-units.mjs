@@ -31,7 +31,7 @@
 import {
   UNIT_ACTION, foldUnits, edgesOf, totalOf, exitedMarks, unitCount, candyLabels, labelOfCreator, labelRecord,
   capacityOf, portableOf, welcomeOf, holdingDisplay, refuseOverCarry, takenRefusal,
-  planGive, planTake, planConsume, planRefill, droppedUnitMark, isDroppedUnitMark, returnsAtExit, isChestId, isUnitRow,
+  planGive, planTake, planConsume, planRefill, refillerLabel, droppedUnitMark, isDroppedUnitMark, returnsAtExit, isChestId, isUnitRow,
   withdrawnMarks, ancestry, selectLabel, stockedChests,
 } from "./world-stacks.mjs";
 import { holdingsOf, sameHousehold, holdTurn, liveHolder, rowsFor, holdingEntry } from "./world-hold.mjs";
@@ -281,13 +281,16 @@ export async function callUnits(route, args, key, actor, deps) {
     case "refill": {
       const chest = String(args.chest ?? args.thing ?? "");
       if (!isChestId(chest)) throw bounce(422, "refill which chest?", "chest: its id, <by>/<slug>");
-      const { capacity } = await chestOrThrow(deps, chest, view);
+      const { mark: chestMark, capacity } = await chestOrThrow(deps, chest, view);
+      const maker = String(chestMark.by ?? chest.split("/")[0]);
+      // the maker-and-creator rule is the first thing asked, before reach (F2)
+      refillerLabel({ actor, chest, labels: view.labels(), maker });
       await deps.reachTake(chest, actor);
       return holdTurn(async () => {
         const { units, attachments } = await deps.readRows();
         const fold = foldUnits(units);
         // refill fills the room left by EVERYTHING in the chest — units of every label and whole things
-        const plan = planRefill({ fold, actor, chest, capacity: capacity - holdingsOf(attachments, chest).length, labels: view.labels() });
+        const plan = planRefill({ fold, actor, chest, capacity: capacity - holdingsOf(attachments, chest).length, labels: view.labels(), maker });
         if (plan.noop) return { did: "refill", units: true, noop: true, note: plan.note, chest: await chestBlock(fold, chest, view, attachments, deps) };
         refuseIfTaken(topClassOf(fold, chest, view) ?? "candy", view);
         const w = await writeUnits(deps, key, actor, { ...plan, payload: { label: plan.label, capacity } },

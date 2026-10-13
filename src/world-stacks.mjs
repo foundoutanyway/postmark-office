@@ -353,14 +353,29 @@ export function planConsume({ fold, actor, from = null, label, classOfLabel, ext
     returns: [], returns_note: "a held unit is a count, not a staked mark: consuming it returns nothing" };
 }
 
-/**
- * Refill (Wright, 2026-10-13T00:01Z): the creator of the label tops the chest
- * up to its capacity with their OWN label — exactly the remaining room, every
- * label counted. A full chest is a no-op, not an act.
- */
-export function planRefill({ fold, actor, chest, capacity, labels }) {
+/** Who may refill `chest`, and with which label — or a refusal. */
+export function refillerLabel({ actor, chest, labels, maker }) {
+  // MAKER AND LABEL CREATOR, BOTH (Wright, 2026-10-13T03:01:29Z, F2): refill is
+  // for the one who made THIS chest, with the label they created. Authorship is
+  // not possession or household — a resident who carries the chest, shares its
+  // maker's house or has a label of their own does not refill another's chest,
+  // even an emptied one, even when the refill would add nothing. Giving into it
+  // stays open.
+  if (maker == null || String(maker) !== String(actor))
+    throw bounce(403, `${actor} did not make ${chest}`, `only its maker${maker == null ? "" : `, ${maker},`} refills a chest, with their own candy label; you can give into it instead. Nothing was recorded.`);
   const mine = labelOfCreator(labels, actor);
   if (!mine) throw bounce(403, `${actor} has no candy label`, "only the creator of a candy label may refill a chest, and only with their own. Nothing was recorded.");
+  return mine;
+}
+
+/**
+ * Refill (Wright, 2026-10-13T00:01Z; eligibility 03:01Z): the chest's maker,
+ * who created the label, tops the chest up to its capacity with that OWN label
+ * — exactly the remaining room, every label counted. A full chest is a no-op,
+ * not an act.
+ */
+export function planRefill({ fold, actor, chest, capacity, labels, maker }) {
+  const mine = refillerLabel({ actor, chest, labels, maker });
   const held = edgesOf(fold, chest);
   if (held.length && !held.some((e) => e.label === mine.label))
     throw bounce(403, `${chest} holds no ${mine.label}`, `only the creator of a label the chest holds may refill it — it holds ${listing(held)}. Nothing was recorded.`);

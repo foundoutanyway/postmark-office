@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import {
   Bouncer,
   boxLocal,
+  bulkCost,
   clientIp,
   keyIdForToken,
   townDayWindow,
@@ -167,16 +168,31 @@ test("the caller is the last X-Forwarded-For hop, else the socket", () => {
 
 // ── the box asking itself (Darko 2026-10-13) ──────────────────────────────────
 
-test("box-local is a loopback SOCKET with no X-Forwarded-For at all; anything else is a caller", () => {
-  const req = (socket, headers = {}) => ({ headers, socket: { remoteAddress: socket } });
+test("box-local is the box DOOR: a request that arrived on the box port from loopback, whatever its headers", () => {
+  const BOX = 4390, PUBLIC = 4380;
+  const req = (remoteAddress, localPort, headers = {}, url = "/town") => ({ url, headers, socket: { remoteAddress, localPort } });
   for (const lo of ["127.0.0.1", "::1", "::ffff:127.0.0.1"]) {
-    assert.equal(boxLocal(req(lo)), true, `${lo} with no XFF is the box`);
-    assert.equal(boxLocal(req(lo, { "x-forwarded-for": "198.51.100.7" })), false, `${lo} with XFF is nginx carrying a caller`);
-    assert.equal(boxLocal(req(lo, { "x-forwarded-for": "" })), false, "an empty XFF is still a header nginx or a caller wrote");
+    assert.equal(boxLocal(req(lo, BOX), BOX), true, `${lo} on the box door is the box`);
+    assert.equal(boxLocal(req(lo, BOX, { "x-forwarded-for": "198.51.100.7" }), BOX), true, "the door decides, not a header");
+    // nginx's own connections arrive from loopback on the PUBLIC port, with or
+    // without XFF and on any path: never the box (the review of #516).
+    assert.equal(boxLocal(req(lo, PUBLIC), BOX), false, `${lo} on the public port is a caller`);
+    assert.equal(boxLocal(req(lo, PUBLIC, {}, "/.well-known/oauth-x\\..\\..\\release"), BOX), false, "whatever its path");
   }
-  assert.equal(boxLocal(req("10.0.0.5")), false, "a non-loopback socket is a caller");
-  assert.equal(boxLocal(req("172.31.5.9")), false);
-  assert.equal(boxLocal({ headers: {} }), false, "no socket address is never the box");
-  // The address is the socket's, never a header's: a caller cannot name itself loopback.
-  assert.equal(boxLocal(req("203.0.113.9", { "x-real-ip": "127.0.0.1", host: "127.0.0.1:4380" })), false);
+  assert.equal(boxLocal(req("10.0.0.5", BOX), BOX), false, "a non-loopback socket is a caller, even on the box port");
+  assert.equal(boxLocal(req("127.0.0.1", BOX), 0), false, "no box door: nothing is the box");
+  assert.equal(boxLocal({ headers: {} }, BOX), false, "no socket is never the box");
+  assert.equal(boxLocal(req("203.0.113.9", PUBLIC, { "x-real-ip": "127.0.0.1", host: "127.0.0.1:4390" }), BOX), false);
+});
+
+test("a bulk read's cost: cards by the page's limit, doorsteps by the handles, a digest page by the letter pages it shapes", () => {
+  const p = (q) => new URLSearchParams(q);
+  assert.equal(bulkCost("/residents", p("cards=1&limit=200")), 200);
+  assert.equal(bulkCost("/residents", p("limit=200")), 1, "the roll alone is one read");
+  assert.equal(bulkCost("/doorsteps", p("handles=a,b,c")), 3);
+  assert.equal(bulkCost("/letters", p("digests=1&limit=5000")), 25);
+  assert.equal(bulkCost("/letters", p("digests=1&limit=99999")), 25, "clamped where the door clamps");
+  assert.equal(bulkCost("/letters", p("digests=1")), 1, "the default 50");
+  assert.equal(bulkCost("/letters", p("full=1&limit=200")), 1, "a full page is one read, as it always was");
+  assert.equal(bulkCost("/bulletin", p("full=1")), 1);
 });

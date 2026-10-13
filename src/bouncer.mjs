@@ -163,25 +163,31 @@ export const clientIp = (req) => {
 };
 
 // THE BOX ASKING ITSELF (Darko 2026-10-13). The site refresh reads the office
-// about 625 times a pass; through the public URL every one of those spent the
-// box's own keyless bucket, and 17,531 of a day's 54,823 came back 429. A
-// caller on the box itself reaches :4380 over loopback (the port is not
-// reachable from outside), and nginx, the only other loopback caller, always
-// adds X-Forwarded-For on every location that reaches the keyless check. So
-// box-local means BOTH: the SOCKET's address is loopback (never a header, which
-// a caller writes) and there is no X-Forwarded-For at all. Public traffic can
-// never qualify. Only the keyless GET bucket reads this; keys, writes and the
-// claim and berth desks keep every limit they had.
+// about 600 times a pass; through the public URL every one of those spent the
+// box's own keyless bucket, and 17,531 of a day's 54,823 came back 429.
+//
+// BOX-LOCAL IS A DOOR, NOT A HEADER. The office opens a second listener, the
+// box door, bound to 127.0.0.1 only and named by no nginx location
+// (server.mjs § the box door). A request is box-local when it ARRIVED on that
+// listener (the socket's own local port) from a loopback address, and nothing a
+// caller writes can change either. The first build read "loopback with no
+// X-Forwarded-For" on the public port, and the review of #516 got through it:
+// nginx's two root .well-known locations proxy the raw URI with no XFF, and a
+// backslash path that nginx matches as /.well-known/oauth-… the office's URL
+// parse resolves to any door. Everything nginx forwards arrives on the public
+// port, so no path reaches the box door. Only the keyless GET bucket reads
+// this; keys, writes and the claim and berth desks keep every limit they had.
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-export const boxLocal = (req) =>
-  LOOPBACK.has(req.socket?.remoteAddress) && req.headers["x-forwarded-for"] === undefined;
+export const boxLocal = (req, boxPort) =>
+  boxPort > 0 && req.socket?.localPort === boxPort && LOOPBACK.has(req.socket?.remoteAddress);
 
 // THE BULK READS' PRICE (Darko 2026-10-13). A bulk read answers what n single
 // reads answer, so it spends what they would: the cards of a roster page cost
 // the page's limit, the doorsteps cost the handles named. Otherwise one keyless
-// request could ask the office for 200 cards at the price of one. The cheap bulk
-// reads (the bulletin's entries, the letters' digests) cost one, as
-// /letters?full=1 always has.
+// request could ask the office for 200 cards at the price of one. A digest page
+// costs the full letter pages it shapes. The bulletin's entries cost one, as
+// /letters?full=1 always has. Keyed GETs are charged the same cost against
+// their key's read budget (server.mjs, checkCredentialed).
 export const DOORSTEPS_PER_READ = 25;
 /** A comma-separated query list (`?handles=a,b`, `?ids=x,y`), blanks dropped. */
 export const listParam = (params, name) =>
@@ -191,6 +197,10 @@ export const bulkCost = (path, params) => {
   if (path === "/residents" && params.get("cards") === "1")
     return Math.min(Math.max(Number(params.get("limit")) || 50, 1), 200);
   if (path === "/doorsteps") return Math.max(1, Math.min(listParam(params, "handles").length, DOORSTEPS_PER_READ));
+  // a digest page shapes every letter it names, so it costs the full pages of
+  // 200 it stands for: 25 at queries.mjs LETTER_DIGEST_PAGE's 5000 (50 by default)
+  if (path === "/letters" && params.get("digests") === "1")
+    return Math.ceil(Math.min(Math.max(Number(params.get("limit")) || 50, 1), 5000) / 200);
   return 1;
 };
 

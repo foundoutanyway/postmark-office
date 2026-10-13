@@ -137,6 +137,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // A HAND-CARRY OF THIS FILE ALONE could still ship a reader older than what it
 // imports; the hand-carry recipe in deploy/DEPLOY.md is where that is answered.
 import { readHistory, recurringUnsettled, scheduledRuns } from "../deploy/settlement-history.mjs";
+import { judgeKeep, SOFT_STEPS } from "../deploy/keep-history.mjs";
 // The clone reader is the sentinel's own (§8 there, §3d/§5e here), so the loud
 // eye and the morning board cannot disagree about what "dirty" means.
 import { DIRTY_GRACE_MS, readCloneState, judgeDirt, nameFiles } from "./clone-state.mjs";
@@ -298,7 +299,22 @@ export function loadManifest(path = DEFAULT_MANIFEST) {
   for (const row of m.units) {
     if (!row.outcome) continue;
     if (!row.outcome.history_path) throw new Error(`${row.unit} declares an outcome with no history_path`);
-    if (!Number.isFinite(Number(row.outcome.unsettled_runs))) throw new Error(`${row.unit} declares an outcome with no unsettled_runs — a refusal that keeps returning would read green`);
+    // THE KEEP OUTCOME (POS-524) is judged per step from its own receipts
+    // (deploy/keep-history.mjs § judgeKeep), not by the crossing's status
+    // rules, so it is validated on its own fields and carries no unsettled_runs.
+    if (Object.hasOwn(row.outcome, "kind") && row.outcome.kind !== "keep_steps")
+      throw new Error(`${row.unit} declares an outcome kind "${row.outcome.kind}" this roll-call does not know`);
+    if (row.outcome.kind === "keep_steps") {
+      const o = row.outcome;
+      if (!Array.isArray(o.steps) || !o.steps.length || o.steps.some((x) => !SOFT_STEPS.includes(x)))
+        throw new Error(`${row.unit} declares a keep outcome whose steps are not a non-empty list of the tick's soft steps (${SOFT_STEPS.join(", ")})`);
+      if (!Number.isInteger(o.step_refused_runs) || o.step_refused_runs < 1)
+        throw new Error(`${row.unit} declares a keep outcome with no positive integer step_refused_runs — a step refused forever would read green`);
+      if (!(Number.isFinite(o.stale_after_minutes) && o.stale_after_minutes > 0))
+        throw new Error(`${row.unit} declares a keep outcome with no positive stale_after_minutes — an old receipt would read as today's`);
+      if (Object.hasOwn(o, "unsettled_runs"))
+        throw new Error(`${row.unit} declares unsettled_runs on a keep outcome — it judges steps, not crossing statuses`);
+    } else if (!Number.isFinite(Number(row.outcome.unsettled_runs))) throw new Error(`${row.unit} declares an outcome with no unsettled_runs — a refusal that keeps returning would read green`);
     if (!row.outcome.means) throw new Error(`${row.unit} declares an outcome with no means — nothing to print on the alarm line`);
     if (!row.outcome.why) throw new Error(`${row.unit} declares an outcome with no why — its thresholds are numbers nobody can review`);
     // A list-alarm names the fields it watches, and an empty declaration is the
@@ -1016,7 +1032,7 @@ export function classifyRow(row, snapshot, now) {
   // Judged last, and that ordering is the point: staleness says the work did
   // not happen, and this says it happened and was wrong. A stale row must not
   // be relabelled by its own stale contents.
-  const outcome = judgeOutcome(row, snapshot);
+  const outcome = judgeOutcome(row, snapshot, now);
   // The count line rides on BOTH verdicts below — beside an alarm it is the
   // context on the finding, beside a green tick it is the whole of what the
   // rail had to say — and on neither is it a verdict (postmark#2935).
@@ -1066,9 +1082,17 @@ export function outcomeHistory(row, snapshot) {
 }
 
 /** The sentence to alarm with, or null when the output is fine. */
-export function judgeOutcome(row, snapshot) {
+export function judgeOutcome(row, snapshot, now = Date.now()) {
   const spec = row.outcome;
   if (!spec) return null;
+  // THE KEEP OUTCOME (POS-524): the receipt log's own judgement, over the RAW
+  // text the snapshot holds (a torn newest line is a finding, never skipped).
+  if (spec.kind === "keep_steps") {
+    const f = (snapshot.files || {})[spec.history_path];
+    const text = f && f.exists && typeof f.text === "string" ? f.text : "";
+    const alarms = judgeKeep(text, { steps: spec.steps, n: spec.step_refused_runs, staleMinutes: spec.stale_after_minutes, now });
+    return alarms.length ? `${alarms.join("; ")}.${spec.means ? ` ${spec.means}` : ""}` : null;
+  }
   const history = outcomeHistory(row, snapshot);
   // `means` is the sentence the operator reads at 8am and `why` is the paragraph
   // a reviewer reads once, in the manifest, beside the thresholds it argues for.

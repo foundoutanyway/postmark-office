@@ -132,6 +132,21 @@ export function readAddress(clone, handle) {
 // declare and the parser never infers (#865, Keemin 2026-07-29).
 const IMAGE_RE = /\.(png|jpe?g|webp|gif|avif|svg)$/i;
 
+/**
+ * ADDRESS.md's raw text as the checkout currently holds it, through the read's
+ * own freshness context (POS-603): no checkout, or a suspended handle (whose
+ * context carries none), answers null — the same gate every overlay keeps.
+ * The text is raw because the town's card rule (ownProse) strips the
+ * frontmatter itself.
+ */
+export function addressTextIn(ctx, handle) {
+  if (!ctx?.clone) return null;
+  try {
+    const file = join(ctx.clone, "WHITE_PAGES", handle, "ADDRESS.md");
+    return existsSync(file) ? readFileSync(file, "utf8") : null;
+  } catch { return null; }
+}
+
 /** HOME/HOME.md as the checkout currently holds it: `{ data, body, images }`. */
 export function readHomeFile(clone, handle) {
   try {
@@ -355,6 +370,29 @@ export function composeHome(row, ctx) {
   }
   row.freshness = freshnessBlock(ctx, { home: stampFor(ctx, "home", fresher) });
   return row;
+}
+
+/**
+ * THE HOME THE INDEX HAS NOT SEEN YET (POS-603). A resident's FIRST
+ * `do: "home"` founds the page on the record (edit.mjs § the home founds on
+ * first write, UNPLACED), and until the index is rebuilt there is no homes row
+ * for the readers to compose over, so both answered null: the owner's own
+ * readback said "no home page", and the papers kept asking for the page just
+ * tended. This is the base those readers compose over instead, and nothing more:
+ * the handle as the title until the page's own `title:` overlays it, an empty
+ * description and image list for the page to overlay, and region NULL — the
+ * founding contract's "unplaced", never a placement read from the page.
+ *
+ * THE CALLER'S GATE COMES FIRST. Both readers call this only for a handle the
+ * index already holds as a resident (its own indexed identity read), so no path
+ * is built from a handle nobody validated, and a missing row is never licence to
+ * answer for a stranger. Here: no checkout (or a suspended handle, whose context
+ * carries none) and no page on the record both answer null, as before.
+ */
+export function composeFoundedHome(handle, ctx) {
+  if (!ctx?.clone) return null;
+  if (!readHomeFile(ctx.clone, handle)) return null;
+  return composeHome({ handle, title: handle, region: null, description: "", images: [], picture: null }, ctx);
 }
 
 /**

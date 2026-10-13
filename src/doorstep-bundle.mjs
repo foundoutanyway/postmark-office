@@ -460,7 +460,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
     // still lacks. It retires itself the day the list empties.
     try {
       const { paperGaps } = await import("./household-apex.mjs");
-      const gaps = await paperGaps(handle, { db, clone, key, ix });
+      const gaps = await paperGaps(handle, { db, clone, key, ix, odb, asOf });
       if (gaps.length) d.settling_in = {
         note: "your house is still settling in — this block disappears as the list empties",
         next: gaps,
@@ -480,7 +480,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
   // itself rides every read — it is what the public bundle already publishes —
   // but its gap-shaped half is gated on the same ownership test above.
   try {
-    const ns = await nextStepsFor(db, meta, handle, clone, { own, key, ix });
+    const ns = await nextStepsFor(db, meta, handle, clone, { own, key, ix, odb, asOf });
     if (ns?.steps?.length) d.next_steps = ns;
   } catch { /* garnish only */ }
   return d;

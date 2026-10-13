@@ -358,6 +358,7 @@ git -C /srv/postmark-office/town-clone config user.email "<pen-noreply-email>"
 
 # 3. units (office + the keeping tick + rehydrate + the ferry at the published crossings)
 sudo cp deploy/postmark-office.service deploy/postmark-office-keep.{service,timer} \
+        deploy/postmark-office-keep-by-hand.service \
         deploy/postmark-office-rehydrate.{service,timer} \
         deploy/postmark-ferry.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -558,6 +559,17 @@ systemctl show postmark-office-rehydrate.service -p ExecStart   # office-tick.sh
 ```
 
 After that the box runs exactly what it ran before step 2, and the manifest rows go back to what they said (keep parked).
+
+### The keeping tick's receipt (POS-524, proposal for the owner's box review)
+
+Most of `office-keep.sh` is deliberately non-fatal: a step that fails prints a line and the tick goes on. That keeps the tick alive, but it also means a step can fail on every tick while the unit reads green. So every run now leaves **one receipt line** naming each step as `ok`, `refused`, `skip` or `notrun`, with a reason from a fixed list (never tool output, keys or bodies). The format, the reader and the judgement are all in `deploy/keep-history.mjs`. The roll-call's outcome rule on the `postmark-office-keep.timer` row raises ALARM-outcome when a step has not been `ok` on **three consecutive scheduled ticks**, judged step by step. It also alarms when the newest line is unreadable, when there is no scheduled receipt, or when the newest scheduled receipt is more than 45 minutes old.
+
+- **Path (a proposal; nothing on the box has been checked or created):** `OFFICE_KEEP_LOG`, default `/srv/postmark-harbor/office-keep.jsonl`, plus its lock file `office-keep.jsonl.lock` beside it. Both must be writable by meepo. The owner confirms the directory and its permissions on the box, or sets `OFFICE_KEEP_LOG` in `/etc/postmark-office.env` and changes the manifest row's `history_path` to match.
+- **Retention:** each write keeps the newest 96 scheduled receipts (a day of quarter-hour ticks) and, separately, the newest 32 other lines, so a burst of hand runs cannot push the scheduled window out. A line is at most 4096 bytes, so the file stays under about 260 KB. A malformed line is dropped on the next write, but the reader never skips one: if the newest line is torn, that is itself the alarm.
+- **Writing:** the top-level EXIT trap writes the receipt once, after the work and before the SNAP cleanup. It takes its own lock (`flock -w 20`) on the lock file, not the town lock, and writes a temp file that it renames over the log. If the lock or the write fails, the journal gets a `[office-keep] RECEIPT NOT WRITTEN` line, the tick keeps its own exit status, and the roll-call then sees a stale outcome. SIGKILL and power loss write nothing; the 45-minute staleness check covers them.
+- **Provenance (Wright, 2026-10-13):** `postmark-office-keep.service` is the scheduled unit by contract and always records `source: "scheduled"`. To run the tick by hand, use **`systemctl start postmark-office-keep-by-hand.service`**: it runs the same script and records `by-hand`. A by-hand run never extends or clears a scheduled streak and never counts as freshness. That unit has no `[Install]` section and no timer, so the roll-call's unit discovery does not list it. A line with no `source` field (older than this change) counts as scheduled. A source the reader does not know counts as unknown and never clears anything.
+- **Accepted limitation:** starting `postmark-office-keep.service` itself by hand is recorded as **scheduled**, because the unit cannot tell who started it, and there is deliberately no `INVOCATION_ID` or `LastTrigger` detection. Use the by-hand unit instead. `/etc/postmark-office.env` must not set `POSTMARK_KEEP_SOURCE`: an `EnvironmentFile=` value overrides the unit's `Environment=` line.
+- **Install day:** copy both units, as in One-time setup step 3 (the by-hand unit is copied, never enabled). Until the first receipt is written at `history_path`, this row is **expected** to show ALARM-outcome ("empty or unreadable"). The first scheduled tick after the release clears it, if every step is `ok`.
 
 ### Switch 2's guard: the store never waits on a held transaction (POS-370, 2026-10-04)
 

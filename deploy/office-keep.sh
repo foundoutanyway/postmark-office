@@ -238,6 +238,10 @@ REGISTRY_FILE="$SNAP/registry.json"
     git rev-parse HEAD > "$HOLD/head.arrived" || { keep_step mint refused prep-failed; exit 1; }
     git ls-files --others --exclude-standard > "$HOLD/untracked.arrived" || { keep_step mint refused prep-failed; exit 1; }
     armed=1
+    # armed: the rollback is owed until restore() or a disarm below says what
+    # became of it. A stopped unit can write the receipt before this subshell's
+    # trap has finished, and then the receipt reads "notrun", never "not needed".
+    keep_step rollback notrun
     # POS-341, BEHIND ITS SWITCH. With STAMP_LINES=store (set once the box has
     # 066/067, one ingest, one --sync and a green parity), the mint decides from
     # the store and commits its own lines in its store transaction
@@ -292,6 +296,7 @@ REGISTRY_FILE="$SNAP/registry.json"
       git add "$LEDGER" && git commit -qm "mint: tick pass (welcome, bug stages)" || { keep_step commit refused commit-failed; exit 1; }
       keep_step commit ok
       armed=0
+      keep_step rollback ok not-needed
       # a commit is not a push: a push that fails leaves the local commit, as before
       git push -q || { keep_step push refused push-failed; exit 1; }
       keep_step push ok
@@ -309,6 +314,7 @@ REGISTRY_FILE="$SNAP/registry.json"
       keep_step sync ok no-change
     fi
     armed=0
+    keep_step rollback ok not-needed
   ) || echo "[office-keep] mint catch-up FAILED (non-fatal) — run stamp-verify in the town clone" >&2
   git clone --local --quiet "$TOWN_CLONE" "$SNAP/town" || { keep_rc=$?; keep_step snapshot refused "exit:$keep_rc"; exit "$keep_rc"; }
   keep_step snapshot ok

@@ -3762,7 +3762,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing(), guard = n
 }
 
 /** withdraw, as one later entry. The terminal supersession (edit-law § withdraw) — nothing is deleted, a row says it ended. */
-export async function journalWithdraw({ by, slug, household, cause = null }, { crossing = currentCrossing() } = {}) {
+export async function journalWithdraw({ by, slug, household, cause = null, guard: asked = null }, { crossing = currentCrossing() } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${by}/${slug}`;
   const canon = canonForGuards();
@@ -3776,6 +3776,13 @@ export async function journalWithdraw({ by, slug, household, cause = null }, { c
       const { markStandingStatus, withdrawRetiredRefusal } = await import("./world2-claims.mjs");
       const retired = withdrawRetiredRefusal(id, await markStandingStatus({ slug: id }).catch(() => null));
       if (retired) throw bounce(retired.code, retired.defect, retired.hint);
+      // A SET-DOWN UNIT'S MARK FROM A HOUSE ITS DROPPER HAS LEFT lands here too,
+      // and stays here by ruling (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
+      // WLD-27): the draft or pending claim belongs to the household that filed
+      // it, so the moved dropper's present house does not reach it and nothing is
+      // returned or retracted through it. Once published, the unit comes back by
+      // take-back like any published unit (test/withdraw-dropped-unit.test.mjs §
+      // ORIGINAL HOUSEHOLD). No visibility is widened to make it reachable.
       throw bounce(404, `no mark "${id}" in your world`, "ids are <by>/<slug> — you can withdraw your drafts and your published marks; check world_my_marks");
     }
 
@@ -3818,7 +3825,11 @@ export async function journalWithdraw({ by, slug, household, cause = null }, { c
     // (chest-lock.mjs § chestEmptyGuard), so no give or stock can slip contents
     // in behind the decision. Any other mark withdraws exactly as before.
     const isChest = (live.find((m) => m.id === id) ?? canon.marks.find((m) => m.id === id))?.class === "chest";
-    const guard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
+    const chestGuard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
+    // `asked` (WLD-27 A): the door's own check that must hold in this same
+    // transaction — the public withdrawal's escrow, read under the mark's lock.
+    const guards = [asked, chestGuard].filter(Boolean);
+    const guard = guards.length ? async (client) => { for (const g of guards) await g(client); } : null;
     let row;
     try {
       row = laneFlipped("mark")
@@ -4324,7 +4335,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
 // exec cannot: WHOSE hand (the mark's by must be on your key — only the hand
 // that left a mark may withdraw it) and the LEDGER (escrow anchors a mark; the
 // stake ledger lives town-side, so the check runs here before anything spawns).
-export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
+export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, { units = null, escrowOf = null } = {}) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const mark = String(args.mark ?? "").trim();
@@ -4363,7 +4374,11 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
   // you can take back yourself; another's is their word standing behind your
   // mark, and it must come back to them before the mark can go.
   try {
-    const sr = await callWorldStakeTool("world_stake_read", { mark });
+    // read SETTLED (WLD-27, Bevel's first review R1): under the mark's lock, so
+    // a stake or unstake still landing — or about to roll back — is not counted
+    // either way; the guard below reads again in the write's own transaction
+    const { withMarkHeld } = await import("./mark-stake-lock.mjs");
+    const sr = await withMarkHeld(mark, () => callWorldStakeTool("world_stake_read", { mark }), { refusal: "your mark is exactly as it was", connection: "pool" });
     if (Number(sr?.escrow) > 0) {
       const holders = (sr.holders ?? []).map((h) => `${h.handle} (${h.stamps}✦)`).join(", ");
       throw bounce(409, `${sr.escrow}✦ stand in escrow on "${mark}" — a staked mark cannot be withdrawn`,
@@ -4374,8 +4389,41 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
   const exec = join(HERE, "leave-exec.mjs");
   let result;
   if (singleLogEnabled()) {
-    try { return await journalWithdraw({ by, slug, household }); }
+    // THE ESCROW AGAIN, UNDER THE MARK'S LOCK, IN THE WRITE'S OWN TRANSACTION
+    // (Wright, WLD-27 A: "the public withdraw door has the same read-then-write
+    // gap"). The read above answers early and names the holders; this one
+    // decides. A stake admitted before it has its line on the ledger, and one
+    // after it finds this withdrawal committed and is refused at the exec
+    // (mark-stake-lock.mjs). Both pens take it.
+    const { withdrawEscrowGuard } = await import("./mark-stake-lock.mjs");
+    const { ledgerEscrowOf } = await import("./world-stake.mjs");
+    // `escrowOf` and `units` are injectable only so a falsifier can make the
+    // ledger read fail and hand in the class law; the office passes neither.
+    const guard = withdrawEscrowGuard({ mark, escrow: escrowOf ?? ((m) => ledgerEscrowOf(m)) });
+    try {
+      // A SET-DOWN UNIT'S MARK (WLD-27 D): withdrawn before publication, the
+      // unit comes back to its dropper — an add, judged against the carry cap
+      // in the hold queue — in the withdrawal's own transaction; published, it
+      // is taken back, not withdrawn. Any other mark: null, and on as before.
+      const { withdrawDroppedUnit, liveUnitDeps } = await import("./world-units.mjs");
+      const viaUnit = await withdrawDroppedUnit({ mark, by, household, caller: by, guard,
+        withdraw: ({ guard: g }) => journalWithdraw({ by, slug, household, guard: g }) }, units ?? await liveUnitDeps());
+      if (viaUnit) return viaUnit;
+      return await journalWithdraw({ by, slug, household, guard });
+    }
     catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", String(e?.message ?? e).slice(0, 300)); }
+  }
+  // THE GIT LANE TAKES NO SET-DOWN UNIT (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
+  // on Bevel's first review of #503, R3): a dropped unit's mark is withdrawn only
+  // on the store's single-log path, where the unit comes back in the
+  // withdrawal's own transaction under the carry cap (WLD-27 D). This lane has
+  // no such return, so it refuses by name, before anything is written — never a
+  // best-effort refund, never a silent withdrawal that leaves the unit nowhere.
+  // Any other mark goes on exactly as before.
+  {
+    const { droppedUnitOnGitLane } = await import("./world-units.mjs");
+    const refusal = await droppedUnitOnGitLane({ mark, by, household }, units ?? null);
+    if (refusal) throw Object.assign(bounce(refusal.code, refusal.defect, refusal.hint), { reason: refusal.reason });
   }
   try {
     result = await draftWrite(worldClone, exec, JSON.stringify({ op: "withdraw", by, slug, household }), household, mark);
@@ -4383,7 +4431,8 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
     if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
     throw bounce(500, "the withdrawal tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
   }
-  if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
+  // the exec's named reason rides through (the git lane's set-down refusal, R3)
+  if (result.error) throw Object.assign(bounce(result.error.code ?? 500, result.error.defect, result.error.hint), result.error.reason ? { reason: result.error.reason } : {});
   return result;
 }
 

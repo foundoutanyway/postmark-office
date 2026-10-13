@@ -256,6 +256,17 @@ export async function officeWrite(fn, { household = null, env = process.env } = 
   });
 }
 
+/**
+ * A connection of the pen's pool for a SESSION-scoped advisory lock (WLD-27,
+ * mark-stake-lock.mjs § withMarkHeld). The caller unlocks and releases it on
+ * every path. It is deliberately not marked as held for the call chain: the
+ * work done under the lock reads the store on its own connections, and the
+ * lock's connection runs no transaction while it waits.
+ */
+export async function penLockConnection(env = process.env) {
+  return (await pool(env)).connect();
+}
+
 /** The one acts INSERT, both eras. `seq` is null for a flipped or lane act —
  *  001's own words: the shadow-era pairing key, dying at cutover.
  *

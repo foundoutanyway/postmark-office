@@ -60,6 +60,7 @@ function rig({ marks = {}, stakes = {} } = {}) {
       return { applied: n };
     },
     withdraw: async (m) => { withdrawals.push(m); if (failWithdraw-- > 0) throw new Error("synthetic pen refused"); return { withdrawn: true }; },
+    markTurn: (id, fn) => fn(), // no ledger process here to order against (WLD-27 A runs the real lock in exit-stake-boundary.test.mjs)
   };
   const seedUnits = (to, n, label = LABEL) => acts.push({ id: acts.length + 100, class: "holding", action: UNIT_ACTION.give, object: to, payload: { units: true, moves: [{ from: null, to, label, n }] } });
   const hold = (holder, thing) => attachments.push({ entity: holder, target: thing, policy: "cascade", born_at: new Date(Date.now() - 1000).toISOString() });

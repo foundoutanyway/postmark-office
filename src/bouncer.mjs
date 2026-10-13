@@ -66,7 +66,12 @@ class TokenBucket {
     this.states = new Map();
   }
 
-  take(id) {
+  // `cost` is how many single reads one request stands for: a bulk read of n
+  // resident cards spends what the n card reads would have (bulkCost, below).
+  // Capped at the burst, so a request the bucket could never hold whole is
+  // still answerable from a full one.
+  take(id, cost = 1) {
+    const need = Math.min(Math.max(1, cost), this.burst);
     const now = this.now();
     let state = this.states.get(id);
     if (!state) state = { tokens: this.burst, at: now };
@@ -75,14 +80,14 @@ class TokenBucket {
     state.tokens = Math.min(this.burst, state.tokens + elapsedMs * this.perMinute / 60_000);
     state.at = now;
 
-    if (state.tokens >= 1) {
-      state.tokens -= 1;
+    if (state.tokens >= need) {
+      state.tokens -= need;
       this.states.set(id, state);
       return 0;
     }
 
     this.states.set(id, state);
-    return Math.max(1, Math.ceil((1 - state.tokens) * 60 / this.perMinute));
+    return Math.max(1, Math.ceil((need - state.tokens) * 60 / this.perMinute));
   }
 }
 
@@ -157,6 +162,38 @@ export const clientIp = (req) => {
   return (xff ? String(xff).split(",").at(-1).trim() : req.socket?.remoteAddress) || "unknown";
 };
 
+// THE BOX ASKING ITSELF (Darko 2026-10-13). The site refresh reads the office
+// about 625 times a pass; through the public URL every one of those spent the
+// box's own keyless bucket, and 17,531 of a day's 54,823 came back 429. A
+// caller on the box itself reaches :4380 over loopback (the port is not
+// reachable from outside), and nginx, the only other loopback caller, always
+// adds X-Forwarded-For on every location that reaches the keyless check. So
+// box-local means BOTH: the SOCKET's address is loopback (never a header, which
+// a caller writes) and there is no X-Forwarded-For at all. Public traffic can
+// never qualify. Only the keyless GET bucket reads this; keys, writes and the
+// claim and berth desks keep every limit they had.
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+export const boxLocal = (req) =>
+  LOOPBACK.has(req.socket?.remoteAddress) && req.headers["x-forwarded-for"] === undefined;
+
+// THE BULK READS' PRICE (Darko 2026-10-13). A bulk read answers what n single
+// reads answer, so it spends what they would: the cards of a roster page cost
+// the page's limit, the doorsteps cost the handles named. Otherwise one keyless
+// request could ask the office for 200 cards at the price of one. The cheap bulk
+// reads (the bulletin's entries, the letters' digests) cost one, as
+// /letters?full=1 always has.
+export const DOORSTEPS_PER_READ = 25;
+/** A comma-separated query list (`?handles=a,b`, `?ids=x,y`), blanks dropped. */
+export const listParam = (params, name) =>
+  String(params.get(name) ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+export const bulkCost = (path, params) => {
+  // residentPageOf's own clamp: 50 by default, 200 at most
+  if (path === "/residents" && params.get("cards") === "1")
+    return Math.min(Math.max(Number(params.get("limit")) || 50, 1), 200);
+  if (path === "/doorsteps") return Math.max(1, Math.min(listParam(params, "handles").length, DOORSTEPS_PER_READ));
+  return 1;
+};
+
 export const keyIdForToken = (token) =>
   `sha256:${createHash("sha256").update(token).digest("hex").slice(0, 16)}`;
 
@@ -210,12 +247,12 @@ export class Bouncer {
     return { error: "rate", defect, retry_after_s: retryAfterS };
   }
 
-  checkKey({ keyId, verb, write }) {
+  checkKey({ keyId, verb, write, cost = 1 }) {
     const kind = write ? "write" : "read";
     const perMinute = write
       ? this.limits.key.writePerMinute
       : this.limits.key.readPerMinute;
-    const retryAfterS = (write ? this.keyWrite : this.keyRead).take(keyId);
+    const retryAfterS = (write ? this.keyWrite : this.keyRead).take(keyId, cost);
     if (!retryAfterS) return null;
     return this.#throttle(
       "key",
@@ -226,8 +263,8 @@ export class Bouncer {
     );
   }
 
-  checkKeyless({ ip, verb = "GET" }) {
-    const retryAfterS = this.keyless.take(ip);
+  checkKeyless({ ip, verb = "GET", cost = 1 }) {
+    const retryAfterS = this.keyless.take(ip, cost);
     if (!retryAfterS) return null;
     return this.#throttle(
       "keyless",

@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   Bouncer,
+  boxLocal,
   clientIp,
   keyIdForToken,
   townDayWindow,
@@ -162,4 +163,20 @@ test("the caller is the last X-Forwarded-For hop, else the socket", () => {
   assert.equal(clientIp(req("203.0.113.9, 198.51.100.7")), "198.51.100.7", "the first hop is the caller's own word; the last is nginx's");
   assert.equal(clientIp(req(null)), "127.0.0.1");
   assert.equal(clientIp({ headers: {} }), "unknown");
+});
+
+// ── the box asking itself (Darko 2026-10-13) ──────────────────────────────────
+
+test("box-local is a loopback SOCKET with no X-Forwarded-For at all; anything else is a caller", () => {
+  const req = (socket, headers = {}) => ({ headers, socket: { remoteAddress: socket } });
+  for (const lo of ["127.0.0.1", "::1", "::ffff:127.0.0.1"]) {
+    assert.equal(boxLocal(req(lo)), true, `${lo} with no XFF is the box`);
+    assert.equal(boxLocal(req(lo, { "x-forwarded-for": "198.51.100.7" })), false, `${lo} with XFF is nginx carrying a caller`);
+    assert.equal(boxLocal(req(lo, { "x-forwarded-for": "" })), false, "an empty XFF is still a header nginx or a caller wrote");
+  }
+  assert.equal(boxLocal(req("10.0.0.5")), false, "a non-loopback socket is a caller");
+  assert.equal(boxLocal(req("172.31.5.9")), false);
+  assert.equal(boxLocal({ headers: {} }), false, "no socket address is never the box");
+  // The address is the socket's, never a header's: a caller cannot name itself loopback.
+  assert.equal(boxLocal(req("203.0.113.9", { "x-real-ip": "127.0.0.1", host: "127.0.0.1:4380" })), false);
 });

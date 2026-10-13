@@ -174,17 +174,16 @@ for (const failing of ["before", "partial"]) {
     const touched = await crossOnce(town, db, { date: D, failing });
     assert.deepEqual((touched.stalled ?? []).map(({ row }) => row.handle), ["firstjoin"], "the first join stalled at the store");
     assert.equal(touched.keyHeld, undefined, "nothing was held by the key judgment");
+    // FIRST, the economic invariant, through the town's own dated cap: one key's cap on D, both sides
+    const house = mintsOn(town.dir, D, ["alpha", "beta", "latejoin"]);
+    const one = oneKeyCap(town.dir, D);
+    assert.ok(one.sent > 0 && one.sent < 30, `the control is a real cap (${one.sent})`);
+    assert.deepEqual(house, one, "the whole house mints under ONE cap on D (a split house would mint two caps' worth)");
     assert.deepEqual(new Set(keyLines(town.dir)), new Set([line(D, "latejoin"), line(D, "alpha"), line(D, "beta")]),
       "the landed join carries every housemate's re-key, all dated D; the stalled joiner has none");
     assert.ok(ledgerOf(town.dir).startsWith(prefix.trimEnd()), "the prior ledger bytes are unchanged");
     assert.deepEqual(VERIFY.verifyStampLedger(town.dir).problems ?? [], [], "the appended batch's seals verify over the ledger as it stands");
     assert.equal(existsSync(join(town.dir, "WHITE_PAGES", "firstjoin", "ADDRESS.md")), false, "no card for the stalled joiner");
-
-    // the town's own dated cap: one key's cap on D, both sides
-    const house = mintsOn(town.dir, D, ["alpha", "beta", "latejoin"]);
-    const one = oneKeyCap(town.dir, D);
-    assert.ok(one.sent > 0 && one.sent < 30, `the control is a real cap (${one.sent})`);
-    assert.deepEqual(house, one, "the whole house mints under ONE cap on D (a split house would mint two caps' worth)");
 
     // RETRY at D+1: the held row lands with only its own line; D is not regrouped
     const before = ledgerOf(town.dir);

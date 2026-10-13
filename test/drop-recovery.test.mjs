@@ -340,7 +340,7 @@ test("DOOR · a legitimate set-down files and stays filed: no undo, nothing out"
 const raceDeps = async ({ markById = async () => null, attachments = [], holders = async () => [] } = {}) => {
   const base = await door({ leave: async () => { throw new Error("unused"); } });
   let ran = 0;
-  return { ...base, markById, holders, unstake: async () => ({ applied: 0 }), withdraw: async () => ({ withdrawn: true }),
+  return { ...base, markById, holders, unstake: async () => ({ applied: 0 }), withdraw: async () => ({ withdrawn: true }), stakeBarrier: async () => {},
     readRows: async () => ({ units: await unitActs(), attachments }),
     dropsOut: async (h) => {
       if (ran++ === 0) assert.equal((await office((c) => recoverOrphanDrops(c, {}))).restored.length, 1, "the tick restores in the gap");

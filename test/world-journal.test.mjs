@@ -1114,6 +1114,8 @@ const guardStore = ({ claims = [], identities = { alpha: "hh:alpha-house", beta:
           return { rows: claims.filter((c) => statuses.includes(c.status) && (keys == null || keys.includes(c.household))) };
         }
         if (/^(BEGIN|COMMIT|ROLLBACK)/.test(sql.trim())) return { rows: [] };
+        // the withdrawal's mark lock (WLD-27 A): one client, nothing to wait on
+        if (/^SELECT pg_advisory_xact_lock(_shared)?\(hashtext\((\$1|'[^']*')\)\)$/.test(sql.trim())) return { rows: [{}] };
 
         // THE WRITE. `insertAct`'s column list, in its order; the id is
         // assigned here because that is what the sequence does.

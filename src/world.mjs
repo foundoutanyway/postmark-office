@@ -3762,7 +3762,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing(), guard = n
 }
 
 /** withdraw, as one later entry. The terminal supersession (edit-law § withdraw) — nothing is deleted, a row says it ended. */
-export async function journalWithdraw({ by, slug, household, cause = null }, { crossing = currentCrossing() } = {}) {
+export async function journalWithdraw({ by, slug, household, cause = null, guard: asked = null }, { crossing = currentCrossing() } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${by}/${slug}`;
   const canon = canonForGuards();
@@ -3818,7 +3818,11 @@ export async function journalWithdraw({ by, slug, household, cause = null }, { c
     // (chest-lock.mjs § chestEmptyGuard), so no give or stock can slip contents
     // in behind the decision. Any other mark withdraws exactly as before.
     const isChest = (live.find((m) => m.id === id) ?? canon.marks.find((m) => m.id === id))?.class === "chest";
-    const guard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
+    const chestGuard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
+    // `asked` (WLD-27 A): the door's own check that must hold in this same
+    // transaction — the public withdrawal's escrow, read under the mark's lock.
+    const guards = [asked, chestGuard].filter(Boolean);
+    const guard = guards.length ? async (client) => { for (const g of guards) await g(client); } : null;
     let row;
     try {
       row = laneFlipped("mark")
@@ -4304,7 +4308,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
 // exec cannot: WHOSE hand (the mark's by must be on your key — only the hand
 // that left a mark may withdraw it) and the LEDGER (escrow anchors a mark; the
 // stake ledger lives town-side, so the check runs here before anything spawns).
-export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
+export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, { units = null, escrowOf = null } = {}) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const mark = String(args.mark ?? "").trim();
@@ -4354,7 +4358,28 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
   const exec = join(HERE, "leave-exec.mjs");
   let result;
   if (singleLogEnabled()) {
-    try { return await journalWithdraw({ by, slug, household }); }
+    // THE ESCROW AGAIN, UNDER THE MARK'S LOCK, IN THE WRITE'S OWN TRANSACTION
+    // (Wright, WLD-27 A: "the public withdraw door has the same read-then-write
+    // gap"). The read above answers early and names the holders; this one
+    // decides. A stake admitted before it has its line on the ledger, and one
+    // after it finds this withdrawal committed and is refused at the exec
+    // (mark-stake-lock.mjs). Both pens take it.
+    const { withdrawEscrowGuard } = await import("./mark-stake-lock.mjs");
+    const { ledgerEscrowOf } = await import("./world-stake.mjs");
+    // `escrowOf` and `units` are injectable only so a falsifier can make the
+    // ledger read fail and hand in the class law; the office passes neither.
+    const guard = withdrawEscrowGuard({ mark, escrow: escrowOf ?? ((m) => ledgerEscrowOf(m)) });
+    try {
+      // A SET-DOWN UNIT'S MARK (WLD-27 D): withdrawn before publication, the
+      // unit comes back to its dropper — an add, judged against the carry cap
+      // in the hold queue — in the withdrawal's own transaction; published, it
+      // is taken back, not withdrawn. Any other mark: null, and on as before.
+      const { withdrawDroppedUnit, liveUnitDeps } = await import("./world-units.mjs");
+      const viaUnit = await withdrawDroppedUnit({ mark, by, household, caller: by, guard,
+        withdraw: ({ guard: g }) => journalWithdraw({ by, slug, household, guard: g }) }, units ?? await liveUnitDeps());
+      if (viaUnit) return viaUnit;
+      return await journalWithdraw({ by, slug, household, guard });
+    }
     catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", String(e?.message ?? e).slice(0, 300)); }
   }
   try {

@@ -17,6 +17,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { penTransaction } from "./write.mjs";
 import { landStamped } from "./stamp-lines.mjs"; // POS-341: the ledger's lines are recorded in the store in the commit's transaction
+import { stakeUnderMarkLock } from "./mark-stake-lock.mjs"; // WLD-27 A: no stake lands behind a mark that has left
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -45,9 +46,14 @@ async function main() {
 
     let result;
     try {
+      // A STAKE ASKS THE RECORD FIRST, under the mark's lock, and appends its
+      // line before letting go (mark-stake-lock.mjs, WLD-27 A): a dropped
+      // unit's exit or a withdrawal already committed refuses it here, with no
+      // line written. An unstake is never refused — it is how stakes come home.
       result = verb === "unstake"
         ? worldUnstakeApply(CLONE, { handle: payload.handle, mark: payload.mark, n: payload.n, date: payload.date }, keyPem)
-        : worldStakeApply(CLONE, { handle: payload.handle, mark: payload.mark, n: payload.n, via: payload.via ?? "api", date: payload.date }, keyPem);
+        : await stakeUnderMarkLock(payload.mark, () =>
+          worldStakeApply(CLONE, { handle: payload.handle, mark: payload.mark, n: payload.n, via: payload.via ?? "api", date: payload.date }, keyPem));
     } catch (e) {
       if (e.code) return { error: { code: e.code, defect: e.defect, hint: e.hint } };
       throw e;

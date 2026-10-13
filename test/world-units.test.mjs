@@ -73,6 +73,9 @@ test("the brief's path at the door: take 3 → 27 / 3, consume 1 → 27 / 2, the
   assert.match(c.returns_note, /returns nothing/);
   assert.match(w.acts.at(-1).effect, /nothing was returned/);
   assert.deepEqual([totalOf(w.fold(), CHEST), totalOf(w.fold(), "sbx-cy")], [27, 2]);
+  // the settled record is untouched by a live transfer: no mark was filed, amended or withdrawn
+  assert.deepEqual([w.left.length, w.withdrawn.length], [0, 0]);
+  assert.ok(w.acts.every((a) => a.class === "holding" && a.action.startsWith("units:")), "only unit acts were written");
 });
 
 test("carry: 24 succeeds, the 25th refuses with no partial debit", async () => {

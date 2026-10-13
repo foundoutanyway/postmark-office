@@ -648,6 +648,30 @@ test("A WELCOME WHOSE AMEND THE DOOR REFUSES: the receipt says it was not filed,
   assert.equal(s.says, `set down by ana at (4105, -305) — accepted by keith's house, but no amend from this set-down is on the docket, so canon stays at (3978, -398): keith's amend is a private draft or was refused, and a stake on ${STOOL} by keith's house puts a draft forward`);
 });
 
+// At ✦0 the refused welcome left NO draft, and the read cannot see that: it
+// must hedge exactly as it does at ✦2, never promise "keith's private draft",
+// and never say whose ground it is (it does not look).
+//
+// THE FLIP: restore "keith's amend is keith's private draft at escrow ✦0: on
+// ground that is not keith's household's …" and this reds.
+test("A WELCOME WHOSE AMEND THE DOOR REFUSES, AT ✦0: the read names no draft that does not exist, and asserts no ground it did not read", async () => {
+  const p = await fresh();
+  const drop = await anaDrops(p);
+  const refusingDoor = async () => { const e = new Error("the record carries `loot`"); Object.assign(e, { code: 409, defect: "the record carries `loot`" }); throw e; };
+  const r = await speak("welcomed", "keith", KEITH, { leave: refusingDoor });
+  assert.equal(r.amend.filed, false, "the amend door refused");
+  assert.equal(p.claims().length, 0, "no claim, so no draft either");
+
+  const s = await readStool(drop, GARAGE_AT, { escrow: 0 });
+  assert.equal(s.accepted, true);
+  assert.doesNotMatch(s.says, /canon follows/);
+  assert.doesNotMatch(s.says, /is keith's private draft/, `the read named a draft the door never filed: ${s.says}`);
+  assert.doesNotMatch(s.says, /ground that is not/, `the read asserted a ground it never read: ${s.says}`);
+  assert.equal(s.says, `set down by ana at (4105, -305) — accepted by keith's house, but no amend from this set-down is on the docket, so canon stays at (3978, -398): keith's amend is a private draft or was refused, and ${STOOL} has ✦0 behind it: a draft goes forward with ✦1 behind it, so a stake of ✦1 on ${STOOL} by keith's house puts a draft forward`);
+  assert.equal(s.escrow, 0);
+  assert.equal(s.stake_needed, 1);
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // THE THIRD HALF · the set-down waits in the author's stances read
 // ═════════════════════════════════════════════════════════════════════════════

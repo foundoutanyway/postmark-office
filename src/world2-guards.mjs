@@ -460,18 +460,6 @@ export async function storeHoldingRows({ thing = null, since = null, until = nul
 }
 
 /**
- * The amends set-downs filed that canon will act on (pending or locked), from
- * the docket (POS-451; the port's `pgSetDownAmends`). `whereThingStands` makes
- * the "re-sites the mark at the next fold" promise only over one of these.
- * Null when the office is not pointed at the record: "I could not look", and
- * the read then promises nothing.
- */
-export async function setDownAmendsFromStore({ thing = null } = {}) {
-  if (!world2Enabled()) return null;
-  return reading(async (client) => port.pgSetDownAmends(client, { thing }));
-}
-
-/**
  * THE SET-DOWNS WAITING ON A HOUSE'S WORD — the holding record's rows for the
  * things `handles` made, in ONE read-only transaction (POS-138, 2026-09-24).
  *
@@ -682,14 +670,18 @@ export async function storeDepartureSnapshot({ atMs = null } = {}) {
 export async function standsRowsFromStore(thingId) {
   if (!world2Enabled()) return null;
   return reading(async (client) => {
-    // `amends` (POS-451): the docket's set-down amends for this thing, in the
-    // same snapshot, so the read's "re-sites the mark" promise is judged against
-    // the docket as it stood when the drop was read.
-    const [held, holding, amends] = await Promise.all([
+    const [held, holding] = await Promise.all([
       port.pgAttachmentsFor(client, { target: String(thingId) }),
       port.pgHoldingRowsFor(client, String(thingId)),
-      port.pgSetDownAmends(client, { thing: String(thingId) }),
     ]);
+    // `amends` (POS-451): the docket's set-down amends for this thing, in the
+    // same snapshot, so the read's "re-sites the mark" promise is judged against
+    // the docket as it stood when the drop was read. A docket that will not
+    // answer is `null` ("I could not look"), and the rest of the block stands:
+    // where the thing is never waited on the docket. Asked LAST, because a
+    // failed statement aborts the transaction, and asked first it would take
+    // the two halves above down with it.
+    const amends = await port.pgSetDownAmends(client, { thing: String(thingId) }).catch(() => null);
     return { attachments: held.rows, journal: holding.rows, amends };
   });
 }

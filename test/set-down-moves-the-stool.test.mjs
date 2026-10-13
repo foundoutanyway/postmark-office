@@ -158,14 +158,16 @@ git("commit", "-qm", "canon: keith's stool, folded in his garage");
 
 // THE ESCROW BEHIND THE STOOL is the town ledger's (`world-stake.mjs §
 // worldStakeRead` asks the town clone's engine). This town's engine answers the
-// live read: ✦2, all Keith's.
-put(town, "tools/world-stake.mjs", `
-const POS = new Map([["${STOOL}|keith", ${ESCROW}]]);
-export function worldStakeState() { return { positions: POS }; }
+// live read: ✦2, all Keith's. G sets `globalThis.__POS451_ESCROW` to ask it
+// for ✦0 (Keith unstaked) through the same production road.
+const STAKE_BOTTLE = `
+const n = () => globalThis.__POS451_ESCROW ?? ${ESCROW};
+export function worldStakeState() { return { positions: new Map([["${STOOL}|keith", n()]]) }; }
 export function deriveWorldMarkWeights() { return { k: 5, marks: [] }; }
-export function markEscrow(_town, mark) { return mark === "${STOOL}" ? ${ESCROW} : 0; }
+export function markEscrow(_town, mark) { return mark === "${STOOL}" ? n() : 0; }
 export function retirementBlocked() { return { blocked: true }; }
-`);
+`;
+put(town, "tools/world-stake.mjs", STAKE_BOTTLE);
 
 const { rowsFromRegistry } = await import("../src/registry-rows.mjs");
 const REGISTRY_ROWS = rowsFromRegistry({ households: {
@@ -601,8 +603,9 @@ test("F · THE WELCOME: accepted at ✦0 with no amend on the docket, the read s
   assert.equal(draft.accepted, true, "the word was spoken");
   assert.doesNotMatch(draft.says, /canon follows/, `the read promised a move no amend can make: ${draft.says}`);
   assert.equal(draft.says,
-    "set down by wildcat at (176, 425.5) — accepted by keith's house, but keith's amend is keith's private draft at escrow ✦0: "
-    + "on ground that is not keith's household's it needs ✦1 behind it to go forward, so canon stays at (3978, -398) until keith's house stakes ✦1 on keith/waiting-room-stool-2026-09-10");
+    "set down by wildcat at (176, 425.5) — accepted by keith's house, but no amend from this set-down is on the docket, so canon stays at (3978, -398): "
+    + "keith's amend is a private draft or was refused, and keith/waiting-room-stool-2026-09-10 has ✦0 behind it: a draft goes forward with ✦1 behind it, "
+    + "so a stake of ✦1 on keith/waiting-room-stool-2026-09-10 by keith's house puts a draft forward");
   assert.equal(draft.stake_needed, 1);
   assert.deepEqual(draft.canon_at, GARAGE_AT);
   console.log(`    WELCOME · ${draft.says}`);
@@ -627,4 +630,61 @@ test("F · THE WELCOME: accepted at ✦0 with no amend on the docket, the read s
 
   // An unread docket promises nothing.
   assert.match((await readStranger(null, 0)).says, /the docket could not be read here/);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// G · THE WIRING: THE INVESTIGATE BLOCK ASKS THE STAKE DOOR ITSELF
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// F hands `whereThingStands` an `escrowOf` stub. This drives the production
+// caller, `world.mjs § thingStandsBlock`, whose `escrowOf` is the stake door's
+// own read (`callWorldStakeTool("world_stake_read")` → `worldStakeRead` → the
+// town clone's engine, this file's bottle). The holding half is the port's own
+// `standsRowsFromStore` over the investigate suite's fixture client; the stance
+// is a row in the record, read by the real `stanceRows`; the households are the
+// store's registry. Postmaster (Starforge) sets Keith's stool down in the
+// Waiting Room and Keith's house welcomes it; nothing is on the docket.
+//
+// THE FLIP: drop `escrowOf` from `thingStandsBlock` and the ✦2 leg reds on
+// `escrow` (the read then says the escrow could not be read), and the ✦0 leg
+// on `stake_needed`.
+
+test("G · THE WIRING: `thingStandsBlock` reads the escrow behind the stool through the stake door, ✦2 and then ✦0", async (t) => {
+  const world = await import("../src/world.mjs");
+  const guards = await import("../src/world2-guards.mjs");
+  const { actsClient, holdingAct } = await import("./stands-store-fixture.mjs");
+  const DROP = 14620;
+  const acts = [
+    holdingAct({ id: DROP - 1, at: "2026-10-11T19:00:00Z", actor: "postmaster", action: "take", thing: STOOL, holder: "postmaster", made_by: "keith" }),
+    holdingAct({ id: DROP, at: "2026-10-11T19:20:00Z", actor: "postmaster", action: "drop", thing: STOOL, made_by: "keith",
+      dx: WAITING_ROOM_AT.x, dy: WAITING_ROOM_AT.y }),
+  ];
+  // G owns what it reads. Under this runner the file's top-level `after`
+  // hooks have already run by the time G does (they are registered before the
+  // module's own awaits): the A pen and the record env are dropped and the town
+  // bottle is swept. So G puts the bottle back, installs a pen of its own, and
+  // sets the record env for the block's read alone. The registry and the stance
+  // row are the record's; the holding half is the fixture's.
+  put(town, "tools/world-stake.mjs", STAKE_BOTTLE);
+  const own = installActsPen({ households: REGISTRY_ROWS.households });
+  own.seedAct({ class: "stance", actor: "keith", action: "stance", object: STOOL, at: new Date("2026-10-11T20:00:00Z"),
+    payload: { stance: "welcomed", answers: "set-down", set_down: { act_id: String(DROP), by: "postmaster" } } });
+  const restore = guards.useGuardReader((run) => run(actsClient(acts)));
+  t.after(() => { restore(); uninstallActsPen(); delete globalThis.__POS451_ESCROW; sweep(town); });
+  const { withRecordOn } = await import("./acts-pen-stub.mjs");
+  const read = () => withRecordOn(() => world.thingStandsBlock(STOOL, { marks: [] }, { at: GARAGE_AT }));
+
+  const backed = await read();
+  assert.ok(backed, "the block answered");
+  assert.equal(backed.accepted, true, `the welcome was not read: ${JSON.stringify(backed)}`);
+  assert.equal(backed.amend, null, "nothing on the docket");
+  assert.equal(backed.escrow, ESCROW, "the escrow came from the stake door's read of the town ledger");
+  assert.equal(backed.says, `set down by postmaster at (176, 425.5) — accepted by keith's house, but no amend from this set-down is on the docket, so canon stays at (3978, -398): keith's amend is a private draft or was refused, and a stake on ${STOOL} by keith's house puts a draft forward`);
+
+  globalThis.__POS451_ESCROW = 0;
+  const bare = await read();
+  assert.equal(bare.escrow, 0);
+  assert.equal(bare.stake_needed, 1);
+  assert.match(bare.says, /has ✦0 behind it: a draft goes forward with ✦1 behind it, so a stake of ✦1 on keith\/waiting-room-stool-2026-09-10 by keith's house puts a draft forward$/);
+  console.log(`    WIRING · ${bare.says}`);
 });

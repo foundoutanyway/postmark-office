@@ -587,7 +587,7 @@ export function amendCallFor(thingId, at) {
  * `declareHolding` takes for `rows`, and for the same reason.
  *
  * `amends` are the docket's set-down amends (`world2-guards.mjs §
- * setDownAmendsFromStore`): `{ thing, act_id, status }`, pending or locked.
+ * standsRowsFromStore`): `{ thing, act_id, status }`, pending or locked.
  * Null is "not read", and the read then promises no move (POS-451).
  * `escrowOf(id)` answers the escrow behind a mark (the stake read), asked only
  * for an accepted stranger's set-down with no amend on the docket.
@@ -669,7 +669,8 @@ export async function whereThingStands(thingId, {
           // forward. Wildcat's two charms read "canon follows" for days at ✦0.
           // So the promise rides an amend from this drop on the docket (pending
           // or locked); without one the read says where canon stays and what
-          // puts the draft forward: a stake on the mark (`promoteDraftOnStake`).
+          // puts a draft forward: a stake on the mark (`promoteDraftOnStake`).
+          // It never says a draft exists: the amend door may have refused.
           const accepted = { ...base, accepted: true, accepted_by: answer.by, canon_at: foldAt };
           const filed = setDownAmendOf(amends, id, drop.seq);
           if (filed)
@@ -681,13 +682,19 @@ export async function whereThingStands(thingId, {
               says: `${lead}; the docket could not be read here, so whether ${madeBy}'s amend can publish is not known — canon has it at ${canonText}` };
           const escrow = typeof escrowOf === "function" ? await Promise.resolve(escrowOf(id)).catch(() => null) : null;
           const known = escrow != null && Number.isFinite(Number(escrow));
+          const nothing = `${lead}, but no amend from this set-down is on the docket, so canon stays at ${canonText}: ${madeBy}'s amend is a private draft or was refused`;
+          // At ✦0 the read still cannot tell a draft from a refusal (the door
+          // refuses a mark carrying `loot`, and then there is no draft at all),
+          // and it does not ask whose ground the set-down is on. What it knows:
+          // a draft exists only where the ground's minimum is ✦1 (own ground is
+          // ✦0 and publishes), so a draft goes forward with ✦1 behind it.
           if (known && Number(escrow) < COMMONS_MIN_STAKE) {
             const need = COMMONS_MIN_STAKE - Number(escrow);
             return { ...accepted, amend: null, escrow: Number(escrow), stake_needed: need,
-              says: `${lead}, but ${madeBy}'s amend is ${madeBy}'s private draft at escrow ✦${Number(escrow)}: on ground that is not ${madeBy}'s household's it needs ✦${COMMONS_MIN_STAKE} behind it to go forward, so canon stays at ${canonText} until ${madeBy}'s house stakes ✦${need} on ${id}` };
+              says: `${nothing}, and ${id} has ✦${Number(escrow)} behind it: a draft goes forward with ✦${COMMONS_MIN_STAKE} behind it, so a stake of ✦${need} on ${id} by ${madeBy}'s house puts a draft forward` };
           }
           return { ...accepted, amend: null, ...(known ? { escrow: Number(escrow) } : {}),
-            says: `${lead}, but no amend from this set-down is on the docket, so canon stays at ${canonText}: ${madeBy}'s amend is a private draft or was refused${known ? "" : " (the escrow behind it could not be read here)"}, and a stake on ${id} by ${madeBy}'s house puts a draft forward` };
+            says: `${nothing}${known ? "" : " (the escrow behind it could not be read here)"}, and a stake on ${id} by ${madeBy}'s house puts a draft forward` };
         }
         return { ...base, accepted: false, canon_at: foldAt,
           says: `set down by ${setter} at ${placeText(at)} — unaccepted; canon stays at ${canonText}, where ${madeBy} put it` };

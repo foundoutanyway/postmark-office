@@ -113,7 +113,9 @@ export function actsClient(acts = [], { claims = [] } = {}) {
       // pgSetDownAmends (POS-451) — claims carrying `data._set_down`, pending
       // or locked, optionally one slug at the placeholder the text names. Empty
       // by default: a docket with no set-down amend on it is the git-era case.
+      // An Error for `claims` is a docket that will not answer: it is thrown.
       if (/FROM claims WHERE data \? '_set_down' AND status IN \('pending', 'locked'\)/i.test(text)) {
+        if (claims instanceof Error) throw claims;
         const slugAt = /AND slug = \$(\d+)/i.exec(text);
         const slug = slugAt ? params[Number(slugAt[1]) - 1] : undefined;
         return { rows: claims
@@ -136,12 +138,12 @@ export function actsClient(acts = [], { claims = [] } = {}) {
  * and the door's "the register was not asked" arm is a different case with its
  * own test.
  */
-export async function withActs(acts, fn) {
+export async function withActs(acts, fn, { claims = [] } = {}) {
   const guards = await import("../src/world2-guards.mjs");
   const prev = { pg: process.env.WORLD2_PG, url: process.env.WORLD2_PG_URL };
   process.env.WORLD2_PG = "1";
   process.env.WORLD2_PG_URL = `postgres://stands-store-fixture/${randomUUID()}`;
-  const client = actsClient(acts);
+  const client = actsClient(acts, { claims });
   // ⚑ HOW MANY TIMES THE ROAD WAS TAKEN. `useGuardReader` REPLACES `officeRead`
   // whole, so a fixture client never sees a `BEGIN READ ONLY` and an assertion
   // about one here would be measuring the fixture, not the office. What this

@@ -3295,11 +3295,7 @@ async function groundMinimumStake(clean, canon) {
  */
 async function escrowBehindMark(mark) {
   try {
-    // read SETTLED (WLD-27, Bevel's first review R1): under the mark's lock, so
-    // a stake or unstake still landing — or about to roll back — is not counted
-    // either way; the guard below reads again in the write's own transaction
-    const { withMarkHeld } = await import("./mark-stake-lock.mjs");
-    const sr = await withMarkHeld(mark, () => callWorldStakeTool("world_stake_read", { mark }), { refusal: "your mark is exactly as it was", connection: "pool" });
+    const sr = await callWorldStakeTool("world_stake_read", { mark });
     const n = Number(sr?.escrow);
     return Number.isFinite(n) && n > 0 ? n : 0;
   } catch { return 0; }

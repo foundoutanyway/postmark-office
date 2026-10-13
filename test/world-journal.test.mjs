@@ -1115,7 +1115,9 @@ const guardStore = ({ claims = [], identities = { alpha: "hh:alpha-house", beta:
         }
         if (/^(BEGIN|COMMIT|ROLLBACK)/.test(sql.trim())) return { rows: [] };
         // the withdrawal's mark lock (WLD-27 A): one client, nothing to wait on
-        if (/^SELECT pg_advisory_xact_lock(_shared)?\(hashtext\((\$1|'[^']*')\)\)$/.test(sql.trim())) return { rows: [{}] };
+        if (/^SELECT pg_advisory_(xact_)?(un)?lock(_shared)?\(hashtext\((\$1|'[^']*')\)\)$/.test(sql.trim())) return { rows: [{}] };
+        // the withdrawal's replay question (WLD-27 D, R2): has a withdrawal of this mark returned a set-down unit? Never, here
+        if (/FROM acts\s+WHERE object = \$1 AND class = 'holding' AND action = \$2 AND actor = \$3/.test(sql)) return { rows: [] };
 
         // THE WRITE. `insertAct`'s column list, in its order; the id is
         // assigned here because that is what the sequence does.

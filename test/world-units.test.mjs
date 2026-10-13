@@ -54,7 +54,7 @@ function world({ classes = CLASSES, marks = {}, holders = {}, things = [] } = {}
       return { applied: n };
     },
     withdraw: async (m) => { withdrawn.push(m); return { withdrawn: true }; },
-    stakeBarrier: async () => {}, // no ledger process here to wait for (WLD-27 A runs the real one in exit-stake-boundary.test.mjs)
+    markTurn: (id, fn) => fn(), // no ledger process here to order against (WLD-27 A runs the real lock in exit-stake-boundary.test.mjs)
   };
   const seed = (action, moves, object = null) => acts.push({ id: acts.length + 100, class: "holding", action, object, payload: { units: true, moves } });
   return { deps, acts, ledger, left, withdrawn, positions, seed, fold: () => foldUnits(acts), failLeave: (why) => { leaveFails = why; } };

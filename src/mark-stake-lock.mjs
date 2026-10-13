@@ -11,39 +11,38 @@
 //
 // ── ONE LOCK PER MARK, TAKEN BY EVERY SIDE OF THE RACE ──────────────────────
 //
-// `wld27-mark:<id>`, a transaction-scoped Postgres advisory lock — the shape
-// drop-recovery.mjs (`wld27-drop:<id>`) and chest-lock.mjs already use, so no
-// grant, table or migration. The ledger is the town clone's file, written by
+// `wld27-mark:<id>`, a Postgres advisory lock — the shape drop-recovery.mjs
+// (`wld27-drop:<id>`) and chest-lock.mjs already use, so no grant, table or
+// migration. The ledger is the town clone's file, written by
 // world-stake-exec.mjs under the town's flock; the record of a mark leaving is
 // an act in the store. The lock is what orders the two:
 //
-//   · THE STAKE (world-stake-exec.mjs, under the town flock): takes the lock,
-//     asks the record whether the mark has left — a dropped unit's exit act, or
-//     a withdrawal that is the mark's newest mark act — and refuses before the
-//     engine runs if it has; otherwise it appends the ledger line and only then
-//     releases. A stake that was admitted is ON THE LEDGER FILE before anyone
-//     else holds the lock.
-//   · THE EXIT (world-units.mjs § lateReturns): its exit act commits first;
-//     then it takes and releases the lock once (`stakeBarrier`) before reading
-//     the holders. A stake admitted before the exit committed has finished its
-//     line by then, so the read sees it and returns it; a stake asking after
-//     the exit committed is refused. The barrier holds nothing while the
-//     returns run, so an unstake inside the hold turn never waits on it.
+//   · EVERY LEDGER CHANGE ON THE MARK (world-stake-exec.mjs, under the town
+//     flock), stake AND unstake, holds the lock (§ withMarkHeld) from before
+//     its append until its landing or its rollback is finished. A stake first
+//     asks the record whether the mark has left — a dropped unit's exit act,
+//     or a withdrawal that is the mark's newest mark act — and refuses before
+//     the engine runs if it has. An unstake is never refused: it is how stakes
+//     come home. So the ledger file, read by anyone holding the lock, is
+//     settled: no appended line still waiting to land or be rolled back.
+//   · THE EXIT (world-units.mjs § markExit, § lateReturns): reads the holders
+//     under the lock, each time. Its late reads come after its exit act
+//     commits, so they see every stake there will ever be on the mark, and
+//     never an unstake's zero that a failed landing then undoes. Nothing is
+//     held while the returns run, so the exit's own unstakes never wait on it.
 //   · THE PUBLIC WITHDRAWAL (world.mjs § withdrawMarkViaOffice): reads the
 //     escrow UNDER the lock inside the withdrawal's own write transaction
-//     (`withdrawEscrowGuard`), so a stake either landed before the read (the
-//     withdrawal is refused) or asks after the withdrawal committed (refused).
-//   · THE PROMOTION (world2-claims.mjs § promoteDraftOnStake): asks the same
-//     exit question under the same lock inside its own transaction, so a stake
-//     on an exited unit's draft never puts it forward.
+//     (`withdrawEscrowGuard`): a stake or an unstake either finished — landed
+//     or rolled back — before the read, or asks after the withdrawal committed
+//     (a stake is then refused).
+//   · THE PROMOTION (world2-claims.mjs § promoteDraftOnStake): asks the exit
+//     question under the lock inside its own transaction, so a stake on an
+//     exited unit's draft never puts it forward.
 //
-// LOCK ORDER, everywhere: the candle (shared) → a drop's lock → a mark's lock.
-// The exec and the barrier take only the mark's; the tick only a drop's.
-//
-// No distributed transaction is claimed: the ledger push that follows the
-// append can still fail, and penTransaction then rolls the line back — a
-// withdrawal refused because of a stake that did not land after all is the
-// safe direction, and is retried.
+// LOCK ORDER, everywhere: the town flock → the candle (shared) → a drop's lock
+// → a mark's lock. The exec holds the flock and then only the mark's; the
+// exit's reads, the promotion and the withdrawal never wait on the flock while
+// holding the mark's; the tick takes only drops' locks.
 
 import { UNIT_ACTION } from "./world-stacks.mjs";
 
@@ -104,44 +103,71 @@ export const stakeGuard = (id, { withdrawn = false } = {}) => async (client) => 
   if (left) throw leftRefusal(id, left);
 };
 
+// THE LOCK HELD ACROSS A WHOLE LEDGER CHANGE (Bevel's first review of #503,
+// R1). A stake or an unstake is not settled when its line is appended: the
+// exec then commits and lands it, and a landing that fails rolls the ledger
+// file back (penTransaction) — so a reader between the append and the landing
+// can see an escrow that is about to un-happen (an unstake's zero that
+// returns to 2; a stake's line that vanishes). The exec therefore holds the
+// mark's lock from before its append until its landing or rollback is DONE,
+// and every reader that decides on the escrow takes the same lock: what it
+// reads is a settled ledger. A SESSION lock on a dedicated connection, not a
+// transaction's, because the landing is git work (a push in production) that
+// must not hold a transaction open against the store's idle budget; a crashed
+// exec's connection closes and the lock goes with it. Session and transaction
+// advisory locks on one key exclude each other, so the readers keep their
+// transaction-scoped form.
+const SESSION_LOCK_SQL = "SELECT pg_advisory_lock(hashtext($1))";
+const SESSION_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext($1))";
+
 /**
- * THE STAKE'S SIDE, for world-stake-exec.mjs: on its own connection, take the
- * mark's lock, ask the record, and run `apply` (the engine's synchronous
- * ledger append) while still holding it. An office pointed at no record has
- * no act that could say a mark left, so it stakes as before; an office pointed
- * at one it cannot reach refuses — an unanswered question is not a "no".
+ * Run `fn(client)` holding the mark's lock on its own connection, for as long
+ * as `fn` runs. An office pointed at no record has nothing to order against
+ * (no withdrawal or exit can be recorded there) and runs `fn(null)` as before;
+ * an office pointed at one it cannot reach refuses — an unanswered question
+ * is not a "no", and an unlocked ledger change is the race this closes.
  */
-export async function stakeUnderMarkLock(id, apply, { env = process.env } = {}) {
+export async function withMarkHeld(id, fn, { env = process.env, refusal = "nothing was changed on the ledger", connection = "own" } = {}) {
   const { world2Enabled } = await import("./world2-acts.mjs");
-  if (!world2Enabled(env)) return apply();
-  const { default: pg } = await import("pg");
-  const { storePoolOptions } = await import("./store-pool.mjs");
-  const c = new pg.Client(storePoolOptions(env, { name: "stake-exec", max: 1 }));
-  try { await c.connect(); }
-  catch (e) {
-    throw bounce(503, "the record could not be asked whether this mark has left",
-      `nothing was staked and your stamps are untouched — try again (${String(e?.message ?? e).slice(0, 120)})`);
-  }
+  if (!world2Enabled(env)) return fn(null);
+  // "own": a dedicated client — the exec's, a short-lived process a pool would
+  // keep alive. "pool": a connection of the office's pen pool, given back.
+  let c, done;
   try {
-    await c.query("BEGIN");
-    await stakeGuard(id, { withdrawn: true })(c);
-    const out = await apply();
-    await c.query("COMMIT");
-    return out;
+    if (connection === "pool") {
+      c = await (await import("./world2-pen.mjs")).penLockConnection(env);
+      done = (broken) => c.release(broken ? true : undefined);
+    } else {
+      const { default: pg } = await import("pg");
+      const { storePoolOptions } = await import("./store-pool.mjs");
+      c = new pg.Client(storePoolOptions(env, { name: "mark-lock", max: 1 }));
+      await c.connect();
+      done = () => c.end();
+    }
   } catch (e) {
-    await c.query("ROLLBACK").catch(() => {});
-    throw e;
-  } finally { await c.end().catch(() => {}); }
+    throw bounce(503, "the record could not be reached to order this change on the mark",
+      `${refusal} — try again (${String(e?.message ?? e).slice(0, 120)})`);
+  }
+  const key = markLockKey(id);
+  let broken = false;
+  try {
+    await c.query(SESSION_LOCK_SQL, [key]);
+    return await fn(c);
+  } finally {
+    await c.query(SESSION_UNLOCK_SQL, [key]).catch(() => { broken = true; });
+    await Promise.resolve(done(broken)).catch(() => {});
+  }
 }
 
 /**
- * THE EXIT'S SIDE: take and release the mark's lock once. Every stake admitted
- * before this returns has its line on the ledger file; every stake asking
- * after it finds the exit already committed. Called AFTER the exit act commits.
+ * THE STAKE'S QUESTION, asked under the held lock before the engine runs: a
+ * mark whose dropped unit has left, or whose newest mark act is a withdrawal,
+ * takes no stake. `client` is withMarkHeld's (null: no record to ask).
  */
-export async function stakeBarrier(id, { write = null } = {}) {
-  const w = write ?? (await import("./world2-pen.mjs")).officeWrite;
-  await w((c) => c.query(LOCK_SQL, [markLockKey(id)]));
+export async function stakeRefusalUnderLock(client, id) {
+  if (!client) return null;
+  const left = await leftOf(client, id, { withdrawn: true });
+  return left ? leftRefusal(id, left) : null;
 }
 
 /**

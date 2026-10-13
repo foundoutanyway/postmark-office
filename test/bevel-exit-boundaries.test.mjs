@@ -49,7 +49,7 @@ function fixture(initialCount = 0) {
       returns.push({ handle: p.handle, stamps: n });
       return { applied: n };
     },
-    stakeBarrier: async () => {}, // WLD-27 A: the exit's no-new-stakes barrier; no ledger process in this fixture
+    markTurn: (id, fn) => fn(), // WLD-27 A: the exit's settled holder reads; no ledger process in this fixture
     withdraw: async () => {
       withdrawals++;
       if (withdrawals === 1) throw new Error('synthetic pen unavailable');

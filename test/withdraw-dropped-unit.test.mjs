@@ -151,7 +151,7 @@ async function deps(over = {}) {
     stamp: async () => ({ at: null, witnesses: null }),
     crossing: () => at(), household: () => HH,
     dropsOut: LIVE.dropsOut, droppedUnit: LIVE.droppedUnit,
-    holders: LIVE.holders, unstake: LIVE.unstake, withdraw: LIVE.withdraw, stakeBarrier: LIVE.stakeBarrier,
+    holders: LIVE.holders, unstake: LIVE.unstake, withdraw: LIVE.withdraw, markTurn: LIVE.markTurn,
     ...over,
   };
 }
@@ -229,6 +229,84 @@ for (const status of ["draft", "pending"]) {
   });
 }
 
+// ── R2 (Bevel's first review): a replay follows the drop's recorded withdrawal, never the mark's name ──
+
+for (const status of ["draft", "pending"]) {
+  test(`D · R2 (${status}) — credit Bevel: withdrawal replay follows the actual drop reference, not a predicted slug suffix`, { skip }, async () => {
+    await seed();
+    const m = await dropFiled(status, { slugOf: () => `${CY}/a-differently-named-unit` });
+    const first = await withdraw(m.mark);
+    assert.equal(first.unit_returned, 1);
+    assert.equal(await heldBy(CY), 5);
+    const [u] = await undos(m.drop);
+    assert.equal(u.object, m.mark, "the withdrawal's undo names the mark it came back from");
+    const before = await census();
+    let again, error;
+    try { again = await withdraw(m.mark); } catch (e) { error = e; }
+    assert.equal(error, undefined, `exact-reference replay must answer already returned, not ${error?.code}: ${error?.message}`);
+    assert.deepEqual([again.unit_returned, again.already, again.returned_before], [0, true, u.id]);
+    assert.deepEqual(await census(), before, "a replay writes nothing");
+    assert.equal((await undos(m.drop)).length, 1);
+  });
+}
+
+test("D · R2 — a replay is not borrowed: a mark with a drop-shaped name that never came back gets the ordinary 404, and a later GENERATION at the same id withdraws as itself", { skip }, async () => {
+  await seed();
+  // a name that looks like a drop's and a real drop act behind the number, but no withdrawal ever returned it
+  const [{ id: n }] = await q1(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now() - interval '1 hour', $1, $2, 'units:drop', $2, 'holding', $3, $4) RETURNING id::text`,
+    [at(), CY, JSON.stringify({ units: true, moves: [{ from: CY, to: null, label: LABEL, n: 1 }], label: LABEL }), HH]);
+  const e = await withdraw(`${CY}/${LABEL}-${n}`).then(() => null, (x) => x);
+  assert.equal(e?.code, 404, "nothing recorded a withdrawal of this mark, so there is nothing to replay");
+  // the first generation is withdrawn and returned; the id is then left again as an ordinary pending mark
+  const m = await dropFiled("pending", { slugOf: () => `${CY}/reused-name` });
+  assert.equal((await withdraw(m.mark)).unit_returned, 1);
+  await q1(`INSERT INTO acts (at, crossing, actor, action, object, class, payload, household) VALUES (now(), $1, $2, 'leave-mark', $3, 'mark', '{}', $4)`, [at(), CY, m.mark, HH]);
+  await q1(`INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, bbox, stake, data, slug)
+            VALUES ($1, 'sited', $2, $3, 'pending', 'Something else now.', $4, '((0,0),(1,1))', 0, '{}', $5)`,
+  [WIN, CY, HH, JSON.stringify({ slug: m.mark, at: { x: 0, y: 0 }, extent: { w: 1, h: 1 } }), m.mark]);
+  const held = await heldBy(CY);
+  const r = await withdraw(m.mark);
+  assert.equal(r.already, undefined, "the new generation is withdrawn, not answered with the old one's return");
+  assert.equal(r.withdrawn, true);
+  assert.equal(r.unit_returned, undefined);
+  assert.equal(await heldBy(CY), held, "and no unit moves for it");
+  assert.deepEqual((await q1("SELECT status FROM claims WHERE slug = $1 ORDER BY submitted_at", [m.mark])).map((x) => x.status), ["retracted", "retracted"]);
+});
+
+// ── R3 (Wright, AUTHORITY 2026-10-13T07:52:24.868Z): the git lane refuses a set-down unit's mark by name ──
+
+test("D · R3 — on the GIT (non-single-log) lane a set-down unit's draft or pending mark is refused `dropped-unit-withdraw-store-only` before anything is written; another mark is not", { skip }, async () => {
+  await seed();
+  const d = await dropFiled("draft"), p = await dropFiled("pending");
+  const other = `${CY}/an-ordinary-mark`;
+  await q1(`INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, bbox, stake, data, slug)
+            VALUES ($1, 'sited', $2, $3, 'pending', 'Ordinary.', $4, '((0,0),(1,1))', 0, '{}', $5)`, [WIN, CY, HH, JSON.stringify({ slug: other, at: { x: 0, y: 0 }, extent: { w: 1, h: 1 } }), other]);
+  const worldBefore = [git(world, "rev-parse", "HEAD"), git(world, "for-each-ref", "--format=%(refname) %(objectname)"), git(world, "status", "--porcelain")];
+  const before = await census(), held = await heldBy(CY), ledger = ENGINE.worldStakeState(FX.repo).escrow;
+  setEnv("WORLD_SINGLE_LOG", undefined);
+  try {
+    for (const m of [d, p]) {
+      const e = await withdraw(m.mark).then(() => null, (x) => x);
+      assert.equal(e?.code, 409, `${m.mark}: ${e?.defect}`);
+      assert.equal(e.reason, "dropped-unit-withdraw-store-only");
+      assert.match(e.defect, /withdrawn only on the store's path \(dropped-unit-withdraw-store-only\)/);
+      assert.match(e.hint, /WORLD_SINGLE_LOG=1/);
+      assert.match(e.hint, /nothing was written/);
+    }
+    // the store unreachable: it cannot be told, so it is refused too, by the same name
+    const blind = await deps({ droppedUnit: async () => { throw new Error("synthetic: the store did not answer"); } });
+    const e = await withdraw(d.mark, { units: blind }).then(() => null, (x) => x);
+    assert.deepEqual([e?.code, e?.reason], [503, "dropped-unit-withdraw-store-only"]);
+    // any other mark is not this refusal's: the lane's check answers null and the git lane goes on as before
+    const { droppedUnitOnGitLane } = await import("../src/world-units.mjs");
+    assert.equal(await droppedUnitOnGitLane({ mark: other, by: CY, household: CY }, await deps()), null);
+  } finally { setEnv("WORLD_SINGLE_LOG", "1"); }
+  assert.deepEqual(await census(), before, "no mark, claim or act written");
+  assert.equal(await heldBy(CY), held, "no holding moved");
+  assert.deepEqual(ENGINE.worldStakeState(FX.repo).escrow, ledger, "no ledger change");
+  assert.deepEqual([git(world, "rev-parse", "HEAD"), git(world, "for-each-ref", "--format=%(refname) %(objectname)"), git(world, "status", "--porcelain")], worldBefore, "no file or branch written in the world");
+});
+
 test("D · CAP COORDINATED WITH OTHER ADDS: a give to Cy at 23 and Cy's prepublication withdrawal race in the hold queue — exactly one is admitted, the record never shows 25", { skip }, async () => {
   for (const first of ["give", "withdraw"]) {
     await seed({ held: 24 });
@@ -286,6 +364,22 @@ test("D · ORIGINAL HOUSEHOLD: after Cy moves house, neither old-house mark is r
   // the tick, too, keeps both as filed under the drop's own house, never refunds them
   const t = await tick();
   assert.deepEqual([t.restored.length, t.filed.map((f) => f.act).sort()], [0, [p.drop, d.drop].sort()]);
+  // AFTER PUBLICATION the old house's pending mark is an ordinary take-back for Cy — no visibility widened, no refund undo
+  await as("clearing_job", async (c) => {
+    await c.query("UPDATE claims SET status = 'locked', decided_at = now() WHERE slug = $1", [p.mark]);
+    await c.query(`INSERT INTO marks (id, slug, kind, owner, household, body, geometry, bbox, status, locked_window)
+                   SELECT id, slug, 'sited', claimant, household, body, geometry, bbox, 'standing', window_id FROM claims WHERE slug = $1`, [p.mark]);
+  });
+  const tb = await callUnits("take-back", { thing: p.mark }, KEY("sbx-new-house"), CY, await deps({ markById: async (id) => (id === p.mark ? p.record : null) }));
+  assert.equal(tb.did, "take-back", JSON.stringify(tb));
+  assert.equal(await heldBy(CY), 4, "the published unit came home by take-back");
+  assert.deepEqual(await undos(p.drop), [], "a take-back, never the prepublication refund");
+  // ⚑ The MARK'S withdrawal stays pending here, by the fixture, not the move: this
+  // "publication" is the store's alone (no settlement wrote the world clone's
+  // canon), so journalWithdraw finds the mark neither live nor in canon. The exit
+  // says so (withdrawn: false, retry) and the unit — the thing this control is
+  // about — is home. Printed, not asserted either way.
+  console.log(`# ORIGINAL HOUSEHOLD take-back: exit act ${tb.seq}; the mark's withdrawal: ${JSON.stringify(tb.withdrawn)}`);
 });
 
 test("D · BOGUS REFERENCES are ordinary withdrawals: a claim naming a non-drop act, another resident's drop, or the wrong label returns nothing", { skip }, async () => {

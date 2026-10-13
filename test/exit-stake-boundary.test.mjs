@@ -14,7 +14,7 @@
 //     collaborators for the ledger: the holders read, the unstake, the
 //     barrier and the withdrawal (journalWithdraw).
 // The one in-process piece is a stake HELD inside the exec's own critical
-// section (mark-stake-lock.mjs § stakeUnderMarkLock, with the engine's append)
+// section (mark-stake-lock.mjs § withMarkHeld, with the engine's append and its landing)
 // so an interleaving can be pinned exactly; the exec file's wiring of that same
 // function is driven as a child in the refusal cases.
 //
@@ -24,7 +24,7 @@ import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -91,7 +91,7 @@ const { appendActFlipped } = await import("../src/world-journal.mjs");
 const { callUnits, classViewOf, liveUnitDeps } = await import("../src/world-units.mjs");
 const { worldStakeViaOffice, runExec } = await import("../src/world-stake.mjs");
 const { withdrawMarkViaOffice, journalWithdraw } = await import("../src/world.mjs");
-const { stakeUnderMarkLock, withdrawEscrowGuard, markLockKey } = await import("../src/mark-stake-lock.mjs");
+const { withMarkHeld, stakeRefusalUnderLock, withdrawEscrowGuard, markLockKey } = await import("../src/mark-stake-lock.mjs");
 const { heldFor } = await import("../src/stamps-preview.mjs");
 const { UNIT_ACTION } = await import("../src/world-stacks.mjs");
 const { currentCrossing } = await import("../src/crossings.mjs");
@@ -184,22 +184,38 @@ async function until(fn, what) {
 const advisoryWaiters = async () => (await q1("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"))[0].n;
 
 /**
- * A STAKE HELD INSIDE THE EXEC'S CRITICAL SECTION: the mark's lock is taken and
- * the record asked (the exec's own function), then it waits for `release()`
- * before the engine appends — and is committed to the fixture's git as the
- * exec's landing would. `checked` resolves once the record has been asked.
+ * A STAKE HELD INSIDE THE EXEC'S CRITICAL SECTION: the mark's lock is taken
+ * and the record asked (the exec's own two functions, withMarkHeld and
+ * stakeRefusalUnderLock), then it waits for `release()` before the engine
+ * appends, and is committed to the fixture's git — the exec's landing — while
+ * the lock is STILL held, as the exec holds it. `checked` resolves once the
+ * record has been asked and admitted the stake.
  */
 function heldStake(mark, handle, n) {
   const checked = gate(), go = gate();
-  const done = stakeUnderMarkLock(mark, async () => {
+  const done = withMarkHeld(mark, async (client) => {
+    const refused = await stakeRefusalUnderLock(client, mark);
+    if (refused) throw refused;
     checked.open();
     await go.p;
-    return ENGINE.worldStakeApply(FX.repo, { handle, mark, n, via: "api", date: DAY }, FX.pem);
-  }).then((out) => {
+    const out = ENGINE.worldStakeApply(FX.repo, { handle, mark, n, via: "api", date: DAY }, FX.pem);
     git(FX.repo, "add", "-A"); git(FX.repo, "-c", "user.name=fixture", "-c", "user.email=fixture@test.invalid", "commit", "-q", "-m", `stake: ${handle} -> world-mark/${mark} · ${n} (held)`);
     return out;
   });
   return { checked: checked.p, release: () => go.open(), done };
+}
+
+/**
+ * The exit paused just before its take-back act is written — its first,
+ * settled holder read already done. `atAct` resolves there; `go()` lets the
+ * act commit.
+ */
+function exitPausedAtAct(deps) {
+  const at = gate(), go = gate();
+  return { at: at.p, go: () => go.open(), deps: { ...deps, append: async (entry, opts) => {
+    if (entry.action === UNIT_ACTION.takeBack) { at.open(); await go.p; }
+    return deps.append(entry, opts);
+  } } };
 }
 
 // ── the unit door, with the live ledger collaborators ───────────────────────
@@ -216,7 +232,7 @@ async function unitDeps(rec, over = {}) {
     append: (entry, opts = {}) => appendActFlipped(null, { ...entry, writtenAt: new Date().toISOString() }, opts),
     stamp: async () => ({ at: null, witnesses: null }),
     crossing: () => currentCrossing(), household: () => HH,
-    holders: LIVE.holders, unstake: LIVE.unstake, withdraw: LIVE.withdraw, stakeBarrier: LIVE.stakeBarrier, dropsOut: LIVE.dropsOut,
+    holders: LIVE.holders, unstake: LIVE.unstake, withdraw: LIVE.withdraw, markTurn: LIVE.markTurn, dropsOut: LIVE.dropsOut,
     ...over,
   };
 }
@@ -277,23 +293,26 @@ test("A · THE PROMOTION'S OWN GUARD: with the door's early read gone stale, a s
   assert.equal(ledger(), before.ledger);
 });
 
-test("A · INTERLEAVING 1 — a stake that passed its check BEFORE the exit committed lands after it, and the late pass returns it once (the barrier waits for it)", { skip }, async () => {
+test("A · INTERLEAVING 1 — a stake that passed its check after the exit's first read but BEFORE its act committed lands after it, and the late pass, reading under the lock, returns it once", { skip }, async () => {
   await seed();
   const m = await droppedMark();
   const balBefore = balance("sbx-dee");
-  // the stake is inside the exec's critical section: lock held, record asked (no exit yet)
+  // the exit's first (settled) read sees nothing; it pauses before writing its act
+  const e = exitPausedAtAct(await unitDeps(m.record));
+  let settled = false;
+  const exit = takeBack(m.record, e.deps).finally(() => { settled = true; });
+  await e.at;
+  // the stake is inside the exec's critical section: lock held, record asked — no exit yet, so admitted
   const s = heldStake(m.mark, "sbx-dee", 3);
   await s.checked;
-  // the exit runs: its first holder read sees nothing, its act commits, then its barrier waits on the stake's lock
-  let settled = false;
-  const exit = takeBack(m.record, await unitDeps(m.record)).finally(() => { settled = true; });
+  e.go();                                               // the exit act commits while the stake is still in flight
   await until(async () => (await unitActs()).some((a) => a.action === UNIT_ACTION.takeBack && a.object === m.mark), "the exit act to commit");
-  // the exit either waits at its barrier on the stake's lock, or (with no boundary) runs on past it
+  // the exit's late read waits on the stake's lock — or, with no settled read, runs on past it
   await until(async () => settled || (await advisoryWaiters()) >= 1, "the exit to reach its late pass");
   assert.equal(position(m.mark, "sbx-dee"), 0, "the stake has not landed yet");
   s.release();
   const staked = await s.done;
-  assert.equal(staked.applied, 3, "the stake that passed before the exit is a real stake");
+  assert.equal(staked.applied, 3, "the stake admitted before the exit committed is a real stake");
   const out = await exit;
 
   assert.deepEqual(out.returns, [], "the exit's own first read saw no stake");
@@ -402,6 +421,122 @@ for (const pen of ["unflipped", "flipped"]) {
   });
 }
 
+// ── R1 (Bevel's first review): a ledger change is read only once it has LANDED OR ROLLED BACK ──
+//
+// The REAL exec, paused at its own git commit by a pre-commit hook installed
+// ONLY in this throwaway fixture repo, after the engine appended the line and
+// before the landing. Released, the hook fails (the exec's own penTransaction
+// then restores the ledger's exact bytes) or passes (the change lands). It
+// fires once, then stands aside, so later commits in the same test land.
+
+function landingGate({ fail }) {
+  const dir = scratch("wld27-landing-");
+  const ready = join(dir, "ready"), release = join(dir, "release"), used = join(dir, "used");
+  const hook = join(FX.repo, ".git", "hooks", "pre-commit");
+  writeFileSync(hook, `#!/bin/sh\n[ -f '${used}' ] && exit 0\n: > '${used}'\n: > '${ready}'\ni=0\nwhile [ ! -f '${release}' ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i+1)); done\nexit ${fail ? 1 : 0}\n`, { mode: 0o755 });
+  return {
+    reached: () => existsSync(ready),
+    release: () => writeFileSync(release, "release\n"),
+    restore: () => writeFileSync(hook, "#!/bin/sh\nexit 0\n", { mode: 0o755 }),
+  };
+}
+
+for (const pen of ["unflipped", "flipped"]) {
+  test(`A · R1 (${pen} pen) — credit Bevel: a withdrawal cannot use an unstake that subsequently rolls back; it waits, reads the restored 2, and refuses`, { skip }, async () => {
+    await seed(); setEnv("W2_PEN", pen === "flipped" ? "mark" : undefined);
+    const mark = await plainMark(`unstake-rollback-${pen}`);
+    assert.equal((await execStake("sbx-bo", mark, 2)).applied, 2);
+    const before = ledger();
+    const g = landingGate({ fail: true });
+    let u, w;
+    try {
+      u = execUnstake("sbx-bo", mark, 2).then((x) => ({ x }), (e) => ({ e }));
+      await until(() => g.reached(), "the real unstake exec to reach its landing");
+      assert.equal(position(mark, "sbx-bo"), 0, "the working ledger reads a zero that has not landed");
+      let settled = false;
+      w = withdrawMarkViaOffice(world, { mark }, KEY_ANA).then((x) => ({ x }), (e) => ({ e })).finally(() => { settled = true; });
+      await until(async () => settled || (await advisoryWaiters()) > 0, "the withdrawal to wait for the settled ledger (or, unguarded, to commit)");
+      g.release();
+      const un = await u;
+      assert.equal(un.x?.error, "bounce", `the landing failed: ${JSON.stringify(un.x)}`);
+      const answer = await w;
+      assert.equal(ledger(), before, "the real failed exec rolled its unstake back");
+      assert.equal(position(mark, "sbx-bo"), 2);
+      assert.equal(answer.x, undefined, `no withdrawal against a zero that un-happened: ${JSON.stringify(answer.x)}`);
+      assert.equal(answer.e?.code, 409);
+      assert.match(answer.e.defect, /2✦ stand in escrow/);
+      assert.equal((await q1("SELECT count(*)::int AS n FROM acts WHERE action = 'withdraw' AND object = $1", [mark]))[0].n, 0);
+    } finally { g.release(); if (u) await u; if (w) await w; g.restore(); setEnv("W2_PEN", undefined); }
+  });
+
+  test(`A · R1 (${pen} pen) — an unstake that LANDS: the waiting withdrawal reads the settled 0 and withdraws`, { skip }, async () => {
+    await seed(); setEnv("W2_PEN", pen === "flipped" ? "mark" : undefined);
+    const mark = await plainMark(`unstake-lands-${pen}`);
+    assert.equal((await execStake("sbx-bo", mark, 2)).applied, 2);
+    const g = landingGate({ fail: false });
+    try {
+      const u = execUnstake("sbx-bo", mark, 2);
+      await until(() => g.reached(), "the real unstake exec to reach its landing");
+      let settled = false;
+      const w = withdrawMarkViaOffice(world, { mark }, KEY_ANA).finally(() => { settled = true; });
+      await until(async () => settled || (await advisoryWaiters()) > 0, "the withdrawal to wait for the landing");
+      assert.equal(settled, false, "it waited for the landing rather than reading the half-landed zero");
+      g.release();
+      const un = await u;
+      assert.ok(commitExists(un.commit), JSON.stringify(un));
+      assert.equal((await w).withdrawn, true);
+      assert.equal(position(mark, "sbx-bo"), 0);
+    } finally { g.release(); g.restore(); setEnv("W2_PEN", undefined); }
+  });
+}
+
+test("A · R1 — an ADMITTED stake whose landing fails is never counted: the waiting withdrawal reads the settled 0 and withdraws; the line is gone", { skip }, async () => {
+  await seed();
+  const mark = await plainMark("stake-that-unlands");
+  const before = ledger();
+  const g = landingGate({ fail: true });
+  try {
+    const st = execStake("sbx-bo", mark, 2);
+    await until(() => g.reached(), "the real stake exec to reach its landing");
+    assert.equal(position(mark, "sbx-bo"), 2, "the working ledger shows a stake that has not landed");
+    let settled = false;
+    const w = withdrawMarkViaOffice(world, { mark }, KEY_ANA).then((x) => ({ x }), (e) => ({ e })).finally(() => { settled = true; });
+    await until(async () => settled || (await advisoryWaiters()) > 0, "the withdrawal to wait for the landing");
+    g.release();
+    assert.equal((await st).error, "bounce", "the stake's landing failed");
+    const answer = await w;
+    assert.equal(answer.x?.withdrawn, true, JSON.stringify(answer.e?.defect ?? answer.x));
+    assert.equal(ledger(), before, "the stake's line rolled back");
+    assert.equal(position(mark, "sbx-bo"), 0);
+  } finally { g.release(); g.restore(); }
+});
+
+test("A · R1 — EXIT CLEANUP over an unstake that rolls back: the exit's reads wait for the settled ledger, return the restored 2 once, and only then mark the exit withdrawn", { skip }, async () => {
+  await seed();
+  const m = await droppedMark();
+  const bal = balance("sbx-bo");
+  assert.equal((await execStake("sbx-bo", m.mark, 2)).applied, 2);
+  const g = landingGate({ fail: true });
+  try {
+    const u = execUnstake("sbx-bo", m.mark, 2).then((x) => ({ x }), (e) => ({ e }));
+    await until(() => g.reached(), "the real unstake exec to reach its landing");
+    assert.equal(position(m.mark, "sbx-bo"), 0, "a zero that has not landed");
+    let settled = false;
+    const exit = takeBack(m.record, await unitDeps(m.record)).finally(() => { settled = true; });
+    await until(async () => settled || (await advisoryWaiters()) > 0, "the exit's read to wait for the settled ledger");
+    g.release();
+    await u;
+    assert.equal(position(m.mark, "sbx-bo"), 2, "the failed landing restored Bo's stake");
+    const out = await exit;
+    const all = [...out.returns, ...(out.late_returns ?? [])];
+    assert.deepEqual(all.map((r) => [r.handle, r.stamps]), [["sbx-bo", 2]], JSON.stringify(out));
+    assert.ok(commitExists(all[0].commit));
+    assert.equal(position(m.mark, "sbx-bo"), 0, "returned once, after the rollback, not lost to it");
+    assert.equal(out.withdrawn?.withdrawn, true);
+    assert.equal(balance("sbx-bo"), bal, "Bo holds exactly what he held before staking");
+  } finally { g.release(); g.restore(); }
+});
+
 test("A · a withdrawn mark LEFT AGAIN stands, and is stakeable — the withdrawal refuses only while it is the mark's newest act", { skip }, async () => {
   await seed();
   const mark = await plainMark("left-again");
@@ -468,18 +603,20 @@ test("B · PARTIAL FAILURE then CLEANUP RETRY: the first return lands with its c
 test("B · CLEANUP RETRY of a failed withdrawal whose late return failed: the retry's late return carries its real commit", { skip }, async () => {
   await seed();
   const m = await droppedMark();
+  let failDee = true;
+  const e = exitPausedAtAct(await unitDeps(m.record, { unstake: async (r) => (r.handle === "sbx-dee" && failDee ? (failDee = false, { error: "bounce", defect: "synthetic: the ledger could not be written" }) : LIVE.unstake(r)) }));
+  let settled = false;
+  const first = takeBack(m.record, e.deps).finally(() => { settled = true; });
+  await e.at;
   const s = heldStake(m.mark, "sbx-dee", 2);
   await s.checked;
-  let failDee = true;
-  const deps = await unitDeps(m.record, { unstake: async (r) => (r.handle === "sbx-dee" && failDee ? (failDee = false, { error: "bounce", defect: "synthetic: the ledger could not be written" }) : LIVE.unstake(r)) });
-  let settled = false;
-  const first = takeBack(m.record, deps).finally(() => { settled = true; });
+  e.go();
   await until(async () => settled || (await advisoryWaiters()) >= 1, "the exit to reach its late pass");
   s.release(); await s.done;
   const one = await first;
   assert.equal(one.withdrawn.withdrawn, false, "the late return failed, so the mark has not left");
   assert.equal(position(m.mark, "sbx-dee"), 2);
-  const two = await takeBack(m.record, deps);
+  const two = await takeBack(m.record, e.deps);
   assert.equal(two.duplicate, true);
   assert.deepEqual(two.late_returns.map((r) => [r.handle, r.stamps]), [["sbx-dee", 2]]);
   assert.ok(commitExists(two.late_returns[0].commit));

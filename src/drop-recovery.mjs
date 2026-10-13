@@ -224,6 +224,12 @@ const INSERT_UNDO_SQL = `
   ON CONFLICT DO NOTHING
   RETURNING id::text`;
 
+const INSERT_WITHDRAW_UNDO_SQL = `
+  INSERT INTO acts (at, crossing, actor, action, object, class, payload, effect, household, nonce)
+  VALUES (now(), $1, $2, $3, $4, 'holding', $5::jsonb, $6, $7, $8)
+  ON CONFLICT DO NOTHING
+  RETURNING id::text`;
+
 const labelOf = (p) => p?.label ?? (Array.isArray(p?.moves) ? p.moves[0]?.label : null) ?? null;
 
 /** The filed drop's one resolution act, in the hold lane's unit shape (no move: the unit is on the ground). */
@@ -415,21 +421,41 @@ export async function droppedUnitOf(client, { mark, by }) {
     claim: c.id, status: c.status, window: c.window_id, open: w?.id ?? null, published: p.published === true, undone, exited: x?.id ?? null };
 }
 
-const UNDO_ROW_SQL = `SELECT id::text, payload FROM acts WHERE actor = $1 AND nonce = $2 LIMIT 1`;
+// THE WITHDRAWAL'S OWN RECORD OF A RETURN (Bevel's first review, R2): the
+// undo a withdrawal writes names the mark as its `object` (the door's and the
+// tick's undos name none), so a replay finds it by `acts_object_idx (object,
+// id)` — whatever the mark is called. A mark filed under another name than
+// `<label>-<act id>` is still this unit (CLAIM_SQL's exact `dropped` proof),
+// and its replay must not depend on predicting the name.
+const WITHDRAW_UNDO_SQL = `
+  SELECT id::text, nonce, payload FROM acts
+   WHERE object = $1 AND class = 'holding' AND action = $2 AND actor = $3
+   ORDER BY id DESC LIMIT 1`;
+// A later GENERATION of the same id — a mark left again under it — is not this
+// withdrawal's to answer for: its deed after the undo, or a claim that still
+// stands (a draft has no deed, by law, so its claim is what says it exists).
+const LATER_DEED_SQL = `SELECT 1 FROM acts WHERE object = $1 AND class = 'mark' AND action IN ('leave-mark', 'amend') AND id > $2::bigint LIMIT 1`;
+const STANDING_CLAIM_SQL = `SELECT 1 FROM claims WHERE slug = $1 AND claimant = $2 AND status IN ('draft', 'pending', 'locked', 'held_review') LIMIT 1`;
 
 /**
  * A WITHDRAWAL ALREADY MADE, ASKED AGAIN: the undo this mark's own withdrawal
- * wrote, read from the record — its payload names the mark and says it came
- * by withdrawal, under the drop's own actor and nonce. The drop id is read off
- * the mark's name only to FIND that act; what answers is the act itself, so a
- * name that merely looks like a drop finds nothing. `{ act }` or null.
+ * wrote, found by the mark it names, and proved back to its drop — the undo's
+ * nonce is that drop's, the drop is this author's, of this label. Nothing is
+ * read off the mark's name. Null when there is none, or when the id has since
+ * been left again (another generation). `{ act, label }` or null.
  */
 export async function returnedByWithdrawal(client, { mark, by }) {
-  const m = /-([1-9][0-9]*)$/.exec(String(mark));
-  if (!m) return null;
-  const { rows: [u] } = await client.query(UNDO_ROW_SQL, [String(by), undoNonce(m[1])]);
-  const p = u ? (typeof u.payload === "string" ? JSON.parse(u.payload) : u.payload) : null;
-  return p?.by === "withdraw" && p?.mark === String(mark) && p?.undoes === m[1] ? { act: u.id, label: p.label ?? null } : null;
+  const { rows: [u] } = await client.query(WITHDRAW_UNDO_SQL, [String(mark), UNIT_ACTION.dropUndone, String(by)]);
+  if (!u) return null;
+  const p = typeof u.payload === "string" ? JSON.parse(u.payload) : (u.payload ?? {});
+  if (p.by !== "withdraw" || p.mark !== String(mark) || !/^[1-9][0-9]*$/.test(String(p.undoes ?? ""))) return null;
+  if (u.nonce !== undoNonce(p.undoes)) return null;
+  let d;
+  try { d = await dropOf(client, p.undoes); } catch { return null; }
+  if (d.actor !== String(by) || d.label !== String(p.label)) return null;
+  if ((await client.query(LATER_DEED_SQL, [String(mark), u.id])).rows.length) return null;
+  if ((await client.query(STANDING_CLAIM_SQL, [String(mark), String(by)])).rows.length) return null;
+  return { act: u.id, label: d.label, drop: d.id };
 }
 
 /** A dropped unit's claim the withdrawal will delete (a draft) or retract (pending in the open window). */
@@ -478,8 +504,9 @@ export const withdrawRestoreGuard = ({ mark, by, crossing = null, withdrawnBy = 
   const payload = { units: true, moves: [{ from: null, to: u.dropper, label: u.label, n: 1 }], label: u.label, undoes: u.actId,
     why: `withdrawn before publication (${u.status})`, by: "withdraw", mark: u.mark, ...(withdrawnBy ? { withdrawn_by: String(withdrawnBy) } : {}) };
   const effect = `${u.mark} was withdrawn before it was published, so 1 ${u.label} came back to ${u.dropper}`;
-  const { rows: ins } = await client.query(INSERT_UNDO_SQL,
-    [crossing, u.dropper, UNIT_ACTION.dropUndone, JSON.stringify(payload), effect, u.household, undoNonce(u.actId)]);
+  // the undo names the mark it came back from (`object`), so a replay finds it by the mark, not by its name (R2)
+  const { rows: ins } = await client.query(INSERT_WITHDRAW_UNDO_SQL,
+    [crossing, u.dropper, UNIT_ACTION.dropUndone, u.mark, JSON.stringify(payload), effect, u.household, undoNonce(u.actId)]);
   out.restored = ins.length ? 1 : 0;
   out.act = ins[0]?.id ?? null;
   out.unit = u;

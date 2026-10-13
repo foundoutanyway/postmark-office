@@ -3295,7 +3295,11 @@ async function groundMinimumStake(clean, canon) {
  */
 async function escrowBehindMark(mark) {
   try {
-    const sr = await callWorldStakeTool("world_stake_read", { mark });
+    // read SETTLED (WLD-27, Bevel's first review R1): under the mark's lock, so
+    // a stake or unstake still landing — or about to roll back — is not counted
+    // either way; the guard below reads again in the write's own transaction
+    const { withMarkHeld } = await import("./mark-stake-lock.mjs");
+    const sr = await withMarkHeld(mark, () => callWorldStakeTool("world_stake_read", { mark }), { refusal: "your mark is exactly as it was", connection: "pool" });
     const n = Number(sr?.escrow);
     return Number.isFinite(n) && n > 0 ? n : 0;
   } catch { return 0; }
@@ -3776,6 +3780,13 @@ export async function journalWithdraw({ by, slug, household, cause = null, guard
       const { markStandingStatus, withdrawRetiredRefusal } = await import("./world2-claims.mjs");
       const retired = withdrawRetiredRefusal(id, await markStandingStatus({ slug: id }).catch(() => null));
       if (retired) throw bounce(retired.code, retired.defect, retired.hint);
+      // A SET-DOWN UNIT'S MARK FROM A HOUSE ITS DROPPER HAS LEFT lands here too,
+      // and stays here by ruling (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
+      // WLD-27): the draft or pending claim belongs to the household that filed
+      // it, so the moved dropper's present house does not reach it and nothing is
+      // returned or retracted through it. Once published, the unit comes back by
+      // take-back like any published unit (test/withdraw-dropped-unit.test.mjs §
+      // ORIGINAL HOUSEHOLD). No visibility is widened to make it reachable.
       throw bounce(404, `no mark "${id}" in your world`, "ids are <by>/<slug> — you can withdraw your drafts and your published marks; check world_my_marks");
     }
 
@@ -4347,7 +4358,11 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, {
   // you can take back yourself; another's is their word standing behind your
   // mark, and it must come back to them before the mark can go.
   try {
-    const sr = await callWorldStakeTool("world_stake_read", { mark });
+    // read SETTLED (WLD-27, Bevel's first review R1): under the mark's lock, so
+    // a stake or unstake still landing — or about to roll back — is not counted
+    // either way; the guard below reads again in the write's own transaction
+    const { withMarkHeld } = await import("./mark-stake-lock.mjs");
+    const sr = await withMarkHeld(mark, () => callWorldStakeTool("world_stake_read", { mark }), { refusal: "your mark is exactly as it was", connection: "pool" });
     if (Number(sr?.escrow) > 0) {
       const holders = (sr.holders ?? []).map((h) => `${h.handle} (${h.stamps}✦)`).join(", ");
       throw bounce(409, `${sr.escrow}✦ stand in escrow on "${mark}" — a staked mark cannot be withdrawn`,
@@ -4381,6 +4396,18 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, {
       return await journalWithdraw({ by, slug, household, guard });
     }
     catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", String(e?.message ?? e).slice(0, 300)); }
+  }
+  // THE GIT LANE TAKES NO SET-DOWN UNIT (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
+  // on Bevel's first review of #503, R3): a dropped unit's mark is withdrawn only
+  // on the store's single-log path, where the unit comes back in the
+  // withdrawal's own transaction under the carry cap (WLD-27 D). This lane has
+  // no such return, so it refuses by name, before anything is written — never a
+  // best-effort refund, never a silent withdrawal that leaves the unit nowhere.
+  // Any other mark goes on exactly as before.
+  {
+    const { droppedUnitOnGitLane } = await import("./world-units.mjs");
+    const refusal = await droppedUnitOnGitLane({ mark, by, household }, units ?? null);
+    if (refusal) throw Object.assign(bounce(refusal.code, refusal.defect, refusal.hint), { reason: refusal.reason });
   }
   try {
     result = await draftWrite(worldClone, exec, JSON.stringify({ op: "withdraw", by, slug, household }), household, mark);

@@ -100,7 +100,7 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
     // no second transaction to wait on, so there is nothing to order. The
     // ordering those locks give is proved against a real Postgres
     // (test/exit-stake-boundary.test.mjs, test/drop-recovery.test.mjs).
-    if (/^SELECT pg_advisory_xact_lock(_shared)?\(hashtext\((\$1|'[^']*')\)\)$/i.test(q)) return { rows: [{}], rowCount: 1 };
+    if (/^SELECT pg_advisory_(xact_)?(un)?lock(_shared)?\(hashtext\((\$1|'[^']*')\)\)$/i.test(q)) return { rows: [{}], rowCount: 1 };
     if (/^COMMIT/i.test(q)) { state.committed += 1; return { rows: [], rowCount: 0 }; }
     if (/^ROLLBACK/i.test(q)) { state.rolledBack += 1; return { rows: [], rowCount: 0 }; }
     if (/set_config\('app\.household'/i.test(q)) { state.household = params[0] ?? null; return { rows: [], rowCount: 0 }; }

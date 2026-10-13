@@ -155,7 +155,8 @@ export async function liveUnitDeps() {
     },
     unstake: (r) => stake.runExec({ verb: "unstake", handle: r.handle, mark: r.mark, n: r.stamps, date: new Date().toISOString().slice(0, 10) }),
     withdraw: (m) => world.journalWithdraw(m),
-    stakeBarrier: async (mark) => (await import("./mark-stake-lock.mjs")).stakeBarrier(mark),
+    markTurn: async (mark, fn) => (await import("./mark-stake-lock.mjs")).withMarkHeld(mark, () => fn(),
+      { refusal: "nothing moved: the stakes on this mark could not be read settled", connection: "pool" }),
     dropsOut: async (actor) => pen.officeRead(async (c) => (await import("./drop-recovery.mjs")).dropsStillOut(c, actor), { by: "dropsOut" }),
     // a read of the docket under the WITHDRAWING household — the live layer the withdrawal will act on (D)
     droppedUnit: async ({ mark, by, household }, read) => {
@@ -436,21 +437,24 @@ const LATE_PASSES = 3;
  * nothing. (It read `out.line`, a field the exec never answers, so every
  * receipt's line was null on the real path.)
  */
+/** The mark's holders, read under its lock: the ledger as settled, no change half-landed (mark-stake-lock.mjs § withMarkHeld). */
+const settledHolders = (id, deps) => deps.markTurn(id, () => deps.holders(id));
+
 const appliedOf = (out) => { const n = Number(out?.applied); return Number.isFinite(n) && n > 0 ? n : 0; };
 const receiptOf = (r, out) => {
   const stamps = appliedOf(out);
   return { handle: r.handle, stamps, commit: stamps > 0 && typeof out?.commit === "string" && out.commit ? out.commit : null };
 };
 async function lateReturns(id, deps) {
-  // THE NO-NEW-STAKES BOUNDARY (WLD-27 A). The exit act has committed; once
-  // the mark's lock has been taken and let go, every stake admitted before the
-  // exit has its line on the ledger, and every stake after it is refused under
-  // that same lock (mark-stake-lock.mjs). So the reads below see every stake
-  // there will ever be on this mark. Nothing is held while the returns run.
-  await deps.stakeBarrier(id);
+  // THE NO-NEW-STAKES BOUNDARY, READ SETTLED (WLD-27 A; Bevel's first review
+  // R1). The exit act has committed, so a stake asking now is refused; each
+  // read below is taken under the mark's lock, which every stake and unstake
+  // holds until it has landed or rolled back (mark-stake-lock.mjs). So a read
+  // sees every stake there will ever be on this mark, and never an unstake's
+  // zero that a failed landing then undoes. Nothing is held while the returns run.
   const returned = [];
   for (let pass = 0; pass < LATE_PASSES; pass++) {
-    const plan = returnsAtExit({ mark: id, holders: await deps.holders(id) });
+    const plan = returnsAtExit({ mark: id, holders: await settledHolders(id, deps) });
     if (!plan.length) return returned;
     for (const r of plan) {
       const out = await deps.unstake(r);
@@ -497,7 +501,7 @@ async function markExit(route, args, key, actor, deps, view, cap) {
     const fold = foldUnits(units);
     if (route === "take-back")
       refuseOverCarry({ who: actor, units: totalOf(fold, actor) + inFlight, things: thingsCarried(attachments, actor), adding: 1, cap });
-    const plan = returnsAtExit({ mark: id, holders: await deps.holders(id) });
+    const plan = returnsAtExit({ mark: id, holders: await settledHolders(id, deps) });
     const returned = [];
     for (const r of plan) {
       const out = await deps.unstake(r);
@@ -591,7 +595,7 @@ export async function withdrawDroppedUnit({ mark, by, household, caller = null, 
     // A REPLAY of a withdrawal that already brought the unit back answers as
     // what it is — done, nothing returned now — and is never read as a fresh
     // add (the carry ruling: "do not confuse a replay … with a fresh add").
-    const before = /-[1-9][0-9]*$/.test(mark) ? await deps.droppedUnit({ mark, by, household }, returnedByWithdrawal) : null;
+    const before = await deps.droppedUnit({ mark, by, household }, returnedByWithdrawal); // by the mark's own record, not its name (R2)
     if (before) return { id: mark, withdrawn: true, already: true, unit_returned: 0, returned_before: before.act,
       note: `${mark} was already withdrawn and its unit already came back (act ${before.act}); nothing was written now` };
     return null;
@@ -615,6 +619,35 @@ export async function withdrawDroppedUnit({ mark, by, household, caller = null, 
       ...(out.restored ? { unit: { label: unit.label, to: unit.dropper, act: out.act },
         unit_note: `withdrawn before it was published (${unit.status}), so the 1 ${unit.label} it was came back to ${unit.dropper}` } : {}) };
   });
+}
+
+export const STORE_ONLY = "dropped-unit-withdraw-store-only";
+
+/**
+ * On the git (non-single-log) withdraw lane: the named refusal for a dropped
+ * unit's mark, or null for any other mark (Wright, 2026-10-13T07:52:24.868Z).
+ * Known from the store when the office has one — the claim's own exact drop
+ * reference, as D reads it — else from the mark's own record on the world. A
+ * store that cannot be asked refuses too: a set-down unit cannot be told apart
+ * there, and this lane must not withdraw one unknowingly.
+ */
+export async function droppedUnitOnGitLane({ mark, by, household }, deps = null) {
+  const refusal = (why) => ({ code: 409, reason: STORE_ONLY,
+    defect: `"${mark}" is a set-down unit's mark, and it is withdrawn only on the store's path (${STORE_ONLY})`,
+    hint: `${why} Withdrawing it returns the unit to its dropper, and only the single-log store path (WORLD_SINGLE_LOG=1) makes that return; this office writes marks on the git lane, so nothing was written. Once it is published it is taken back instead: world_hold { thing: "${mark}" }.` });
+  const { world2Enabled } = await import("./world2-acts.mjs");
+  if (world2Enabled()) {
+    const d = deps ?? await liveUnitDeps();
+    let unit;
+    try { unit = await d.droppedUnit({ mark, by, household }, (await import("./drop-recovery.mjs")).droppedUnitOf); }
+    catch (e) {
+      return { code: 503, reason: STORE_ONLY, defect: `the store could not say whether "${mark}" is a set-down unit's mark`,
+        hint: `a set-down unit's mark is withdrawn only on the store's path, and this lane cannot tell without asking it; nothing was written — try again (${String(e?.message ?? e).slice(0, 120)})` };
+    }
+    if (unit) return refusal("Its claim names the set-down it is.");
+  }
+  const record = await (await import("./world.mjs")).worldMarkById(String(mark)).then((r) => r.mark).catch(() => null);
+  return isDroppedUnitMark(record) ? refusal("The world's record names the set-down it is.") : null;
 }
 
 // ── THE READS: a holder's card and doorstep, and the map's chests ───────────

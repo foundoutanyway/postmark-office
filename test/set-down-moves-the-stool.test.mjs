@@ -570,6 +570,31 @@ test("E · THE READ: a post-POS-138 drop keeps the promise over its amend on the
   assert.match(unread.says, /the docket could not be read here/);
 });
 
+// E · KEITH'S REAL CASE (prod, 2026-10-12): the stool moved by the amend Keith
+// filed by hand, act 16921, published at S104 (claim 08a6b024, locked
+// 06:00:17Z). That amend carries no `_set_down.act_id`, so it is never his
+// git-era drop's amend and the docket holds nothing from act 4976; but canon
+// now stands at the drop point. The read says the stool stands here, and
+// promises nothing more.
+//
+// THE FLIP: delete the canon-is-already-here branch in `whereThingStands` and
+// this reds on "canon keeps the mark at (176, 425.5)" and the `move` call.
+
+test("E · KEITH'S REAL CASE: canon already at the drop point, his amend no drop's — the read says it stands here, with no re-site to come and no move to make", async () => {
+  // pgSetDownAmends asks only claims carrying `_set_down`, so act 16921 is not
+  // on the docket at all ([]); a row with no act id is the belt to that brace.
+  const hisAmend = [{ thing: STOOL, act_id: null, status: "locked" }];
+  for (const amends of [[], hisAmend, null]) {
+    const s = await readAfter(GIT_ERA_DROP, amends, WAITING_ROOM_AT);
+    assert.equal(s.says, "keith set it down here, and it stands where they stood: canon has it here too", `docket ${JSON.stringify(amends)}`);
+    assert.deepEqual(s.where, WAITING_ROOM_AT);
+    assert.deepEqual(s.canon_at, WAITING_ROOM_AT);
+    assert.equal(s.amend, null);
+    assert.equal(s.move, undefined, "nothing to move: canon is already here");
+    assert.doesNotMatch(s.says, /re-sites|canon keeps|could not be read/);
+  }
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // F · AN ACCEPTED STRANGER'S SET-DOWN: "CANON FOLLOWS" ONLY OVER AN AMEND THAT CAN PUBLISH
 // ═════════════════════════════════════════════════════════════════════════════

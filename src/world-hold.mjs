@@ -639,10 +639,19 @@ export async function whereThingStands(thingId, {
       // set-downs predate POS-138, filed nothing, and this read told him the
       // re-site was coming for a month. A drop with no amend says so, where
       // canon keeps the mark, and the one call that moves it.
+      //
+      // AND CANON MAY ALREADY BE HERE. Keith's stool moved by an amend he filed
+      // by hand (act 16921, S104), which carries no `_set_down.act_id`, so it is
+      // never this drop's amend. Canon now has the stool where he set it down,
+      // and the read says that: no re-site to come, no "canon keeps it at…",
+      // no call to move it.
       if (house.same) {
         const filed = setDownAmendOf(amends, id, drop.seq);
         if (filed)
           return { ...base, amend: filed, says: `${setter} set it down here; it stands where they stood, and the record re-sites the mark at the next fold` };
+        if (foldAt && foldAt.x === at.x && foldAt.y === at.y)
+          return { ...base, amend: null, canon_at: foldAt,
+            says: `${setter} set it down here, and it stands where they stood: canon has it here too` };
         if (amends == null)
           return { ...base, amend: null, canon_at: foldAt,
             says: `${setter} set it down here and it stands where they stood; the docket could not be read here, so whether an amend moves canon to this place is not known — canon has it at ${canonText}` };

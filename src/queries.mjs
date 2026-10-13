@@ -1999,7 +1999,7 @@ export function doorstepOf(parts, handle, asOf, { conversationsOffset = 0, slim 
  * Degrades rather than throws: a checkout too old to carry the onboarding fold
  * yields a null, and the doorstep simply carries no next-steps block.
  */
-export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null, ix = null } = {}) {
+export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null, ix = null, odb = null, asOf = null } = {}) {
   try {
     const tools = await questTools(clone);
     if (typeof tools.composeNextSteps !== "function") return null; // older checkout
@@ -2059,7 +2059,7 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // and the saved world read is the expensive half of this call besides.
     const worldSited = own ? await worldSitedFor(handle, { worldBlock }) : null;
     const onboarding = tools.onboardingBoard(registry, facts, handle, { worldSited });
-    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix }) : null;
+    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix, odb, asOf }) : null;
     // THE VERDICT RIDES DOWN, NOT THE READER (#2773, and the 08-15 gate is why).
     // `worldSited` above is already this doorstep's decision: the world read for
     // an own door, and a deliberate NON-read — null, nobody looked — for a

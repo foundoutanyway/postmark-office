@@ -646,10 +646,15 @@ export const householdDispatchToolFor = (act) => ACTS[String(act ?? "").trim()]?
  *  the town's onboarding row already speaks for (2026-08-21): one obligation,
  *  one voice, rather than the same missing paper worded twice by two surfaces.
  *  The ids are the town quest-registry's own row ids, deliberately. */
-export async function paperGapRows(handle, { db, clone, worldBlock = worldBlockForHandle, key = null, parcelClaim = parcelClaimForHandle, ix = null } = {}) {
+export async function paperGapRows(handle, { db, clone, worldBlock = worldBlockForHandle, key = null, parcelClaim = parcelClaimForHandle, ix = null, odb = null, asOf = null } = {}) {
   const gaps = [];
   let home = null;
-  try { home = ix ? await ix.home(handle) : homeQ(db, handle); }
+  // READ-THROUGH (POS-603): the HOME check reads the page through the same
+  // freshness context as read: "home", so a page tended a minute ago is not
+  // still owed. (The window check below already reads the checkout.) freshFor
+  // never throws; an unreachable store index still throws from the read.
+  const fresh = await freshFor(handle, { odb, clone, asOf });
+  try { home = ix ? await ix.home(handle, fresh) : homeQ(db, handle, fresh); }
   catch (e) { if (e?.name === "TownIndexUnreachable") throw e; home = null; }
   if (!home || !home.description)
     gaps.push({ id: "tend-your-home", text: `tend your HOME page — household { do: "home", args: { handle: "${handle}", body: … } }` });
@@ -820,7 +825,7 @@ export async function householdStanding(key, { db, clone, odb, worldBlock = worl
   const papers = {};
   const next = [];
   for (const h of settled) {
-    const gaps = await paperGaps(h, { db, clone, worldBlock, key, ix });
+    const gaps = await paperGaps(h, { db, clone, worldBlock, key, ix, odb });
     // AWAITED, same defect as paperGaps' and with a louder symptom: an
     // un-awaited Promise spread into this object serialized as `"world": {}`,
     // so the household door has been publishing an empty object where it
@@ -1225,8 +1230,13 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
     if (what === "address") {
       if (!handle) return whichResident("address");
       let r = null;
-      if (ix) r = await ix.resident(handle, await freshFor(handle, { odb, clone, asOf }));
-      else { try { r = residentQ(db, handle); } catch { r = null; } }
+      // READ-THROUGH, BOTH INDEXES (POS-603): the card composes the record the
+      // pen just wrote (paper-fresh.mjs), on office.db as on the store. Before,
+      // only the store's branch was handed the context, so an office on
+      // office.db answered its owner's own edit from the old index.
+      const fresh = await freshFor(handle, { odb, clone, asOf });
+      if (ix) r = await ix.resident(handle, fresh);
+      else { try { r = residentQ(db, handle, fresh); } catch { r = null; } }
       // last_active: the newest act of their own, as /residents/{h} and
       // town { read: "resident" } carry it (last-active.mjs, POS-481)
       if (r) await withLastActive("card", r, ix ? { find: (handles) => ix.lastActiveFor(handles) } : {});
@@ -1237,8 +1247,11 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
     if (what === "home") {
       if (!handle) return whichResident("home");
       let h = null;
-      if (ix) h = await ix.home(handle);
-      else { try { h = homeQ(db, handle); } catch { h = null; } }
+      // READ-THROUGH (POS-603): the home page as the pen last wrote it, stamped
+      // with its tense, on either index — the same context the card takes.
+      const fresh = await freshFor(handle, { odb, clone, asOf });
+      if (ix) h = await ix.home(handle, fresh);
+      else { try { h = homeQ(db, handle, fresh); } catch { h = null; } }
       return h ? shadowReadAnswer("home", { read: "home", of: handle, home: h }, { read: "home", of: handle }, h, ctx)
         // ── THE BOUNCE CARRIES THE CARD (#2889, kogane's third) ──────────────
         //

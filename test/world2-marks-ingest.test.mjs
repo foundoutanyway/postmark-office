@@ -488,6 +488,46 @@ test("POS-614 · the printout is named by author email AND subject: the crossing
   assert.equal(PRINTOUT_PENS.length, 3, "three pens: the Pen's two emails and the registry's");
 });
 
+test("POS-614 · A HAND COMMIT AND THE PRINTOUT ON ONE FILE: only the hand's fields are carried, the hand's value wins, and the receipt names the printout's fields left out", { skip: WHY_SKIP }, async () => {
+  const mdir = mkdtempSync(join(tmpdir(), "pos614-mixed-"));
+  try {
+    const repo = join(mdir, "w");
+    execFileSync("git", ["clone", "-q", "--shared", "--no-checkout", WORLD_CLONE, repo], { stdio: "ignore" });
+    git(repo, ["-c", "advice.detachedHead=false", "checkout", "-q", TAG]);
+    const shaA = git(repo, ["rev-parse", "HEAD"]).trim();
+    const { deriveSeed } = await import("../world2/tools/seed-import.mjs");
+    const seed = await deriveSeed({ worldRepo: repo, lawSha: shaA });
+    const { paths } = await pathsAt(repo);
+    const slug = seed.marks.find((m) => m.kind === "sited" && m.owner !== "the-town" && paths.has(m.slug) && !m.data?.note).slug;
+    const f = join(repo, ...paths.get(slug).split("/"));
+    const commitAs = (who, subject, edit) => {
+      writeFileSync(f, edit(readFileSync(f, "utf8")));
+      git(repo, ["add", "-A"]);
+      git(repo, ["-c", `user.name=${who.name}`, "-c", `user.email=${who.email}`, "commit", "-q", "-m", subject]);
+      return git(repo, ["rev-parse", "HEAD"]).trim();
+    };
+    // The hand first, then the printout over it: the stricter order, where the ref holds the printout's value.
+    const handSha = commitAs(WRIGHT, `POS-614 fixture: a hand repair of ${slug}`, (t) => setLine(t, "image", "pos614-hand.png"));
+    const printSha = commitAs(PEN, "settlement: sweep 1 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed",
+      (t) => setLine(setLine(t, "image", "pos614-printout.png"), "note", "the printout's own word"));
+    git(repo, ["tag", "pos614-fixture-M"]);
+    const owners = new Set(seed.marks.map((m) => m.owner));
+    const genesis = { ...seed.window, status: "closed" };
+    const open = { id: genesis.id + 1, status: "open", opens_at: genesis.closes_at, closes_at: new Date(Date.now() + 864e5).toISOString() };
+    const store = fakeStore({ marks: seed.marks.map((m) => structuredClone(m)), claims: seed.claims.map((c) => ({ id: c.id })),
+      windows: [genesis, open], roll: Object.fromEntries([...owners].map((o) => [`h-${o}`, [o]])) });
+
+    const r = await ingest(store.client, { worldRepo: repo, ref: "pos614-fixture-M" });
+    assert.equal(r.status, "ingested", r.receipt);
+    assert.deepEqual(r.plan.amends.map((a) => [a.slug, a.fields, a.commit.sha]), [[slug, ["image"], handSha]], r.receipt);
+    assert.deepEqual(r.plan.amends[0].printout_fields, ["image", "note"], "the printout changed image and note");
+    assert.equal(store.bySlug(slug).data.image, "pos614-hand.png", "the hand's value wins over the printout's later one");
+    assert.equal(store.bySlug(slug).data.note ?? null, null, "the printout's own field is left out");
+    assert.match(r.receipt, new RegExp(`~ ${slug.replace("/", "\\/")}  fields: image  ${handSha.slice(0, 9)} Wright`));
+    assert.match(r.receipt, new RegExp(`the printout's fields left out: image, note \\(${printSha.slice(0, 9)}\\)`));
+  } finally { rmSync(mdir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
+
 test("POS-614 · planIngest: a path only the printout touched is SKIPPED with its reason, in every arm, and never a STOP", () => {
   const P = (sha) => ({ sha, author: "Postmark Pen", at: "2026-10-13T18:00:30.000Z", subject: "settlement: sweep 9 published", printout_only: true });
   const plan = planIngest({

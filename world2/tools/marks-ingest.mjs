@@ -239,8 +239,12 @@ export function carriedRow(was, ref, carry) {
  * @param {Set}      [o.held]      slugs held by name
  * @param {object[]} [o.derivedAtBase] `deriveSeed` rows at the BASE: given, an amend carries only the
  *                                 fields the file changed across the range (§ an amend carries the file's change)
+ * @param {Map}      [o.mixed]     slug -> { hands, printouts }, each newest first, each entry
+ *                                 { commit, before, after, row } (records before/after that commit, and
+ *                                 its derived row): a file a hand commit AND the printout changed in the
+ *                                 range (`mixedChanges`; § a hand commit and the printout on one file)
  */
-export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, commitFor, held = REFUSED_BY_NAME, derivedAtBase = null }) {
+export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, commitFor, held = REFUSED_BY_NAME, derivedAtBase = null, mixed = null }) {
   const standing = storeRows.filter((r) => r.status === "standing");
   const bySlug = new Map(storeRows.map((r) => [r.slug, r]));
   const fileRecs = new Map(marksFromRows(derived, []).map((m) => [m.id, m]));
@@ -264,8 +268,30 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
       continue;
     }
     const fields = was ? recordDiff(fileRecs.get(slug), storeRecs.get(slug)) : null;
-    if (was && !fields.length) continue;                       // the store already says it
+    const mix = was ? mixed?.get(slug) : null;
+    if (was && !fields.length && !mix) continue;               // the store already says it
     if (held.has(slug)) { heldOut.push({ slug, why: "HELD by the founder's word — refused by name (backfill-register § REFUSED_BY_NAME)" }); continue; }
+    if (mix) {
+      // § A HAND COMMIT AND THE PRINTOUT ON ONE FILE (POS-614, Wright 2026-10-13: "(a)").
+      // Carry only the fields the hand commits changed, at the NEWEST hand commit's
+      // value (the hand wins a field both changed), wherever that differs from the
+      // store. The printout's fields are named on the receipt as left out.
+      const changedBy = (list) => new Set(list.flatMap((c) => (c.before ? recordDiff(c.before, c.after) : Object.keys(c.after).filter((k) => isRecordField(k, c.after[k])))));
+      const hand = changedBy(mix.hands), printed = [...changedBy(mix.printouts)].sort();
+      const newest = mix.hands[0];
+      const differs = new Set(recordDiff(newest.after, storeRecs.get(slug)));
+      const carry = [...hand].filter((k) => differs.has(k)).sort();
+      const leftOut = { printout_fields: printed, printouts: mix.printouts.map((c) => c.commit.sha) };
+      if (!carry.length) {
+        skipped.push({ slug, fields: fields.length ? fields : ["(none)"], ...leftOut,
+          why: `the hand commit ${newest.commit.sha.slice(0, 9)} changed nothing the store lacks; the printout's ${printed.join(", ") || "(no fields)"} left out (${leftOut.printouts.map((s) => s.slice(0, 9)).join(", ")}) (POS-614)` });
+        continue;
+      }
+      if (ruledAfter(was, newest.commit)) { skipped.push({ slug, fields: carry, ...leftOut, why: `differs, but the store's row was ruled at window ${was.locked_window}, after the hand commit ${newest.commit.sha.slice(0, 9)} — the door's later word stands` }); continue; }
+      amends.push({ slug, row: carriedRow(was, newest.row, new Set(carry)), was, fields: carry, differs: fields, commit: newest.commit,
+        keepParent: carry.includes("parent") ? undefined : was.parent, ...leftOut });
+      continue;
+    }
     const path = pathAtRef.get(slug);
     if (!was) {
       const commit = commitFor({ path, range: false, deleted: false });
@@ -345,7 +371,10 @@ export function renderPlan(plan, { target, head, base, windowId, classMarks }) {
   out.push(`${NL}ADD ${plan.adds.length}:`);
   for (const a of plan.adds) out.push(`  + ${a.slug}  [${a.row.kind}]  ${who(a)}`);
   out.push(`${NL}AMEND ${plan.amends.length}:`);
-  for (const a of plan.amends) out.push(`  ~ ${a.slug}  fields: ${a.fields.join(", ")}  ${who(a)}`);
+  for (const a of plan.amends) {
+    out.push(`  ~ ${a.slug}  fields: ${a.fields.join(", ")}  ${who(a)}`);
+    if (a.printouts) out.push(`      the printout's fields left out: ${a.printout_fields.join(", ") || "(none)"} (${a.printouts.map((s) => s.slice(0, 9)).join(", ")}) — the hand commit's word is carried (POS-614)`);
+  }
   out.push(`${NL}RETIRE ${plan.retires.length}:`);
   for (const r of plan.retires) out.push(`  - ${r.slug}  ${who(r)}`);
   if (plan.held.length) {
@@ -555,6 +584,68 @@ export function commitReader(repo, { base, target }) {
   };
 }
 
+/**
+ * The mark files a hand commit AND the printout both changed in (base, target]:
+ * path -> { hands, printouts }, each a list of commits, newest first. Usually
+ * empty (7 of 106 blessing intervals up to S72, none since this pen started).
+ */
+export function mixedChanges(repo, { base, target }) {
+  if (!base) return new Map();
+  const SEP = "\x1f", REC = "\x1e";
+  const log = git(repo, ["log", `--format=${REC}%H${SEP}%P${SEP}%an${SEP}%ae${SEP}%cI${SEP}%s`, "--name-only", `${base}..${target}`, "--", "WORLD/marks"]);
+  const byPath = new Map();
+  for (const chunk of log.split(REC)) {
+    const [head, ...files] = chunk.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!head) continue;
+    const [sha, parents, author, email, at, subject] = head.split(SEP);
+    const commit = { sha, parent: parents.split(" ")[0], author, at: new Date(at).toISOString(), subject };
+    const side = isPrintoutCommit({ email, subject }) ? "printouts" : "hands";
+    for (const f of files) {
+      if (!f.endsWith("/mark.md")) continue;
+      if (!byPath.has(f)) byPath.set(f, { hands: [], printouts: [] });
+      byPath.get(f)[side].push(commit);
+    }
+  }
+  for (const [p, v] of byPath) if (!v.hands.length || !v.printouts.length) byPath.delete(p);
+  return byPath;
+}
+
+/**
+ * For each mixed file at the ref: slug -> { hands, printouts }, each commit with
+ * the mark's record before and after it and its derived row after it. Derives
+ * the world once per sha it needs (`known` holds the ones already derived).
+ */
+export async function mixedRecords(repo, mixedPaths, pathAtRef, known = {}) {
+  const slugOf = new Map([...pathAtRef].map(([slug, p]) => [p, slug]));
+  const rowsAt = new Map(Object.entries(known));
+  const recsAt = new Map();
+  const derive = async (sha) => {
+    if (!rowsAt.has(sha)) {
+      const co = checkoutAt(repo, sha, "mixed");
+      try { rowsAt.set(sha, (await deriveSeed({ worldRepo: co.dir, lawSha: sha })).marks); } finally { co.dispose(); }
+    }
+    if (!recsAt.has(sha)) recsAt.set(sha, new Map(marksFromRows(rowsAt.get(sha), []).map((m) => [m.id, m])));
+    return { rows: rowsAt.get(sha), recs: recsAt.get(sha) };
+  };
+  const out = new Map();
+  for (const [path, { hands, printouts }] of mixedPaths) {
+    const slug = slugOf.get(path);
+    if (!slug) continue;                                       // not a mark at the ref: no amend to shape
+    const entries = async (list) => {
+      const got = [];
+      for (const commit of list) {
+        const after = await derive(commit.sha), before = await derive(commit.parent);
+        const rec = after.recs.get(slug);
+        if (rec) got.push({ commit, before: before.recs.get(slug) ?? null, after: rec, row: after.rows.find((r) => r.slug === slug) });
+      }
+      return got;
+    };
+    const h = await entries(hands);
+    if (h.length) out.set(slug, { hands: h, printouts: await entries(printouts) });
+  }
+  return out;
+}
+
 const isAncestor = (repo, a, b) => {
   try { execFileSync("git", ["-C", repo, "merge-base", "--is-ancestor", a, b], { stdio: "ignore" }); return true; }
   catch { return false; }
@@ -617,8 +708,11 @@ export async function ingest(client, { worldRepo, ref = "blessed", since = null,
       const pathAtBase = atBase ? (await pathsAt(atBase.dir)).paths : null;
       const derivedAtBase = atBase ? (await deriveSeed({ worldRepo: atBase.dir, lawSha: base.sha })).marks : null;
       const { rows: storeRows } = await q(MARKS_SQL);
+      const mixedPaths = mixedChanges(repo, { base: base?.sha ?? null, target: target.sha });
+      const known = { [target.sha]: derivedAll.marks, ...(base && derivedAtBase ? { [base.sha]: derivedAtBase } : {}) };
+      const mixed = mixedPaths.size ? await mixedRecords(repo, mixedPaths, ref_.paths, known) : null;
       plan = planIngest({
-        derived: derivedAll.marks, storeRows, pathAtRef: ref_.paths, pathAtBase, derivedAtBase,
+        derived: derivedAll.marks, storeRows, pathAtRef: ref_.paths, pathAtBase, derivedAtBase, mixed,
         commitFor: commitReader(repo, { base: base?.sha ?? null, target: target.sha }),
       });
     } finally {

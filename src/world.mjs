@@ -4411,7 +4411,8 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, {
     if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
     throw bounce(500, "the withdrawal tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
   }
-  if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
+  // the exec's named reason rides through (the git lane's set-down refusal, R3)
+  if (result.error) throw Object.assign(bounce(result.error.code ?? 500, result.error.defect, result.error.hint), result.error.reason ? { reason: result.error.reason } : {});
   return result;
 }
 

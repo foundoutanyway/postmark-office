@@ -50,7 +50,17 @@ export const reservedFor = (handle) => reserved.get(String(handle)) ?? 0;
 const reserve = (handle, n) => reserved.set(String(handle), reservedFor(handle) + n);
 const release = (handle, n) => { const left = reservedFor(handle) - n; if (left > 0) reserved.set(String(handle), left); else reserved.delete(String(handle)); };
 /** The id of the act that recorded this mark's exit, read back for a retry. */
-const exitActOf = (units, id) => units.find((r) => (r.action === UNIT_ACTION.takeBack || r.action === UNIT_ACTION.consumeInPlace) && String(r.object) === id)?.id ?? null;
+/**
+ * The exit act the record holds for a dropped unit's mark, as the cause of its
+ * withdrawal: its own id, its actor and its route (Bevel's revised review, D —
+ * a cleanup retry by another resident, by another route, used to name ITSELF
+ * as the exit while pointing at the original act). Null when there is none.
+ */
+const ROUTE_OF_EXIT = { [UNIT_ACTION.takeBack]: "take-back", [UNIT_ACTION.consumeInPlace]: "consume-in-place" };
+const exitCauseOf = (units, id) => {
+  const r = units.find((x) => ROUTE_OF_EXIT[x.action] && String(x.object) === id);
+  return r ? { exit: ROUTE_OF_EXIT[r.action], by: r.actor == null ? null : String(r.actor), act: r.id ?? null } : null;
+};
 /** Things held whole by this resident (a chest's contents are the chest's, not its carrier's). */
 const thingsCarried = (attachments, handle) => holdingsOf(attachments, handle).length;
 
@@ -174,6 +184,16 @@ async function thingsHeldBy(attachments, holder, markById) {
   return out;
 }
 
+/**
+ * A chest's summary in a unit act's receipt: its units after the act AND the
+ * whole things in it (Bevel's revised review, B: a refill's receipt called a
+ * chest of 29 candies and a toaster "29 candy" while the chests read said "30
+ * things"). A unit act moves no whole thing, so the attachments read in the
+ * act's turn are the post-act contents.
+ */
+const chestBlock = async (after, chest, view, attachments, deps) =>
+  holdsBlock(after, chest, view, await thingsHeldBy(attachments, chest, deps.markById));
+
 const classOfLabelIn = (view) => (label) => (labelRecord(view.labels(), label) ? "candy" : null);
 
 /** The holding's top class, for the taken-class hook. */
@@ -222,7 +242,7 @@ export async function callUnits(route, args, key, actor, deps) {
         refuseOverCarry({ who: actor, units: totalOf(fold, actor) + reservedFor(actor), things: thingsCarried(attachments, actor), adding: n, cap });
         const w = await writeUnits(deps, key, actor, plan);
         const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
-        return { did: "take", units: true, label: plan.label, count: n, from, ...w, holds: holdsBlock(after, actor, view), chest: holdsBlock(after, from, view) };
+        return { did: "take", units: true, label: plan.label, count: n, from, ...w, holds: holdsBlock(after, actor, view), chest: await chestBlock(after, from, view, attachments, deps) };
       });
     }
     case "give": {
@@ -243,7 +263,8 @@ export async function callUnits(route, args, key, actor, deps) {
         // the write's transaction — the tick's stock is another process (finding 6)
         const w = await writeUnits(deps, key, actor, plan, isChestId(to) ? { guard: chestRoomGuard({ chest: to, capacity: chestCap, adding: n }) } : {});
         const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
-        return { did: "give", units: true, label: plan.label, count: n, to, ...w, holds: holdsBlock(after, actor, view), receiver: holdsBlock(after, to, view) };
+        return { did: "give", units: true, label: plan.label, count: n, to, ...w, holds: holdsBlock(after, actor, view),
+          receiver: isChestId(to) ? await chestBlock(after, to, view, attachments, deps) : holdsBlock(after, to, view) };
       });
     }
     case "consume": {
@@ -267,12 +288,12 @@ export async function callUnits(route, args, key, actor, deps) {
         const fold = foldUnits(units);
         // refill fills the room left by EVERYTHING in the chest — units of every label and whole things
         const plan = planRefill({ fold, actor, chest, capacity: capacity - holdingsOf(attachments, chest).length, labels: view.labels() });
-        if (plan.noop) return { did: "refill", units: true, noop: true, note: plan.note, chest: holdsBlock(fold, chest, view) };
+        if (plan.noop) return { did: "refill", units: true, noop: true, note: plan.note, chest: await chestBlock(fold, chest, view, attachments, deps) };
         refuseIfTaken(topClassOf(fold, chest, view) ?? "candy", view);
         const w = await writeUnits(deps, key, actor, { ...plan, payload: { label: plan.label, capacity } },
           { guard: chestRoomGuard({ chest, capacity, adding: plan.moves[0].n }) });
         const after = foldUnits([...units, { class: "holding", action: plan.action, payload: { moves: plan.moves } }]);
-        return { did: "refill", units: true, label: plan.label, count: plan.moves[0].n, ...w, chest: holdsBlock(after, chest, view) };
+        return { did: "refill", units: true, label: plan.label, count: plan.moves[0].n, ...w, chest: await chestBlock(after, chest, view, attachments, deps) };
       });
     }
     case "drop": {
@@ -398,10 +419,14 @@ async function markExit(route, args, key, actor, deps, view, cap) {
   let withdrawn = withdrawnBefore ? { withdrawn: true, already: true } : null;
   if (!withdrawnBefore) {
     try {
-      withdrawn = await deps.withdraw({ by, slug, household,
-        cause: { exit: route, by: actor, act: acted.seq ?? exitActOf(acted.units, id) } });
+      // the cause is the exit itself: this call's act when it made one, else the
+      // ORIGINAL exit on the record, with its own actor and route — whoever asks
+      // again only finishes that exit's withdrawal, and is named as such
+      const cause = acted.already ? exitCauseOf(acted.units, id) : { exit: route, by: actor, act: acted.seq ?? null };
+      withdrawn = await deps.withdraw({ by, slug, household, cause });
       if (withdrawn?.withdrawn !== false)
-        await holdTurn(() => writeUnits(deps, key, actor, { action: UNIT_ACTION.exitWithdrawn, object: id, moves: [], payload: { mark: id, by } }));
+        await holdTurn(() => writeUnits(deps, key, actor, { action: UNIT_ACTION.exitWithdrawn, object: id, moves: [],
+          payload: { mark: id, by, exit: cause, ...(acted.already ? { finished_by: actor } : {}) } }));
     } catch (e) { withdrawn = { withdrawn: false, why: String(e?.defect ?? e?.message ?? e).slice(0, 200), retry: "ask again: the unit is not gained and nothing is returned a second time; only the withdrawal is tried again" }; }
   }
 

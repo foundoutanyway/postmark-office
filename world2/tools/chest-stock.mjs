@@ -75,6 +75,32 @@ const INSERT_SQL = `
   ON CONFLICT DO NOTHING
   RETURNING id`;
 
+// The candy class at every settlement whose law is ingested, oldest first: the
+// law AT settlement N is the newest of these at or before N.
+const CANDY_LAWS_SQL = `
+  SELECT s.number, l.data FROM settlements s
+    JOIN law_projection l ON l.law_sha = s.tag_sha AND l.kind = 'class' AND l.key = 'candy'
+   ORDER BY s.number`;
+
+/**
+ * The settlement a stock is DECIDED at: the first settlement, from the one
+ * that admitted the chest on, whose law carries the creator's label — the
+ * admission itself when the label was there already, a later one when it was
+ * registered after. `candyLaws` is CANDY_LAWS_SQL's rows. Falls back to the
+ * pin (whose law found the label for this plan) when no older law says so.
+ */
+export function decidedAt({ admitted, label, creator, candyLaws = [], pin = null }) {
+  const has = (data) => candyLabels(typeof data === "string" ? JSON.parse(data) : data)
+    .some((l) => String(l.label) === String(label) && String(l.creator) === String(creator));
+  const laws = candyLaws.map((r) => ({ n: Number(r.number), has: has(r.data) })).sort((a, b) => a.n - b.n);
+  const atAdmission = laws.filter((l) => l.n <= admitted).at(-1);
+  if (atAdmission?.has) return admitted;
+  const later = laws.find((l) => l.n > admitted && l.has);
+  if (later) return later.n;
+  return Number.isInteger(Number(pin)) && pin != null && Number(pin) > admitted ? Number(pin) : admitted;
+}
+const admittedNote = (admitted, decided) => (decided === admitted ? "" : `, admitted at S${admitted}`);
+
 /** The plan, from the store, without writing. Counts here are a preview; the stock is decided under each chest's lock. */
 export async function planFromStore(client) {
   const law = lawSnapshotFromRows((await client.query(LAW_AT_BLESSING_SQL)).rows);
@@ -94,7 +120,11 @@ export async function planFromStore(client) {
   const { rows: held } = await pgAttachmentsFor(client);
   const plan = planChestStock({ chests: admitted, labels: candyLabels(candy), stocked: stockedChests(units), fold: foldUnits(units), dials, thingsIn: thingsInChests(held) });
   const settlementOf = new Map(admitted.map((c) => [c.id, c.settlement]));
-  return { ...plan, stock: plan.stock.map((s) => ({ ...s, settlement: settlementOf.get(s.chest) })), dials: chestDials(dials), law: law.pin };
+  const candyLaws = plan.stock.length ? (await client.query(CANDY_LAWS_SQL)).rows : [];
+  return { ...plan, stock: plan.stock.map((s) => {
+    const settlement = settlementOf.get(s.chest);
+    return { ...s, settlement, decided: decidedAt({ admitted: settlement, label: s.label, creator: s.handle, candyLaws, pin: law.pin.settlement }) };
+  }), dials: chestDials(dials), law: law.pin };
 }
 
 /**
@@ -122,11 +152,20 @@ export async function stockChests(client, { crossing = null } = {}) {
       // anomaly), the nonce is spent, and the line says so. The gift is never
       // deferred to a later tick that finds room; refill is the creator's after.
       const n = Math.max(0, room);
+      // TWO SETTLEMENTS, BOTH NAMED (Bevel's revised review, C): `settlement`
+      // is the one that ADMITTED the chest (mark_carried) and stays so; the
+      // stock is DECIDED at the settlement whose law found the creator's label —
+      // the same as admission when the label was there, a later one when it
+      // was registered after. The receipt names the decision, and the
+      // admission beside it when they differ; never a decision before the label.
+      const decided = s.decided;
       const payload = { units: true, moves: n > 0 ? [{ from: null, to: s.chest, label: s.label, n }] : [], label: s.label, stocked: n,
-        capacity: s.capacity, creator: s.handle, settlement: s.settlement, label_found_at: plan.law?.settlement ?? null, first_stock: true };
+        capacity: s.capacity, creator: s.handle, settlement: s.settlement, label_found_at: plan.law?.settlement ?? null, decided_at: decided, first_stock: true };
       const effect = n > 0
-        ? `the town stocked ${s.chest} with ${n} ${s.label} at the settlement that admitted it (S${s.settlement})`
-        : `chest-stock: 0, chest full at S${s.settlement} — the first stock of ${s.chest} is complete; refill is its creator's`;
+        ? (decided === s.settlement
+          ? `the town stocked ${s.chest} with ${n} ${s.label} at the settlement that admitted it (S${s.settlement})`
+          : `the town stocked ${s.chest} with ${n} ${s.label} at S${decided}, the settlement that found its creator's candy label (the chest was admitted at S${s.settlement})`)
+        : `chest-stock: 0, chest full at S${decided}${admittedNote(s.settlement, decided)} — the first stock of ${s.chest} is complete; refill is its creator's`;
       const { rows } = await client.query(INSERT_SQL, [crossing, TOWN_PEN, UNIT_ACTION.stock, s.chest, JSON.stringify(payload), effect, TOWN_HOUSEHOLD, stockNonce(s.chest)]);
       await client.query("COMMIT");
       if (rows.length) stocked.push({ ...s, n, act: Number(rows[0].id) }); else skipped.push({ chest: s.chest, why: "already stocked (the nonce was spent)" });
@@ -136,8 +175,8 @@ export async function stockChests(client, { crossing = null } = {}) {
     }
   }
   const parts = [
-    `chests: stocked ${stocked.filter((s) => s.n > 0).length}${stocked.some((s) => s.n > 0) ? ` (${stocked.filter((s) => s.n > 0).map((s) => `${s.chest} +${s.n} ${s.label} at S${s.settlement}`).join(", ")})` : ""}`,
-    ...stocked.filter((s) => s.n === 0).map((s) => `chest-stock: 0, chest full at S${s.settlement} (${s.chest})`),
+    `chests: stocked ${stocked.filter((s) => s.n > 0).length}${stocked.some((s) => s.n > 0) ? ` (${stocked.filter((s) => s.n > 0).map((s) => `${s.chest} +${s.n} ${s.label} at S${s.decided}${admittedNote(s.settlement, s.decided)}`).join(", ")})` : ""}`,
+    ...stocked.filter((s) => s.n === 0).map((s) => `chest-stock: 0, chest full at S${s.decided}${admittedNote(s.settlement, s.decided)} (${s.chest})`),
     ...plan.unstocked.map((u) => u.line),
     ...plan.refused.map((r) => r.line),
   ];

@@ -13,6 +13,20 @@
 
 export const UNIT_DROP = "units:drop";
 export const DROP_REF = /^act:([1-9][0-9]*)$/;
+/** acts.id is a Postgres bigint: the largest id an act can have. */
+export const ACT_ID_MAX = 9223372036854775807n;
+
+/**
+ * The act id a `dropped:` reference names, as its exact decimal text, when it
+ * is one an act could have; null when the reference is malformed or past the
+ * bigint range (no act can carry it, so it is unproven without asking the
+ * store). The text goes to the query as-is: no Number(), no rounding.
+ */
+export function dropRefId(ref) {
+  const m = DROP_REF.exec(String(ref ?? ""));
+  if (!m) return null;
+  return BigInt(m[1]) <= ACT_ID_MAX ? m[1] : null;
+}
 
 /** Is this pending claim a resident's candy mark (a unit set down)? The town's own candy is not. */
 export const isCandyClaim = (c) => (c?.class === "sited" || c?.class == null) && c?.data?.class === "candy" && c?.claimant !== "the-town";
@@ -47,10 +61,10 @@ export async function checkDroppedUnits(q, pending, { decided = () => false, ref
   const refused = [];
   for (const c of pending) {
     if (decided(c) || !isCandyClaim(c)) continue;
-    const m = DROP_REF.exec(String(c.data?.dropped ?? ""));
+    const id = dropRefId(c.data?.dropped);
     let act = null;
-    if (m) {
-      const { rows } = await q("SELECT id, action, class, actor, payload FROM acts WHERE id = $1", [Number(m[1])]);
+    if (id != null) {
+      const { rows } = await q("SELECT id, action, class, actor, payload FROM acts WHERE id = $1::bigint", [id]);
       act = rows[0] ?? null;
     }
     const check = dropProvenanceCheck(c, act);

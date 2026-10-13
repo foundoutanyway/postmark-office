@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { startStore } from "./helpers/embedded-store.mjs";
-import { dropProvenanceCheck, isCandyClaim } from "../world2/tools/drop-provenance.mjs";
+import { dropProvenanceCheck, dropRefId, isCandyClaim } from "../world2/tools/drop-provenance.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const JOB = join(ROOT, "world2", "tools", "clearing-job.mjs");
@@ -31,10 +31,14 @@ const store = await startStore({ db: "drop_provenance_test" });
 after(() => store.stop());
 const skip = store.skip ?? false;
 
+const OVERSIZED = "999999999999999999999999999999";   // no bigint can hold it
+const BIGINT_MAX = "9223372036854775807";              // the largest act id there could be — none is
+const EXACT = "9007199254740993";                      // 2^53 + 1: Number() would make it 2^53
+
 const box = (at) => `((${at.x - 0.5},${at.y - 0.5}),(${at.x + 0.5},${at.y + 0.5}))`;
 async function owner(fn) { const c = await store.connect("world2_owner"); try { return await fn(c); } finally { await c.end(); } }
 
-async function seed() {
+async function seed({ edges = false } = {}) {
   return owner(async (c) => {
     await c.query("TRUNCATE acts, escrow_projection, claims, marks, windows, projection_heads, households, household_pins CASCADE");
     for (const id of [WIN - 1, WIN]) {
@@ -68,6 +72,17 @@ async function seed() {
       label: await claim("sbx-cy/test-comets-label", `act:${ids.otherLabel}`, 5030),
       nondrop: await claim("sbx-cy/test-comets-give", `act:${ids.give}`, 5040),
     };
+    if (edges) {
+      // A real drop whose id is past Number's exact range: 2^53 + 1 rounds to
+      // 2^53 as a JS number, so only the exact decimal text can find it.
+      ids.exact = (await c.query(
+        `INSERT INTO acts (id, at, crossing, actor, action, class, payload, household) OVERRIDING SYSTEM VALUE
+         VALUES ($1::bigint, now(), 260.1, 'sbx-cy', 'units:drop', 'holding', $2, 'hh:sbx-cy-house') RETURNING id::text`,
+        [EXACT, JSON.stringify({ units: true, moves: [{ from: "sbx-cy", to: null, label: "test-comets", n: 1 }], label: "test-comets" })])).rows[0].id;
+      claims.oversized = await claim("sbx-cy/test-comets-huge", `act:${OVERSIZED}`, 5050);
+      claims.bigintMax = await claim("sbx-cy/test-comets-max", `act:${BIGINT_MAX}`, 5060);
+      claims.exact = await claim("sbx-cy/test-comets-exact", `act:${EXACT}`, 5070);
+    }
     return { ids, claims };
   });
 }
@@ -98,6 +113,23 @@ test("THE CLEARING PROVES EACH DROPPED UNIT: the real one locks, every unproven 
   assert.equal(m.n, 1, "only the proved unit became a mark");
 });
 
+test("AN IMPOSSIBLE OR HUGE REFERENCE IS REFUSED ALONE, BY ITS OWN NUMBER: an act id past bigint, the bigint ceiling, and a real drop past Number's exact range", { skip }, async () => {
+  const { ids, claims } = await seed({ edges: true });
+  assert.equal(ids.exact, EXACT, "the fixture drop sits at exactly 2^53 + 1");
+  const run = clear();
+  assert.equal(run.code, 0, run.out);
+  const rows = await owner(async (c) => (await c.query("SELECT id::text, status, refusal_check FROM claims WHERE window_id = $1", [WIN])).rows);
+  const by = new Map(rows.map((r) => [r.id, r]));
+  for (const k of ["real", "exact"]) assert.equal(by.get(claims[k]).status, "locked", `${k} locks (${by.get(claims[k]).refusal_check})`);
+  const expect = { oversized: OVERSIZED, bigintMax: BIGINT_MAX, fabricated: "999999", actor: ids.bos, label: ids.otherLabel, nondrop: ids.give };
+  for (const [k, n] of Object.entries(expect)) {
+    assert.equal(by.get(claims[k]).status, "refused", k);
+    assert.equal(by.get(claims[k]).refusal_check, `dropped-unit-unproven: act ${n}`, `${k} is named by its own number, unrounded`);
+  }
+  const [w] = await owner(async (c) => (await c.query("SELECT status FROM windows WHERE id = $1", [WIN])).rows);
+  assert.equal(w.status, "closed", "an impossible reference did not fail or hold the window");
+});
+
 test("the pure check: shape, act, action, actor, label, and the town's own candy untouched", () => {
   const claim = { claimant: "sbx-cy", class: "sited", data: { class: "candy", label: "l", dropped: "act:7" } };
   const drop = { id: 7, action: "units:drop", class: "holding", actor: "sbx-cy", payload: { label: "l", moves: [{ from: "sbx-cy", to: null, label: "l", n: 1 }] } };
@@ -106,6 +138,11 @@ test("the pure check: shape, act, action, actor, label, and the town's own candy
   assert.equal(dropProvenanceCheck(claim, { ...drop, action: "drop" }), "dropped-unit-unproven: act 7", "a thing's legacy drop is not a unit drop");
   assert.equal(dropProvenanceCheck({ ...claim, data: { ...claim.data, dropped: undefined } }, drop), "dropped-unit-unproven: no act");
   assert.equal(dropProvenanceCheck(claim, { ...drop, payload: { ...drop.payload, moves: [{ from: "sbx-bo", to: null, label: "l", n: 1 }] } }), "dropped-unit-unproven: act 7", "the unit left someone else's hands");
+  assert.equal(dropRefId(`act:${BIGINT_MAX}`), BIGINT_MAX, "the ceiling is a possible id");
+  assert.equal(dropRefId("act:9223372036854775808"), null, "one past it is not");
+  assert.equal(dropRefId(`act:${EXACT}`), EXACT, "exact text, never a rounded number");
+  assert.equal(dropRefId("act:0"), null);
+  assert.equal(dropProvenanceCheck({ ...claim, data: { ...claim.data, dropped: `act:${OVERSIZED}` } }, null), `dropped-unit-unproven: act ${OVERSIZED}`);
   assert.equal(isCandyClaim({ ...claim, claimant: "the-town" }), false);
   assert.equal(isCandyClaim({ ...claim, data: { class: "thing" } }), false);
 });

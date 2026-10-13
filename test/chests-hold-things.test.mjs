@@ -204,3 +204,91 @@ test("REFILL REACH: the creator must stand at the chest — the real threshold c
   const ok = await callUnits("refill", { chest: CHEST }, KEY("sbx-ana"), "sbx-ana", r.deps);
   assert.equal(ok.count, 20, "at the chest, the creator fills the room");
 });
+
+// ── Bevel's revised first review (2026-10-13T02:15Z), controls carried VERBATIM from
+// /tmp/bevel-wld27-r2-pf71t09r/test/chests-hold-things.test.mjs (appended there; red at ebef4f49).
+
+test('Bevel R2: refill receipt describes the same mixed holding as the authoritative chest read', async () => {
+  const c = 'sbx-ana/review-bowl', t = 'sbx-ana/review-toaster';
+  const marks = {
+    [c]: { id: c, by: 'sbx-ana', class: 'chest', capacity: 30 },
+    [t]: { id: t, by: 'sbx-ana', class: 'toaster' },
+  };
+  const r = rig({ marks });
+  r.hold(c, t);
+  r.seedUnits(c, 10);
+  const act = await callUnits('refill', { chest: c }, KEY('sbx-ana'), 'sbx-ana', r.deps);
+  assert.equal(act.count, 19, 'refill correctly reserves the toaster slot');
+  const read = await chestsRead({ classes: view, units: async () => r.acts,
+    attachments: async () => r.attachments, marks: async () => Object.values(marks) });
+  const face = read.chests.find(x => x.chest === c);
+  assert.equal(face.count, 30, 'the actual recorded chest is full, including its toaster');
+  assert.deepEqual({ count: act.chest.count, class: act.chest.class, shows: act.chest.shows },
+    { count: face.count, class: face.class, shows: face.shows },
+    'the act receipt must not call a full mixed chest 29 candies');
+});
+
+test('Bevel R2: another caller finishing withdrawal preserves the original exit actor and action', async () => {
+  const r = rig({ marks: { [DROPPED]: droppedMark }, stakes: STAKES });
+  r.failWithdrawals(1);
+  const first = await callUnits('take-back', { thing: DROPPED }, KEY('sbx-cy'), 'sbx-cy', r.deps);
+  assert.equal(first.withdrawn.withdrawn, false);
+  const exit = r.acts.find(a => a.action === UNIT_ACTION.takeBack);
+  const retry = await callUnits('consume-in-place', { thing: DROPPED }, KEY('sbx-bo'), 'sbx-bo', r.deps);
+  assert.equal(retry.duplicate, true);
+  assert.equal(totalOf(r.units(), 'sbx-cy'), 1, 'the original take-back remains the only unit mutation');
+  assert.deepEqual(r.withdrawals.at(-1).cause, { exit: 'take-back', by: 'sbx-cy', act: exit.id },
+    'a cleanup retry cannot claim another resident consumed the mark instead');
+});
+
+// ── the revised review's B and D, past the probes: every unit act's chest
+// receipt, and the same-caller retry ──────────────────────────────────────
+
+test("B · take, give and a no-room refill each describe a mixed chest as the chests read does — the whole thing counted", async () => {
+  const c = "sbx-ana/mixed-bowl", t = "sbx-ana/mixed-toaster";
+  const marks = { [c]: { id: c, by: "sbx-ana", class: "chest", capacity: 30 }, [t]: { id: t, by: "sbx-ana", class: "toaster" } };
+  const r = rig({ marks });
+  r.hold(c, t); r.seedUnits(c, 10); r.seedUnits("sbx-cy", 3);
+  const face = async () => (await chestsRead({ classes: view, units: async () => r.acts.filter((a) => String(a.action).startsWith("units:")),
+    attachments: async () => r.attachments, marks: async () => Object.values(marks) })).chests.find((x) => x.chest === c);
+  const same = async (block, what) => {
+    const f = await face();
+    assert.deepEqual({ count: block.count, class: block.class, shows: block.shows }, { count: f.count, class: f.class, shows: f.shows }, what);
+    assert.deepEqual(block.things, [{ thing: t, class: "toaster" }], `${what}: the toaster is named`);
+  };
+  const took = await callUnits("take", { from: c, count: 4 }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.equal(took.count, 4, "the transfer count is the units moved");
+  assert.equal(took.chest.count, 7, "6 units and a toaster");
+  await same(took.chest, "take");
+  const gave = await callUnits("give", { to: c, count: 2 }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  assert.equal(gave.count, 2);
+  assert.equal(gave.receiver.count, 9, "8 units and a toaster");
+  await same(gave.receiver, "give");
+  const filled = await callUnits("refill", { chest: c }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.equal(filled.count, 21, "fills the room the units and the toaster leave");
+  await same(filled.chest, "refill");
+  const noop = await callUnits("refill", { chest: c }, KEY("sbx-ana"), "sbx-ana", r.deps);
+  assert.equal(noop.noop, true);
+  assert.equal(noop.chest.count, 30);
+  await same(noop.chest, "a refill with no room");
+});
+
+test("D · the withdrawal's cause is always the exit itself: the first try names its own act, a same-caller retry names it again, and another finisher is recorded beside it", async () => {
+  const r = rig({ marks: { [DROPPED]: droppedMark }, stakes: STAKES });
+  r.failWithdrawals(2);
+  await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);
+  const exit = r.acts.find((a) => a.action === UNIT_ACTION.takeBack);
+  const cause = { exit: "take-back", by: "sbx-cy", act: exit.id };
+  assert.deepEqual(r.withdrawals[0].cause, cause, "the first try");
+  await callUnits("take-back", { thing: DROPPED }, KEY("sbx-cy"), "sbx-cy", r.deps);      // fails again
+  assert.deepEqual(r.withdrawals[1].cause, cause, "the same caller's retry");
+  const done = await callUnits("consume-in-place", { thing: DROPPED }, KEY("sbx-bo"), "sbx-bo", r.deps);
+  assert.deepEqual(r.withdrawals[2].cause, cause, "another caller, another route: still Cy's take-back");
+  assert.equal(done.duplicate, true);
+  const w = r.acts.filter((a) => a.action === UNIT_ACTION.exitWithdrawn);
+  assert.equal(w.length, 1);
+  assert.deepEqual([w[0].payload.exit, w[0].payload.finished_by], [cause, "sbx-bo"], "the finisher is logged beside the cause, not as it");
+  assert.equal(r.acts.filter((a) => a.action === UNIT_ACTION.consumeInPlace).length, 0, "no consumption happened");
+  assert.equal(totalOf(r.units(), "sbx-cy"), 1);
+  assert.equal(r.ledger.length, 2, "two returns, ever");
+});

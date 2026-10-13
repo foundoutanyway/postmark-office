@@ -59,3 +59,24 @@ test("a standing chest not carried by any settlement must not yet receive a stoc
   const plan = await planFromStore(client({ admitted: null }));
   assert.equal(plan.stock.length, 0, "unpublished/unadmitted chest must not be attributed to the newest settlement");
 });
+
+// ── Bevel's revised first review (2026-10-13T02:15Z), controls carried VERBATIM from
+// /tmp/bevel-wld27-r2-pf71t09r/test/bevel-stock-boundaries.test.mjs (appended there; red at ebef4f49).
+
+test('Bevel R2: delayed zero-stock receipt names its eligible settlement, not its earlier admission', async () => {
+  const c = client({ admitted: 250 });
+  c.acts.push({ id: 1, class: 'holding', action: UNIT_ACTION.give,
+    payload: { units: true, moves: [{ from: null, to: chest, label, n: 20 }] } });
+  const query = c.query;
+  c.query = async (sql, args) => {
+    const r = await query(sql, args);
+    if (sql.includes('law_projection')) r.rows = r.rows.map(x => ({ ...x, number: 251, newest: 251 }));
+    return r;
+  };
+  const stocked = await stockChests(c, { crossing: 251.5 });
+  const act = c.acts.find(a => a.action === UNIT_ACTION.stock);
+  assert.equal(act.payload.label_found_at, 251, 'the label exists at the eligible settlement S251');
+  assert.equal(act.payload.settlement, 250, 'retain the independent admitting-settlement provenance');
+  assert.match(stocked.line, /chest-stock: 0, chest full at S251\b/,
+    'do not say the full-chest decision happened at S250 before its label existed');
+});

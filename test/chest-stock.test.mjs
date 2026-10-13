@@ -213,9 +213,14 @@ test("ZERO ROOM: a labelled chest already full is stocked 0 — the nonce is spe
      VALUES (now(), 250.8, 'sbx-cy', 'units:give', 'sbx-eve/her-chest', 'holding', '{"units":true,"moves":[{"from":null,"to":"sbx-eve/her-chest","label":"test-comets","n":20}]}', 'gifts', 'hh:sbx-cy')`));
   await owner((c) => law(c, SHA_B, 251, LABELS_B));
   const r = await asOffice((c) => stockChests(c, { crossing: 251.5 }));
-  assert.match(r.line, /chest-stock: 0, chest full at S250 \(sbx-eve\/her-chest\)/);
+  // decided at S251, where her label was first found — never "full at S250",
+  // before the label existed; S250 stays named as the chest's admission
+  assert.match(r.line, /chest-stock: 0, chest full at S251, admitted at S250 \(sbx-eve\/her-chest\)/);
+  assert.doesNotMatch(r.line, /chest full at S250/, "no stock decision dated before the label was registered");
   const zero = (await units()).filter((a) => a.object === "sbx-eve/her-chest" && a.action === UNIT_ACTION.stock);
   assert.equal(zero.length, 1);
+  assert.deepEqual([zero[0].payload.settlement, zero[0].payload.label_found_at, zero[0].payload.decided_at], [250, 251, 251], "admission kept, decision named");
+  assert.match((await owner((c) => c.query("SELECT effect FROM acts WHERE id = $1", [zero[0].id]))).rows[0].effect, /^chest-stock: 0, chest full at S251, admitted at S250 — /);
   assert.deepEqual([zero[0].payload.moves, zero[0].payload.stocked, zero[0].nonce], [[], 0, stockNonce("sbx-eve/her-chest")]);
   const fold = foldUnits(await units());
   assert.deepEqual(fold.anomalies, [], "a zero stock is no bad move");
@@ -225,6 +230,31 @@ test("ZERO ROOM: a labelled chest already full is stocked 0 — the nonce is spe
      VALUES (now(), 251.6, 'sbx-cy', 'units:take', 'sbx-eve/her-chest', 'holding', '{"units":true,"moves":[{"from":"sbx-eve/her-chest","to":"sbx-cy","label":"test-comets","n":5}]}', 'a take', 'hh:sbx-cy')`));
   for (const x of [251.7, 251.8]) assert.equal((await asOffice((c) => stockChests(c, { crossing: x }))).stocked.length, 0);
   assert.equal(totalOf(foldUnits(await units()), "sbx-eve/her-chest"), 15);
+});
+
+test("A LATE LABEL STOCKS AT ITS OWN SETTLEMENT: an empty chest admitted at S250 is stocked when S251 finds the label, and the receipt says both", { skip }, async () => {
+  await seed();
+  await asOffice((c) => stockChests(c, { crossing: 250.5 }));               // eve: unlabelled, unstocked
+  await owner((c) => law(c, SHA_B, 251, LABELS_B));
+  const r = await asOffice((c) => stockChests(c, { crossing: 251.5 }));
+  assert.match(r.line, /sbx-eve\/her-chest \+20 test-eves at S251, admitted at S250/);
+  const [act] = (await units()).filter((a) => a.object === "sbx-eve/her-chest" && a.action === UNIT_ACTION.stock);
+  assert.deepEqual([act.payload.settlement, act.payload.decided_at, act.payload.stocked], [250, 251, 20]);
+  const { effect } = (await owner((c) => c.query("SELECT effect FROM acts WHERE id = $1", [act.id]))).rows[0];
+  assert.equal(effect, "the town stocked sbx-eve/her-chest with 20 test-eves at S251, the settlement that found its creator's candy label (the chest was admitted at S250)");
+  assert.doesNotMatch(effect, /at the settlement that admitted it/, "a delayed stock does not claim it happened at admission");
+});
+
+test("A LABEL ALREADY THERE AT ADMISSION DECIDES AT ADMISSION, even when the tick first runs a settlement later — only the later label moves the date", { skip }, async () => {
+  await seed();                                                            // ana's label is in S250's law
+  await owner((c) => law(c, SHA_B, 251, LABELS_B));                        // eve's arrives at S251
+  await asOffice((c) => stockChests(c, { crossing: 251.5 }));              // the first tick to run
+  const acts = (await units()).filter((a) => a.action === UNIT_ACTION.stock);
+  const bowl = acts.find((a) => a.object === "sbx-ana/the-bowl"), eve = acts.find((a) => a.object === "sbx-eve/her-chest");
+  assert.deepEqual([bowl.payload.settlement, bowl.payload.decided_at], [250, 250], "ana's label was law at S250");
+  assert.deepEqual([eve.payload.settlement, eve.payload.decided_at], [250, 251], "eve's was not, until S251");
+  const effects = (await owner((c) => c.query("SELECT object, effect FROM acts WHERE id = ANY($1)", [[bowl.id, eve.id]]))).rows;
+  assert.match(effects.find((e) => e.object === "sbx-ana/the-bowl").effect, /at the settlement that admitted it \(S250\)$/);
 });
 
 test("ZERO ROOM, RACED: two ticks finding the same full chest spend the gift once", { skip }, async () => {

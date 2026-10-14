@@ -130,6 +130,7 @@ import { ARENA_TOOLS, ARENA_VERBS, arenaActViaOffice, arenaClosed } from "./aren
 // THE PORTAL GROUND'S OWN LAW outlived the arena: which room you stand in, its
 // stride and its spawn (src/portal-ground.mjs). Rides and vehicles are not this.
 import { cockpitPortal, groundAt, spawnPointFor } from "./portal-ground.mjs";
+import { caughtBounce, isHttpStatus, trippedError } from "./fault-words.mjs"; // the office's own words for its own fault (POS-573/578)
 
 export const apexEnabled = () => process.env.WORLD_APEX === "1";
 
@@ -450,7 +451,8 @@ export function crossingDeps() {
     stop: async (who, here, key, opts = {}) => walkViaOffice(WORLD_CLONE, { handle: who, x: here.x, y: here.y,
       ...(opts?.from && Number.isFinite(Number(opts.from.x)) && Number.isFinite(Number(opts.from.y)) ? { __from: { x: Number(opts.from.x), y: Number(opts.from.y) } } : {}),
       ...(opts?.exit === true ? { exit: true } : {}) }, key),
-    now: () => (Date.now() - Date.UTC(2026, 5, 12)) / (12 * 3600 * 1000),
+    // given the door's one reading (world-crossings.mjs § passageInstant), it names that reading's ferry
+    now: (ms = Date.now()) => (ms - Date.UTC(2026, 5, 12)) / (12 * 3600 * 1000),
     // THE ACTS THIS ACTOR HAS WRITTEN, oldest first — the ride fold's one input
     // (world-ride.mjs § rideStateFrom). Read from the STORE (POS-152), which is
     // never truncated, so an entry older than the drain cursor is still here; a
@@ -472,9 +474,7 @@ export function crossingDeps() {
           { ...process.env, WORLD_CLONE });
       } catch (e) {
         if (lockTimedOut(e)) { const err = new Error(LOCK_BUSY.defect); Object.assign(err, LOCK_BUSY); throw err; }
-        const err = new Error("the crossing pass tripped");
-        Object.assign(err, { code: 500, defect: "the crossing pass tripped", hint: String(e.stderr ?? e.message ?? e).slice(0, 300) });
-        throw err;
+        throw trippedError("the crossing pass tripped", e); // its stderr goes to the log (POS-578)
       }
       const result = JSON.parse(out.trim().split("\n").at(-1));
       if (result.error) { const err = new Error(result.error.defect); Object.assign(err, result.error); throw err; }
@@ -2410,6 +2410,24 @@ async function apexRead(args, key, ctx = {}) {
 
 // ── the act ─────────────────────────────────────────────────────────────────
 
+// THE ACT BRANCH'S CATCH (apexDo), a function so a test drives its rebuild
+// directly (the review of #525: a flip of the foreign-code line stayed green,
+// because the MCP door's answer classifies the code too).
+export function actCaught(e, done = {}) {
+  if (!isHttpStatus(e.code)) return { ...caughtBounce(e), ...done }; // a foreign code (pg's SQLSTATE, Node's ENOENT): its words go to the log (fault-words.mjs § caughtBounce, POS-573)
+  // THE EXTRAS A CALLER READS ARE CARRIED, BY NAME, and this list is the
+  // whole reason to read it twice: this line REBUILDS the bounce, so a
+  // field the door underneath added and this list does not name is dropped
+  // here and reaches nobody. `choices` (which resident?) has ridden since
+  // the multi-resident bounce; `walk` joined 2026-09-11 with the enter
+  // door's reach refusal, because the world page's "walk there and enter"
+  // button reads `walk.mark` off THIS body — the apex is the door it calls.
+  // A value nothing can read is the quiet failure this office has a museum
+  // of; adding a field below without adding it here builds one.
+  return { ...bounce(e.code, e.defect, e.hint,
+    { ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) }), ...done };
+}
+
 async function apexDo(args, key, ctx = {}) {
   const action = String(args.do ?? "").trim();
 
@@ -2801,17 +2819,7 @@ async function apexDo(args, key, ctx = {}) {
       }
     } catch (e) {
       if (!e?.code) throw e;
-      // THE EXTRAS A CALLER READS ARE CARRIED, BY NAME, and this list is the
-      // whole reason to read it twice: this line REBUILDS the bounce, so a
-      // field the door underneath added and this list does not name is dropped
-      // here and reaches nobody. `choices` (which resident?) has ridden since
-      // the multi-resident bounce; `walk` joined 2026-09-11 with the enter
-      // door's reach refusal, because the world page's "walk there and enter"
-      // button reads `walk.mark` off THIS body — the apex is the door it calls.
-      // A value nothing can read is the quiet failure this office has a museum
-      // of; adding a field below without adding it here builds one.
-      return { ...bounce(e.code, e.defect, e.hint,
-        { ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) }), ...done };
+      return actCaught(e, done);
     }
     // ── THE GROUND SETS ITS ENTRANT DOWN (LOGOS § The portal ground) ────────
     // AFTER the enter and only when it succeeded. The receipt keeps the shape
@@ -3039,7 +3047,7 @@ export async function readDomainFor(action, fields, key, oriented, ctx = {}) {
       return r?.error ? r : r;
     } catch (e) {
       if (!e?.code) throw e;
-      return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint };
+      return caughtBounce(e, { code: e.code, defect: e.defect, hint: e.hint }); // a foreign code (pg's SQLSTATE, Node's ENOENT): its words go to the log (fault-words.mjs § caughtBounce, POS-573)
     }
   };
   switch (action) {

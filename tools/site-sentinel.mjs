@@ -126,6 +126,12 @@
 //                 receipt; a blessing that cannot be verified an hour on is
 //                 STALE — past the hour, never silent. Tags over ls-remote; descent
 //                 by ONE remembered compare call per new (world, tag) pair.
+// 12. LAW PEN   — the law pen's state (/srv/world2-lab/state/ingest-law.json)
+//                 reads `ok` within 45 min. A law the parser would read
+//                 diminished is refused WHOLE (POS-619), which holds every law
+//                 update until the mark is fixed, so a refusal is DOWN with the
+//                 lint's sentence as its reason; any other failed run is DOWN;
+//                 none, unreadable or older than 45 min is STALE.
 //
 // ── ONE ALARM ROUTE (POS-556) ───────────────────────────────────────────────
 //
@@ -214,7 +220,7 @@ export const CONFIG = {
   dailyServed: "https://postmark.town/daily/ferrys-daily.html",
   dailySource: "https://raw.githubusercontent.com/postmark-town/postmark/main/TOWN_BULLETIN/ferrys-daily.md",
 
-  siteRepo: { owner: "keeminlee", name: "postmark-site" },
+  siteRepo: { owner: "postmark-town", name: "postmark-site" },
   townRepo: { owner: "postmark-town", name: "postmark" },
   dailyPath: "TOWN_BULLETIN/ferrys-daily.md",
 
@@ -345,6 +351,16 @@ export const CONFIG = {
     unit: "postmark-settlement.timer",
     slotsUtc: SETTLEMENT_SLOTS_UTC,
     graceMs: SETTLEMENT_GRACE_MS,
+  },
+
+  // §12 — the law pen (POS-619). Its timer fires every 15 minutes and every fire
+  // writes the state, so 45 is three missed fires: the roll-call's own
+  // allowance for this unit (deploy/box-rollcall-manifest.json), carried over.
+  lawPen: {
+    key: "law_pen", label: "the law pen",
+    path: "/srv/world2-lab/state/ingest-law.json",
+    unit: "postmark-world2-law-ingest.timer",
+    staleAfterMs: 45 * MINUTE,
   },
 
   requestTimeoutMs: 20_000,
@@ -990,6 +1006,42 @@ export function classifyMeeps({ raw = null, readError = null, nowMs, staleAfterM
   if (rec.status === "OK") return { verdict: "OK", reason: summary, detail };
   if (rec.status === "DEGRADED" || rec.status === "DOWN") return { verdict: "DOWN", reason: summary, detail };
   return { verdict: "STALE", reason: `the meeps record's status is ${JSON.stringify(rec.status ?? null)}, which this probe does not read — unread is never healthy`, detail };
+}
+
+// §12 — the law pen. PURE: `raw` is the state file's text, or null when there
+// is none (deploy/world2-ingest.sh writes /srv/world2-lab/state/ingest-law.json
+// at every fire, the idle ones included).
+//
+// WHY IT PAGES (POS-619, Wright 2026-10-14): law-ingest refuses a law the
+// parser would read diminished WHOLE, so one lossy class mark holds EVERY law
+// update until it is fixed (the heist's dial is a class mark). The roll-call
+// reads it as ALARM-failed, but only when somebody runs the roll-call; this
+// file is the one alarm route, so the held law is a probe here. The refusal
+// is the reason verbatim: the lint's own sentence names the mark and the fix.
+// Missing and unreadable are STALE, never UNKNOWN, as with the meeps.
+export function classifyLawPen({ raw = null, readError = null, nowMs, staleAfterMs = 45 * MINUTE, path = "the law pen's state" } = {}) {
+  if (raw == null) {
+    return { verdict: "STALE", reason: `there is no law pen state at ${path}${readError ? ` (${String(readError).slice(0, 80)})` : ""} — the law pen has not run, so nothing is carrying the world's law into the store` };
+  }
+  let st;
+  try { st = JSON.parse(raw); } catch (e) {
+    return { verdict: "STALE", reason: `the law pen state at ${path} does not parse (${String(e?.message ?? e).slice(0, 80)}) — unread is never healthy` };
+  }
+  const at = Date.parse(st?.at ?? "");
+  if (!Number.isFinite(at)) return { verdict: "STALE", reason: `the law pen state at ${path} carries no readable at — it cannot say when the law pen last ran` };
+  const age = nowMs - at;
+  const detail = { status: st.status ?? null, at: st.at, sha: st.law?.sha ?? null, exit: st.law?.exit ?? null };
+  if (age > staleAfterMs) {
+    return { verdict: "STALE", reason: `the law pen last wrote ${humanDuration(age)} ago (${st.at}; stale after ${humanDuration(staleAfterMs)}) — the store's law stops advancing and nothing says so`, detail };
+  }
+  if (st.status === "ok") return { verdict: "OK", reason: `ingested the law at ${String(st.law?.sha ?? "?").slice(0, 9)} (${st.at})`, detail };
+  if (typeof st.refusal === "string" && st.refusal.trim()) {
+    const [first, ...rest] = st.refusal.trim().split("\n");
+    const marks = rest.filter((l) => l.startsWith("  ")).map((l) => l.trim());
+    return { verdict: "DOWN", reason: `the law pen REFUSED the law, and every law update waits until the mark is fixed: ${first}${marks.length ? ` — ${marks.join(" · ")}` : ""}`, detail };
+  }
+  const tail = String(st.detail ?? "").trim().split("\n").slice(-1)[0] ?? "";
+  return { verdict: "DOWN", reason: `the law pen's last run reads ${JSON.stringify(st.status ?? null)}${st.law?.exit != null ? ` (exit ${st.law.exit})` : ""} — the store's law did not advance${tail ? `: ${tail.slice(0, 200)}` : ""}`, detail };
 }
 
 // ── §11 the settlement: the sweep and its blessing ──────────────────────────
@@ -1708,6 +1760,14 @@ export async function tick({
     try { raw = readFileSync(config.meeps.path, "utf8"); } catch (e) { readError = e?.code ?? e?.message ?? String(e); }
     const mp = classifyMeeps({ raw, readError, nowMs, staleAfterMs: config.meeps.staleAfterMs, path: config.meeps.path });
     probes.push({ key: config.meeps.key, label: config.meeps.label, kind: "meeps", verdict: mp.verdict, reason: mp.reason, ...(mp.detail ? { detail: mp.detail } : {}) });
+  }
+
+  // §12 — the law pen. A local read of the state its unit writes.
+  if (config.lawPen) {
+    let raw = null, readError = null;
+    try { raw = readFileSync(config.lawPen.path, "utf8"); } catch (e) { readError = e?.code ?? e?.message ?? String(e); }
+    const lp = classifyLawPen({ raw, readError, nowMs, staleAfterMs: config.lawPen.staleAfterMs, path: config.lawPen.path });
+    probes.push({ key: config.lawPen.key, label: config.lawPen.label, kind: "law_pen", verdict: lp.verdict, reason: lp.reason, ...(lp.detail ? { detail: lp.detail } : {}) });
   }
 
   // §11 — the settlement. A local read of the sweep's receipt, the world's tags

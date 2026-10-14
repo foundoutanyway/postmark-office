@@ -96,17 +96,17 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 export const VENDOR = Object.freeze({
-  journal: { repo: "keeminlee/postmark-office", path: "src/world-journal.mjs",
+  journal: { repo: "postmark-town/postmark-office", path: "src/world-journal.mjs",
              blob: "70c5a1f8ee751062678c696aee40975fcf969cd7", at: "90d046b255873c57d1e8ec251be20c3f58bd3a7f" },
-  hold: { repo: "keeminlee/postmark-office", path: "src/world-hold.mjs",
+  hold: { repo: "postmark-town/postmark-office", path: "src/world-hold.mjs",
           blob: "7ad265ce8a22c3a2d6df1fae3569b283171bdcec", at: "90d046b255873c57d1e8ec251be20c3f58bd3a7f" },
-  claims: { repo: "keeminlee/postmark-office", path: "src/world2-claims.mjs",
+  claims: { repo: "postmark-town/postmark-office", path: "src/world2-claims.mjs",
             blob: "63602cc76af6c68cbf68b8ca976f410ea1319387", at: "90d046b255873c57d1e8ec251be20c3f58bd3a7f" },
-  rebuild: { repo: "keeminlee/postmark-office", path: "tools/dynamic-rebuild.mjs",
+  rebuild: { repo: "postmark-town/postmark-office", path: "tools/dynamic-rebuild.mjs",
              blob: "a446df474c2110d502d57bcf7f117f7717ad119d", at: "90d046b255873c57d1e8ec251be20c3f58bd3a7f" },
-  entities: { repo: "keeminlee/postmark-office", path: "src/dynamic-entities.mjs",
+  entities: { repo: "postmark-town/postmark-office", path: "src/dynamic-entities.mjs",
               blob: "dc2fa5109d4b7b6e7943cb7324863152429cb792", at: "90d046b255873c57d1e8ec251be20c3f58bd3a7f" },
-  world: { repo: "keeminlee/postmark-office", path: "src/world.mjs",
+  world: { repo: "postmark-town/postmark-office", path: "src/world.mjs",
            blob: "de7f4027b9c3c5057673cbe3203c5f800dd48f31", at: "90d046b255873c57d1e8ec251be20c3f58bd3a7f" },
 });
 

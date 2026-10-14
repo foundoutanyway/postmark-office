@@ -124,10 +124,11 @@ const householdKeys = new Map();
  * residents' handles resolved to `solo:<login>` and read an empty portfolio
  * and none of their own drafts, while the write path, which resolves from the
  * acting HANDLE (`world-apex.mjs § worldHouseholdOf`), had filed those drafts
- * under their house. 1.0 already answers this (`world-stake.mjs §
- * worldPortfolioStakeSlice`): "the household a caller belongs to is the
- * pins-household of their own handles". So: the first of the key's handles
- * the registry places in a house names it. Only when none does is the label
+ * under their house. 1.0 answers it the same way (`world-stake.mjs §
+ * worldPortfolioStakeSlice`, which since POS-573 asks the store's registry
+ * for every handle on the key, never the town ledger's pins): the household is
+ * where the key's HANDLES live. So: the first of the key's handles the
+ * registry places in a house names it. Only when none does is the label
  * asked, and `keyHouseholdOf` says so on `disclosure`.
  */
 export async function keyHouseholdOf(p, key) {

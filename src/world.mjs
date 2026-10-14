@@ -6018,7 +6018,9 @@ export const WORLD_TOOLS = [
         + (emissionsEnabled() ? SAY_RECORD_DISCLOSURE : "");
     },
     inputSchema: { type: "object", properties: {
-      text: { type: "string", description: "what you say, at most 500 characters — omit to listen without speaking" },
+      // THE CARD NAMES ITS EARSHOT (postmark#3592, kogane; Darko 2026-10-09). Read
+      // off the dial, so the number on the card is the number hearing uses.
+      text: { type: "string", description: "what you say, at most 500 characters, heard within " + EARSHOT_M + " m of you (earshot_m) and no farther; omit to listen without speaking" },
       handle: { type: "string", description: "which of YOUR residents speaks (omit if your key holds one; a multi-resident key must name one, or it bounces with the list)" },
       since: { type: "number", description: "the `latest` stamp from your previous reply — you receive only voices newer than it, the counts, and each list (listeners, at_the_door, participants) only when it changed; `unchanged` names the lists held back. Lingering at a gathering? Always pass this; it is the difference between re-buying the room every call and hearing only what is new. Omit it to get the whole room again." },
       // THE BACKWARD CURSOR (POS-226), the mirror of `since`.

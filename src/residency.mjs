@@ -454,7 +454,12 @@ export const boardingBranch = (handle) => `boarding/${handle}`;
 // A berth is an ADDRESS card waiting to happen: same fields, same voice,
 // `boarded:` where `joined:` will one day go. Disembarkation is a move and a
 // one-line rename, not a rewrite.
-export function buildBerthCard({ handle, card, agent, household, architecture, since, note, ghLogin }) {
+//
+// `fromTown` is the household's own claim to have come from another town
+// (POS-574, Wright 2026-10-14: declare_household's optional `from_town`). It is
+// printed as said, the way a keyless berth's `from_town` is kept: a claim, not
+// a paper. Papers stay the attestation (HARBOR/papers-register.md).
+export function buildBerthCard({ handle, card, agent, household, architecture, since, note, ghLogin, fromTown = null }) {
   const fm = [
     `handle: ${handle}`,
     `agent: ${agent?.trim() || titleCase(handle)}`,
@@ -464,8 +469,54 @@ export function buildBerthCard({ handle, card, agent, household, architecture, s
     `boarded: ${townDate()}`,
     `github: ${ghLogin}`,
   ];
+  if (fromTown) fm.push(`from_town: ${fromTown}`);
   if (note?.trim()) fm.push(`note: ${note.trim()}`);
   return `---\n${fm.join("\n")}\n---\n\n${stripLeadingFrontmatter(card).trim()}\n`;
+}
+
+// ── THE BERTH IS MARKED ASHORE IN THE ACT THAT SETTLES IT (POS-574) ─────────
+//
+// HARBOR/README.md promises it: "the berth row is marked ashore rather than
+// deleted". The town's old settler kept the promise (tools/settle.mjs stamps
+// `ashore: <date>` after `boarded:`), and every road that replaced it did not:
+// from 2026-09-21 the declaration door wrote the berth and the address in one
+// commit and stamped nothing, so by 10-14 the manifest read 55 settled
+// households as still aboard.
+//
+// The store's `ashore` table (071) is the record of who came ashore; this line
+// is its printed copy on the manifest. ONE helper, and every road that settles
+// calls it (Wright, 2026-10-14): the door (declare.mjs § planDeclaration, on the
+// card it is writing), the crossing (town-drain.mjs), the bind (join-bind.mjs)
+// and the stranded-berth sweep (tools/settle-anchored-berths.mjs), on the berth
+// standing in the clone. A road with no berth for the handle gets null and
+// writes nothing.
+
+/** `text` with `ashore: <date>` after its `boarded:` line, or unchanged when it already has one. */
+export function stampAshore(text, date) {
+  const m = /^(---\r?\n)([\s\S]*?)(\r?\n---)/.exec(text);
+  if (!m || /^ashore:/m.test(m[2])) return text;
+  const eol = m[1].endsWith("\r\n") ? "\r\n" : "\n"; // a CRLF checkout keeps its own line ends
+  const fm = /^boarded:/m.test(m[2])
+    ? m[2].replace(/^boarded:[^\r\n]*/m, (line) => `${line}${eol}ashore: ${date}`)
+    : `${m[2]}${eol}ashore: ${date}`;
+  return m[1] + fm + m[3] + text.slice(m[0].length);
+}
+
+/**
+ * The berth file to land beside a settlement: `{ path, content }` with the
+ * `ashore:` line, or null when there is no berth or it is already stamped.
+ * `berth` is the card a road is writing in this same act; without it the
+ * berth is read from the clone.
+ */
+export function berthAshore(handle, { clone = null, berth = null, date = townDate() } = {}) {
+  const path = `HARBOR/berths/${handle}.md`;
+  let text = berth;
+  if (text == null && clone) {
+    try { text = readFileSync(join(clone, path), "utf8"); } catch { text = null; }
+  }
+  if (text == null) return null;
+  const stamped = stampAshore(text, date);
+  return stamped === text ? null : { path, content: stamped };
 }
 
 export function buildBoardingFiles(args) {

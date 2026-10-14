@@ -35,6 +35,7 @@ import { probeOf } from "./index-probe.mjs";
 import { loadPins } from "./registry-store.mjs";
 import { clientIp } from "./bouncer.mjs";
 import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
+import { CHARTERED_SHORES } from "../tools/harbor-watch.mjs";
 
 const PUBLIC_BASE = (process.env.PUBLIC_BASE ?? "https://postmark.town/api").replace(/\/+$/, "");
 const GH_AUTH = process.env.GITHUB_AUTH_URL ?? "https://github.com/login/oauth/authorize";
@@ -405,6 +406,62 @@ export async function mintBerth(odb, slug, fromTown = null) {
 // A declared origin is a slug-shaped claim ("1f3d9", "1f916", "ai-village").
 // Deliberately loose — the registry, not this regex, decides what a town is.
 export const FROM_TOWN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+// ── who berthed from where (POS-574) ────────────────────────────────────────
+// The harbor's count of keyless arrivals by the town each one CLAIMED to sail
+// from: `ever` minted, `live` (unexpired) and `cosigned` into a house. Counts
+// only, never a slug: a berth is "nothing durable", and a public list of names
+// would make it something. A berth row is never deleted (031), so `ever` is the
+// whole history. Read at GET /berth; tools/harbor-watch.mjs prints it into the
+// snapshot as each town's `berths_from_here`.
+//
+// ONLY A CHARTERED TOWN IS NAMED (review of POS-574). from_town is any string
+// that passes FROM_TOWN, so a public read keyed by it would let anyone with a
+// POST /berth put a word of their choosing on the town's public record, for
+// good. The chartered shores (harbor-watch.mjs § CHARTERED_SHORES) are named;
+// every other claim is summed into `other`, which is always present.
+export async function berthArrivals(odb, t = now(), { chartered = CHARTERED_SHORES } = {}) {
+  const rows = await asPaper(odb).all(
+    `SELECT from_town, COUNT(*) AS ever,
+            COUNT(CASE WHEN expires >= ? THEN 1 END) AS live,
+            COUNT(cosigned_at) AS cosigned
+       FROM berths WHERE from_town IS NOT NULL GROUP BY from_town ORDER BY from_town`, t);
+  const named = new Set(chartered);
+  const zero = () => ({ ever: 0, live: 0, cosigned: 0 });
+  const by = { other: zero() };
+  for (const r of rows) {
+    const slot = named.has(r.from_town) ? (by[r.from_town] ??= zero()) : by.other;
+    slot.ever += Number(r.ever);
+    slot.live += Number(r.live);
+    slot.cosigned += Number(r.cosigned);
+  }
+  return by;
+}
+
+// THE COUNT IS READ AT MOST ONCE A MINUTE (review of POS-574). GET /berth is a
+// keyless public door, and a GROUP BY per hit is a store query anyone can
+// repeat; a store that cannot answer would log one line per hit. So the answer,
+// or its absence, is kept for `ttlMs`: one read and at most one logged line a
+// minute per process, whatever the traffic. The count moves on a mint, not by
+// the second, and the harbor watch reads it every 15 minutes.
+export const ARRIVALS_TTL_MS = 60_000;
+export function arrivalsReader({ read = berthArrivals, ttlMs = ARRIVALS_TTL_MS, clock = () => Date.now(), log = console.error } = {}) {
+  let held = null; // { at, arrivals }
+  return async (odb) => {
+    if (held && clock() - held.at < ttlMs) return held.arrivals;
+    let arrivals = null;
+    try {
+      arrivals = {
+        by_from_town: await read(odb),
+        note: "keyless berths by the town each one claimed to sail from: ever minted, live now (unexpired), co-signed into a house. Only chartered towns are named; every other claim is counted in other. Counts only; a from_town is a claim, not a paper. Read at most once a minute.",
+      };
+    } catch (e) {
+      log(`[berth] the arrivals count could not be read: ${String(e?.message ?? e).slice(0, 200)}`);
+    }
+    held = { at: clock(), arrivals };
+    return arrivals;
+  };
+}
 
 /** A live berth holds its slug against re-mint; an expired one frees it. */
 export async function berthTaken(odb, slug) {

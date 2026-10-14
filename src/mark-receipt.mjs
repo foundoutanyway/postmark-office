@@ -506,17 +506,61 @@ const git = (repo, args) => execFileSync("git", ["-C", repo, ...args], {
  * Each flag fixes a different case and BOTH are needed: `--follow` alone still
  * answers S6 for the re-leave, oldest-add alone still answers S8 for the move.
  * `test/mark-receipt.test.mjs § THE THREE LIVES A MARK'S FILE CAN HAVE`.
+ *
+ * ── A LOOK-ALIKE IS NOT A MOVE (repaired 2026-10-13, postmark#3548) ──────────
+ *
+ * `git log --follow` follows more than renames: it runs copy detection as well,
+ * so a NEW file that is mostly the same as an older file reads as a copy of it
+ * and the walk carries on down the OLDER file's history. Mark files are short
+ * and share a frontmatter shape, so two marks with the same body are copies to
+ * git. Live: little-bird/a-second-cold-cup-on-the-long-bench first lands in the
+ * S97 commit, and its receipt named S42 — the settlement that added the FIRST
+ * cup — with a real sha, which is the one thing this function exists to prevent.
+ *
+ *   a look-alike of an older mark   truth S10 · answered S9   wrong
+ *
+ * So the walk is done by hand, one move at a time, and a hop is taken only when
+ * the commit that added the path RENAMED another path into it (`-M`, renames
+ * only: the source is gone). A copy leaves its source standing and is not a
+ * move. Exact matches only (`--follow -M100%`) is not the repair: the world's
+ * household un-nesting (857dc401) renamed 255 mark files and edited 99 of them
+ * in the same commit, and every one of those would have read as a fresh add.
+ * `test/mark-receipt.test.mjs § TWO MORE LIVES`.
  */
+const MAX_MOVES = 16;
+
+/** The path `commit` RENAMED into `path`, or null. Renames only — never copies. */
+function renamedFrom(repo, commit, path) {
+  let out;
+  try {
+    out = git(repo, ["diff-tree", "-r", "-M", "-z", "--root", "--no-commit-id", "--name-status", "--diff-filter=R", commit]);
+  } catch { return null; }
+  // -z: `R<score>\0<from>\0<to>\0`, repeated.
+  const f = out.split("\0");
+  for (let i = 0; i + 2 < f.length; i += 3) {
+    if (/^R\d*$/.test(f[i]) && f[i + 2] === path) return f[i + 1];
+  }
+  return null;
+}
+
 export function settlementThatCarried(repo, path, { tags = null, ref = "HEAD" } = {}) {
   if (!repo || !path) return null;
-  let added;
+  let added = "";
   try {
-    // --follow so a rename is one life, not two; no -1 so every add is listed
-    // (newest first) and the OLDEST is taken below. `--follow` takes exactly one
-    // pathspec, which is what this function is handed.
-    const adds = git(repo, ["log", "--follow", "--diff-filter=A", "--format=%H", ref, "--", path])
-      .split("\n").map((s) => s.trim()).filter(Boolean);
-    added = adds.length ? adds[adds.length - 1] : "";
+    // No -1, so every add of the path is listed (newest first) and the OLDEST
+    // is taken. Then one hop back for each RENAME into it, so a move is one
+    // life, not two — and a look-alike is its own life, not its twin's.
+    let at = ref, p = path;
+    for (let hop = 0; hop < MAX_MOVES; hop++) {
+      const adds = git(repo, ["log", "--diff-filter=A", "--format=%H", at, "--", p])
+        .split("\n").map((s) => s.trim()).filter(Boolean);
+      if (!adds.length) break;
+      added = adds[adds.length - 1];
+      const from = renamedFrom(repo, added, p);
+      if (!from) break;
+      p = from;
+      at = `${added}^`;
+    }
   } catch { return null; }
   if (!added) return null;
   let containing;

@@ -669,6 +669,33 @@ test("a berth's declared household and card are rendered as text on the co-sign 
   assert.match(await denied.text(), /Not co-signed/);
 });
 
+// POS-574: GET /berth answers, beside the rules, who berthed from where, as
+// counts only. tools/harbor-watch.mjs reads exactly this door for the harbor's
+// snapshot. Driven on the real server: the count moves when a traveller boards.
+// The count is held a minute (oauth.mjs § arrivalsReader), so this file reads
+// GET /berth once, after both mints; no other test here reads it, and no other
+// berth in this file claims a town.
+test("GET /berth counts keyless berths by the town each claimed, names only chartered towns, and names nobody", async () => {
+  for (const [slug, town] of [["far-traveller", "1f3d9"], ["word-on-a-wall", "free-coins-here"]]) {
+    const boarded = await fetch(`${BASE}/berth`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slug, from_town: town }),
+    });
+    assert.equal(boarded.status, 201, `${slug} boards keyless, with the town it claims`);
+  }
+
+  const r = await fetch(`${BASE}/berth`);
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.ok(body.visitor_rules, "the rules still answer here");
+  assert.deepEqual(body.arrivals.by_from_town["1f3d9"], { ever: 1, live: 1, cosigned: 0 });
+  assert.deepEqual(body.arrivals.by_from_town.other, { ever: 1, live: 1, cosigned: 0 }, "an unchartered claim is counted in other");
+  assert.match(body.arrivals.note, /claim, not a paper/);
+  const text = JSON.stringify(body);
+  assert.ok(!text.includes("free-coins-here"), "a stranger's string never reaches the public read");
+  assert.ok(!text.includes("far-traveller") && !text.includes("word-on-a-wall"), "counts only: a berth is nothing durable, so no slug is published");
+});
+
 // ── POS-570 · a berth's "where did you hear" answer leaves through no read ─────
 //
 // begin asks the question now, and parks the answer APART from the declaration

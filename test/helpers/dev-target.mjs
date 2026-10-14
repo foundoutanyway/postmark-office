@@ -46,10 +46,13 @@ function scratchClone(source, dest) {
 
 /** The world's law into the store at the world clone's HEAD (world2/tools/law-ingest.mjs, its main run). */
 export async function ingestLaw(store, world) {
-  const { deriveLaw, writeLaw } = await import("../../world2/tools/law-ingest.mjs");
-  const { rows } = await deriveLaw({ lawRepo: world });
+  const { deriveLaw, writeLaw, lossyRefusal } = await import("../../world2/tools/law-ingest.mjs");
+  const { rows, lossy } = await deriveLaw({ lawRepo: world });
+  const lawSha = g(world, "rev-parse", "HEAD");
+  const refusal = lossyRefusal(lawSha, lossy); // the main run refuses a lossy law whole (POS-619)
+  if (refusal) throw new Error(refusal);
   const c = await store.connect("law_ingester");
-  try { await writeLaw(c, { lawSha: g(world, "rev-parse", "HEAD"), rows }); } // the main run: it sets projection_heads['world-law'], the clearing's pin
+  try { await writeLaw(c, { lawSha, rows }); } // the main run: it sets projection_heads['world-law'], the clearing's pin
   finally { await c.end(); }
 }
 

@@ -83,6 +83,7 @@
 import { singleLogEnabled } from "./dynamic-store.mjs";
 import { WORLD_CLONE } from "./world-store.mjs"; // the standing-scoped inbox door defaults to the office's own world checkout
 import { worldFreezeBounce } from "./freeze.mjs";
+import { ringMovedTo, ringOf } from "./ring-box.mjs";
 import { appendActFlipped, appendJournal, laneFlipped } from "./world-journal.mjs";
 // `stanceQuery` is the stance read's OWN credential (`stance_reader`), and the
 // only place in `src/` that is not `office_api`. It lives beside `actsQuery` so
@@ -1238,6 +1239,23 @@ async function setDownsGroup(key, inbox, deps = {}) {
 }
 
 /**
+ * Was an amend filed that answers this drop? `true`, `false`, or `null` when
+ * the record cannot say. An amend lands in `acts` only when the single log is on
+ * and the mark lane writes there; anywhere else, finding none is not knowing none.
+ */
+async function setDownAmendFiled(on, dropSeq) {
+  if (dropSeq == null || !singleLogEnabled() || !laneFlipped("mark")) return null;
+  try {
+    const [{ actsQuery }, { ACTION_AMEND, CLASS_MARK }] = await Promise.all([import("./world2-acts.mjs"), import("./world-journal.mjs")]);
+    const rows = await actsQuery("SELECT id, payload FROM acts WHERE class = $1 AND action = $2 AND object = ANY($3) ORDER BY id",
+      [CLASS_MARK, ACTION_AMEND, [String(on)]]);
+    if (!Array.isArray(rows)) return null;
+    const payloadOf = (p) => (typeof p === "string" ? JSON.parse(p) : p) ?? {};
+    return rows.some((r) => String(payloadOf(r.payload)._set_down?.act_id) === String(dropSeq));
+  } catch { return null; }
+}
+
+/**
  * The author's house answers a stranger's set-down: one stance row, and on
  * `welcomed` the author's amend. Everything that can refuse refuses BEFORE the
  * row is written, so a refusal leaves nothing behind.
@@ -1252,9 +1270,16 @@ async function answerSetDown({ repo, on, stance, by, key, target, sd, dbPath, wi
 
   const prior = hold.setDownAnswer({
     stances: await stanceRows({ dbPath, worldClone: repo }), thing: on, dropSeq: drop.seq, madeBy, householdOf });
-  if (prior?.stance === "welcomed" && stance === "opposed")
-    throw bounce(409, `your house has already accepted ${setter}'s set-down of ${on}`,
-      `accepting filed the amend that re-sites it in ${madeBy}'s name, so there is no set-down left to refuse — to move it back, amend the mark with world { do: "leave-mark", args: { slug, amend: true, at } }. Nothing was written.`);
+  // A welcome whose amend the door refused moved nothing, so it does not close
+  // the set-down (postmark#3549). Only an amend that answers THIS drop does, and
+  // the record is asked for one; a record that cannot say keeps the refusal.
+  if (prior?.stance === "welcomed" && stance === "opposed") {
+    const filed = await setDownAmendFiled(on, drop.seq);
+    if (filed !== false)
+      throw bounce(409, `your house has already accepted ${setter}'s set-down of ${on}`, filed
+        ? `accepting filed the amend that re-sites it in ${madeBy}'s name, so there is no set-down left to refuse — to move it back, amend the mark with world { do: "leave-mark", args: { slug, amend: true, at } }. Nothing was written.`
+        : `this door could not tell whether the amend that accepting files in ${madeBy}'s name was filed, so it will not record a refusal over one that may stand — try again, or to move it back, amend the mark with world { do: "leave-mark", args: { slug, amend: true, at } }. Nothing was written.`);
+  }
 
   let amendDeps = deps;
   if (stance === "welcomed") {
@@ -1268,6 +1293,14 @@ async function answerSetDown({ repo, on, stance, by, key, target, sd, dbPath, wi
       : (await (await import("./world.mjs")).worldMarkById(on)).mark;
     const built = hold.setDownAmend({ thing: on, mark, stood, actor: setter });
     if (built.refused) throw bounce(409, `${on} cannot be re-sited by an amend at this door`, `${built.refused} — nothing was written`);
+    // The same door refuses a point outside the parent the mark's filing
+    // declares (`world.mjs § declaredParentGuard`, postmark#3020), so that is
+    // asked here too, of the amend as the door will see it: its ring, if it
+    // has one, moved onto the standpoint first (postmark#3549).
+    const next = ringOf(built.payload.points)
+      ? { ...built.payload, points: ringMovedTo(built.payload.points, built.payload.at) } : built.payload;
+    const outside = await (await import("./world.mjs")).declaredParentGuard(on, next);
+    if (outside) throw bounce(outside.code, outside.defect, `${outside.hint} — nothing was written`);
     amendDeps = { ...deps, mark };
   }
 

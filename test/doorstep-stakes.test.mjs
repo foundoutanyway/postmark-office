@@ -287,7 +287,7 @@ test("postmark#3757 · THE FALSIFIER: a commons row whose registered path left m
   assert.equal(by["kinofire/the-gloaming"].at_risk, true, "THE CONTROL: commons, ✦0, path on main — swept, and warned");
   assert.equal(seg.at_risk, 1);
   // the verdict IS the sweep's: the same function, asked the same row
-  assert.equal(VERDICT.unpublishVerdict(KINO_REGISTRY["kinofire/the-too-big-fireplace"], { escrow: 0, pathOnMain: false }).unpublish,
+  assert.equal(VERDICT.unpublishVerdict(KINO_REGISTRY["kinofire/the-too-big-fireplace"], { escrow: 0, pathOnMain: false, standing: null }).unpublish,
     by["kinofire/the-too-big-fireplace"].at_risk);
 });
 
@@ -328,4 +328,27 @@ test("postmark#3757 · pathAtRef: in the tree, not in it, and a ref this clone c
     assert.equal(pathAtRef(repo, "main", "WORLD/marks/let-there-be-light/the-too-big-fireplace/mark.md"), false, "the registry's old root path");
     assert.equal(pathAtRef(repo, "refs/tags/settlement/S999", "WORLD/marks/x/mark.md"), null, "a ref the clone does not hold is unread, not absent");
   } finally { rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
+
+test("postmark#3757 · THE SAFETY HALF: a commons row whose mark now walks home is not at risk at ✦0, and is not warned", async () => {
+  // keith/the-garage's shape (world main 9988b669): admitted as commons, its
+  // row written once, its household's parcel around it now. The sweep walks
+  // its standing at the crossing and keeps it; so does this page.
+  const marks = [
+    { id: "keith/the-garage", kind: "sited", by: "keith", household: "keith", tier: "home" },
+    { id: "keith/a-bench-on-the-road", kind: "sited", by: "keith", household: "keith", tier: "market" },
+  ];
+  const reg = {
+    "keith/the-garage": { household: "keith", path: "WORLD/marks/keith/the-garage/mark.md", class: "commons" },
+    "keith/a-bench-on-the-road": { household: "keith", path: "WORLD/marks/keith/a-bench-on-the-road/mark.md", class: "commons" },
+  };
+  const seg = await stakesFor(["keith"], readers({
+    world: async () => ({ state: { marks }, ref: "origin/main" }), registry: async () => reg,
+    pathAt: async () => () => true, escrow: async () => ({ townSha: HEAD, byMark: new Map(), reason: null }),
+  }));
+  const by = Object.fromEntries(seg.rows.map((r) => [r.mark, r]));
+  assert.equal(by["keith/the-garage"].at_risk, false, "a home is not swept, whatever its row says");
+  assert.equal(by["keith/the-garage"].class, "commons", "the row still reads as the registry holds it");
+  assert.equal(by["keith/a-bench-on-the-road"].at_risk, true, "THE CONTROL: a commons mark that walks market is");
+  assert.match(SWEEP_RULE, /walked at the crossing, is still commons/);
 });

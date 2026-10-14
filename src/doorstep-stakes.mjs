@@ -97,7 +97,7 @@ const defaultEscrow = async () => {
 export const REGISTRY_PATH = "WORLD/settlement-publications.json";
 // The rule in words: world unpublish-verdict.mjs § UNPUBLISH_RULE, verbatim, and
 // test/doorstep-stakes.test.mjs holds the two equal at the pinned world.
-export const SWEEP_RULE = 'the settlement unpublishes a mark its registry holds as class "commons" when no open stamps stand behind it at the crossing and its registered path is on main ("commons needs escrow > 0"); home and constitution rows, and marks the registry does not hold, are never swept';
+export const SWEEP_RULE = 'the settlement unpublishes a mark its registry holds as class "commons" when no open stamps stand behind it at the crossing, its registered path is on main, and its standing, walked at the crossing, is still commons ("commons needs escrow > 0"); a mark that walks home or constitution, a home or constitution row, and a mark the registry does not hold are never swept';
 
 /**
  * A STAKE MADE SINCE THE COPY IS NOT HERE YET, AND THE READ SAYS SO (POS-412).
@@ -137,11 +137,13 @@ export function stakesRowsFrom({ handles = [], marks = [], registry = {}, byMark
     const entry = registry?.[m.id] ?? null;
     const cls = entry?.class ?? null;
     const escrow = byMark instanceof Map ? (byMark.get(m.id) ?? 0) : null;
-    // Founding estate (no row) is never swept; a row is the rule's to judge.
+    // Founding estate (no row) is never swept; a row is the rule's to judge,
+    // with the mark's standing as the fold walked it (`tier`), which the
+    // sweep asks too: a mark that walks home is never taken (the safety half).
     const atRisk = escrow === null ? null
       : !entry ? false
       : typeof rule !== "function" ? null
-      : rule(entry, { escrow, pathOnMain: () => pathOnMain(entry.path) }).unpublish;
+      : rule(entry, { escrow, pathOnMain: () => pathOnMain(entry.path), standing: m.tier ?? null }).unpublish;
     rows.push({
       mark: m.id, kind: m.kind ?? null, class: cls, escrow, at_risk: atRisk,
       ...(atRisk ? { act: stakeEnvelope(m.id) } : {}),

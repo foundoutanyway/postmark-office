@@ -19,6 +19,7 @@
 //   votes.mjs § votesAvailable          says yes, so read_votes reaches its catch
 //   world.mjs § worldSay (a berth)      throws inside the say's own try
 //   world.mjs § callWorldTool           throws (a read domain's tool call)
+//   fund-exec / gift-exec               export classifyFatal, and their main() is commented out
 //
 // The hook refuses to load a module whose anchor is not there exactly once, so a
 // moved function fails this file loudly. Nothing in src/ knows about it.
@@ -64,6 +65,9 @@ const EDITS = {
   "/src/world-apex.mjs": [["export async function worldApex(args = {}, key = null, ctx = {}) {", "if (process.env.SYNTH_THROW) ${THROW}"]],
   "/src/votes.mjs": [["export function votesAvailable(clone) {", "if (process.env.SYNTH_THROW) return true;"],
     ["export async function voteList(clone, { env = process.env } = {}) {", "if (process.env.SYNTH_THROW) ${THROW}"]],
+  // the two children whose last word is classifyFatal's: loaded as modules, not run
+  "/src/fund-exec.mjs": [["main().catch((e) => { console.error(String(e?.stack ?? e)); process.exit(1); });", "export { classifyFatal }; //", "replace"]],
+  "/src/gift-exec.mjs": [["main().catch((e) => { console.error(String(e?.stack ?? e)); process.exit(1); });", "export { classifyFatal }; //", "replace"]],
   "/src/world.mjs": [["const rulesFirst = await visitorRulesGate(key, args, { speaking: Boolean(text.trim()) });",
     "if (process.env.SYNTH_THROW) ${THROW}", "before"],
     ["export async function callWorldTool(name, args = {}, key = null, ctx = {}) {", "if (process.env.SYNTH_WORLD_TOOL) ${THROW.replace("SYNTH_THROW", "SYNTH_WORLD_TOOL")}"]],
@@ -76,7 +80,7 @@ export async function load(url, context, nextLoad) {
   for (const [anchor, line, where] of EDITS[at]) {
     if (anchor === null) { src += "\\n" + line + "\\n"; continue; }
     if (src.split(anchor).length !== 2) throw new Error("hint-leaks hook: the anchor is not in " + at + " exactly once: " + anchor);
-    src = src.replace(anchor, () => where === "before" ? line + " " + anchor : anchor + " " + line);
+    src = src.replace(anchor, () => where === "before" ? line + " " + anchor : where === "replace" ? line + " " + anchor : anchor + " " + line);
   }
   return { ...r, source: src, shortCircuit: true };
 }
@@ -290,3 +294,16 @@ test("POS-573 world-apex.mjs § readDomainFor: a tool's foreign error in a read'
   keepsOut(value, secretsOf(s), "readDomainFor");
   logSays(log, secretsOf(s), "readDomainFor");
 });
+
+// ── fund-exec / gift-exec: classifyFatal's last word ─────────────────────────
+// An unclassified fatal was a 500 whose hint was the stderr's first line. THE
+// FLIP: that line back as the hint.
+for (const [child, defect] of [["src/fund-exec.mjs", "the receipt refused"], ["src/gift-exec.mjs", "the mint refused"]]) {
+  test(`POS-578 ${child} § classifyFatal: an unclassified fatal is the office's 500, its stderr in the log`, async () => {
+    const { classifyFatal } = await load(child);
+    const { value, log } = await logged(() => classifyFatal(SECRET_STDERR));
+    assert.deepEqual(value, { code: 500, defect, hint: FAULT_LOGGED });
+    logSays(log, [SECRET_STDERR], child);
+    assert.equal(classifyFatal("FATAL: the ledger is behind the mail").code, 409, "a classified fatal still answers in its own words");
+  });
+}

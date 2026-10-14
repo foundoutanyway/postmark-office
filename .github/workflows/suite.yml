@@ -160,10 +160,18 @@ jobs:
         run: git fetch -q --no-tags --depth=1 origin '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/train/*:refs/remotes/origin/train/*'
 
       # Tests commit into scratch repos; a runner has no git identity of its own.
+      # The runner's git (2.47+) also runs auto-maintenance DETACHED after a
+      # commit, fetch or rebase: the command returns while its child still writes
+      # .git/objects, and a test's teardown rmdir reds ENOTEMPTY (POS-419, POS-580).
+      # In the foreground, a git call has finished with the repo when it returns.
+      # This is the class fix for every test; test/helpers/temp-dir.mjs is the
+      # per-test belt (it sets the same two keys for its importers anywhere).
       - name: Git identity for the suite's scratch repos
         run: |
           git config --global user.name "postmark-office-ci"
           git config --global user.email "postmark-office-ci@users.noreply.github.com"
+          git config --global gc.autoDetach false
+          git config --global maintenance.autoDetach false
 
       # The output goes OUTSIDE the checkout: cli-guard counts the office's files
       # across its run and reds when one appears, and a shard's own TAP landing in

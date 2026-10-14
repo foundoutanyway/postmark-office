@@ -262,3 +262,44 @@ test("STAMP_LINES=store: the quest rows fold on the store's key base, and a stor
     for (const x of [owner, office]) await x.end().catch(() => {});
   }
 });
+
+test("the welcome row's paid day comes from the store's welcome line, behind no switch; no line or no read leaves it welcomed and undated (POS-495)", async (t) => {
+  if (skip) return t.skip(skip);
+  assert.equal(process.env.STAMP_LINES, undefined, "prod's shape: STAMP_LINES unset (Wright measured it 2026-10-14)");
+  const standingOf = async (h) => JSON.parse((await c.query("SELECT json FROM town_quest_standing WHERE handle = $1", [h])).rows[0].json);
+  const step = async (msg, edit) => { edit(); const s = commit(msg); at(s); await ingest(c, { townRepo: town, sha: s }); return s; };
+  at(await readHead(c));
+  const engine = await import(pathToFileURL(join(town, "tools", "stamp-mint.mjs")).href);
+  const key = engine.currentHouseholds(town).get("ada").key;
+  const line = `- 2026-09-15 · MINT → ada · 5 · for: welcome:${key} · by: the-town`;
+  const owner = await store.connect("world2_owner");
+  try {
+    // the town pays the bundle in its ledger; the store has no line for it yet
+    await step("mint: welcome", () => writeFileSync(join(town, "WHITE_PAGES/stamp-ledger.md"),
+      readFileSync(join(town, "WHITE_PAGES/stamp-ledger.md"), "utf8") + line + "\n"));
+    let ada = await standingOf("ada");
+    assert.equal(ada.welcomed, true, "the town's fold calls the house welcomed");
+    assert.equal(ada.welcomed_since, null, "and with no line in the store, the row is undated, never unwelcomed");
+
+    // the store records the line: the next ingest dates the whole house by the line's own day
+    const { rows: [{ n }] } = await owner.query("SELECT coalesce(max(seq), 0) + 1 AS n FROM stamp_lines");
+    await owner.query("INSERT INTO stamp_lines (seq, canonical, sig, seal) VALUES ($1, $2, 'fixture', $3)", [n, line, "a".repeat(64)]);
+    await step("notice: the store has the line", () => put("TOWN_BULLETIN/notice.md", "---\ntitle: notice\n---\n\nThe bundle is paid.\n"));
+    for (const h of ["ada", "bex", "cyd", "dee"]) {
+      const r = await standingOf(h);
+      assert.equal(r.welcomed, true, `${h} shares ada's house`);
+      assert.equal(r.welcomed_since, "2026-09-15", `${h}: the line's leading day, not written_at (today)`);
+    }
+
+    // a store read that fails inside the ingest's one transaction leaves the rows undated and the ingest whole
+    await owner.query("REVOKE SELECT ON stamp_lines FROM law_ingester");
+    const s = await step("notice: a store that cannot answer", () => put("TOWN_BULLETIN/notice.md", "---\ntitle: notice\n---\n\nThe store is shy.\n"));
+    assert.equal(await readHead(c), s, "the ingest landed");
+    ada = await standingOf("ada");
+    assert.equal(ada.welcomed, true, "still welcomed");
+    assert.equal(ada.welcomed_since, null, "undated when the store could not be read");
+  } finally {
+    await owner.query("GRANT SELECT ON stamp_lines TO law_ingester").catch(() => {});
+    await owner.end().catch(() => {});
+  }
+});

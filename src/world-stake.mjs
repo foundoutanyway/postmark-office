@@ -32,6 +32,7 @@ import { forecastForMark, nextSettlement } from "./world-forecast.mjs";
 import { execUnderTownLock, lockTimedOut, LOCK_BUSY } from "./town-lock.mjs";
 import { heldFor, clipTo, stampsBlock, toConfirm, RULE_MARK, NOTHING_MOVED } from "./stamps-preview.mjs"; // POS-83: the confirmation step for every act that moves stamps
 import { householdLookup } from "./households.mjs"; // POS-545: the portfolio's roster is the store's registry
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TOWN_CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -380,10 +381,9 @@ export async function worldStakeRead(args = {}) {
   };
 }
 
-// Ruling 9 portfolio seam. Household is the exposure grain, so the town's own
-// identity pins decide which resident positions belong in this view, and the
-// store's registry which authored marks do (POS-545); the office never
-// reimplements either mapping.
+// Ruling 9 portfolio seam. Household is the exposure grain, and the store's
+// registry decides both which resident positions belong in this view and which
+// authored marks do (POS-545, POS-573); the office never reimplements the mapping.
 // `also` is a SECOND source of mark bodies — the caller's own live layer (their
 // drafts and docket claims). It exists because of the row the 2026-09-06 walk
 // read on their own staked mark:
@@ -406,17 +406,6 @@ export async function worldPortfolioStakeSlice(key, marks = [], { also = [] } = 
   const mod = await import(pathToFileURL(join(TOWN_CLONE, "tools", "world-stake.mjs")));
   const stakeState = mod.worldStakeState(TOWN_CLONE);
   const derived = mod.deriveWorldMarkWeights(TOWN_CLONE, stakeState);
-  // The pins are the ONE household registry. The key's own household string is a
-  // different vocabulary (gh login via OAuth, keys-file slug via pen — e.g.
-  // "keeminlee") than the pins' ids (e.g. "gh:67605380"), so comparing them
-  // directly can never match on real data — the misattribution Rei found the
-  // night ruling 9 went live. Resolve the CALLER through the pins too: the
-  // household a caller belongs to is the pins-household of their own handles:
-  // EVERY handle on the key, the grain the roster below takes too (the POS-545
-  // review: the first handle's alone left `backed` narrower than `residents`).
-  const pinsHouseholds = new Set([...key.handles].map((h) => stakeState.currentHouseholdOf(h)).filter(Boolean));
-  if (!pinsHouseholds.size) pinsHouseholds.add(household);
-  const belongs = (handle) => pinsHouseholds.has(stakeState.currentHouseholdOf(handle));
   // Canon first, the caller's own live layer second — canon wins on a shared
   // id, because a published mark's fields are the town's answer and a draft
   // copy of one is the author's proposal.
@@ -426,15 +415,21 @@ export async function worldPortfolioStakeSlice(key, marks = [], { also = [] } = 
   // store's registry names (households.mjs § householdLookup), the resolver the
   // leave door's ground verdict reads, so the read's "your ground" and the act's
   // verdict name one household. A store the office cannot ask (null) leaves the
-  // key's own handles. `backed` still asks the ledger's pins above: named on
-  // POS-545, not moved here.
+  // key's own handles.
+  //
+  // `backed` READS THE SAME ROSTER (POS-573, POS-545's remainder; the store is
+  // the record, ruled 10-04). Its holders and `yours` asked the ledger's pins
+  // (`currentHouseholdOf`), a second registry beside the one `residents` reads.
+  // Now one resolver decides both, at the same grain (every handle on the key)
+  // and with the same fallback: a holder the store's registry does not name is
+  // not ours, and with no store to ask, only the key's own handles are.
   const houses = await householdLookup();
   const ours = houses ? new Set([...key.handles].map((h) => houses(h)?.key).filter(Boolean)) : null;
   const onRoster = (handle) => (ours ? ours.has(houses(handle)?.key) : key.handles.has(handle));
   const residents = [...new Set(marks.map((mark) => mark.by).filter(onRoster))].sort();
   const backed = derived.rows
-    .filter((row) => belongs(row.holder))
-    .map((row) => backedRow(row, { mark: byId.get(row.mark), belongs }))
+    .filter((row) => onRoster(row.holder))
+    .map((row) => backedRow(row, { mark: byId.get(row.mark), belongs: onRoster }))
     .sort((a, b) => a.id.localeCompare(b.id) || a.holder.localeCompare(b.holder));
   return { household, residents, backed };
 }
@@ -499,7 +494,7 @@ export async function runExec(payload) {
     out = await execUnderTownLock(exec, JSON.stringify(payload), env);
   } catch (e) {
     if (lockTimedOut(e)) return bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-    return bounce(500, "the stake could not be recorded", String(e.stderr ?? e.message ?? e).slice(0, 300));
+    return bounce(500, "the stake could not be recorded", faultLogged("the stake could not be recorded", e)); // its stderr goes to the log (POS-578)
   }
   let parsed;
   try { parsed = JSON.parse(String(out).trim().split("\n").pop()); }

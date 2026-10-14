@@ -68,7 +68,7 @@ import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // the world gr
 import { emissionsEnabled } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
 import { world2Enabled } from "./world2-acts.mjs"; // the write-path closure: is the shadow mirror on at all
 import { VESSEL_HANDLE, ridesTheVessel } from "./dynamic-entities.mjs"; // the aboard test, one home for two readers
-import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedGoverningDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
+import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, walkFenceRefusal, movementV2Enabled, roadTerms, storedDepartures, storedGoverningDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
 import { arrivedNotice, doorstepTransport, isVehicleStop, rideStateFrom, stopAnnotationFor, stopUnderfoot, transportAt } from "./world-ride.mjs"; // #2986 § 11: the derived visibility of a vehicle, off the same timetable; POS-165: the walk verb asks the same predicate the ride verb does
 import { findMarks } from "./world-find.mjs"; // find a mark by name from anywhere (2026-09-26)
 import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as presenceEveryone, PRESENCE_DIALS } from "./dynamic-presence.mjs"; // stage 2: residents revealed to each other
@@ -95,6 +95,7 @@ export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
 import { arrivesAt, CROSSING_DERIVATION, crossingSailsAt, currentCrossing } from "./crossings.mjs";
 import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
 import { ringOf, ringBox, ringAgrees, ringMovedTo, RING_SHAPE_SENTENCE, RING_CLAIM_SENTENCE } from "./ring-box.mjs"; // POS-322: a mark's box is derived from its ring
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 // ── engine + world cache ─────────────────────────────────────────────────────
 let _mods = null;         // { verbs, build }
@@ -181,6 +182,46 @@ async function world() {
   _worlds.set(selected.ref, { sha: selected.sha, world: assembled });
   _places.clear(); // place words are a fold over these marks — a new world, new names
   return assembled;
+}
+
+// ── WHAT THIS STANDPOINT SEES INSIDE A DUNGEON (WLD-5, Darko 2026-10-13 20:31) ──
+//
+// The world tools' ONE function, `standpointSight` (postmark-world
+// tools/portals.mjs), asked here for every resident read: orient, the eyes,
+// investigate (the apex's mark: focus) and find. The spectator World page asks
+// the same function, and this office keeps no copy of the rule. From outside, a
+// dungeon reads as its own mark alone; inside, the room you entered and what it
+// holds. A household's own marks are always its own to see.
+//
+// A world with no dungeon comes back as the SAME object from the function's
+// first, standpoint-free answer, so no ledger is read for it, and a clone that
+// predates the function has no dungeon class to hide anything with.
+async function sightFor(w, handle, key = null) {
+  const { verbs } = await mods();
+  if (typeof verbs.standpointSight !== "function" || verbs.standpointSight(w, {}) === w) return w;
+  const who = String(handle ?? "").trim();
+  let stack = [];
+  if (who) {
+    const { crossingLaw } = await import("./world-crossings.mjs");
+    const { crossingDeps } = await import("./world-apex.mjs");
+    const law = await crossingLaw(WORLD_CLONE).catch(() => null);
+    stack = law?.thresholds ? await occupiedNowBy(who, law.thresholds, crossingDeps()).catch(() => []) : [];
+  }
+  return sightedWorld(w, { verbs, handle: who, stack, key });
+}
+
+/** The pure half of sightFor, so a test can hand it the clone's verbs: the
+ *  standpoint's stack becomes the occupancy the one function reads, and the
+ *  key's own residents keep their marks. */
+export function sightedWorld(w, { verbs, handle = null, stack = [], key = null } = {}) {
+  if (typeof verbs?.standpointSight !== "function") return w;
+  const who = String(handle ?? "").trim();
+  const own = new Set([...(key?.handles ?? []), ...(who ? [who] : [])]);
+  return verbs.standpointSight(w, {
+    occupancy: who ? new Map([[who, [...stack]]]) : null,
+    handle: who || null,
+    keep: (m) => own.has(m.by),
+  });
 }
 
 // The Origin — {0,0}, where the ferry lands; the grid origin and the default
@@ -1527,7 +1568,7 @@ export async function worldSay(args = {}, key = null) {
       withNoticeBoard(r);
       return r;
     } catch (e) {
-      return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+      return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
     }
   }
   const choice = chooseStandpoint({ handle: args.handle }, key);
@@ -1554,7 +1595,7 @@ export async function worldSay(args = {}, key = null) {
     withNoticeBoard(r);
     return r;
   } catch (e) {
-    return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+    return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
   }
 }
 
@@ -1657,7 +1698,7 @@ export async function worldSayHuman(args = {}, key = null) {
     withNoticeBoard(r);
     return r;
   } catch (e) {
-    return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+    return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
   }
 }
 
@@ -1813,7 +1854,7 @@ export async function worldAir(oriented) {
 export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce; // a multi-resident key must name a handle
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const { verbs } = await mods();
   const at = choice.coords ?? await standCoords(choice.handle, w);
   const crossing = crossingOf(args);
@@ -1839,7 +1880,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   const { note, unavailable: noteUnavailable } = choice.handle ? await noteForHandle(key, choice.handle) : { note: null };
   // the primer rides every orient — the one page to read before a first mark
   // (the door's own pointer; the full serve-on-first-arrival design stays filed)
-  const primer = "https://raw.githubusercontent.com/keeminlee/postmark-world/main/WORLD/FURNISHING.md";
+  const primer = "https://raw.githubusercontent.com/postmark-town/postmark-world/main/WORLD/FURNISHING.md";
   // Who else is standing here (Stage 2, WORLD_PRESENCE). `presentNear` returns
   // null on its first line with the flag off, so this spreads nothing and the
   // answer is the one orient has always given.
@@ -2069,7 +2110,7 @@ export async function markRecords(ids = [], w = null) {
 export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce;
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const { verbs } = await mods();
   const at = choice.coords ?? await standCoords(choice.handle, w);
   const crossing = crossingOf(args);
@@ -2303,7 +2344,7 @@ export async function markImageBytes(url, { fetchImpl = null, maxBytes = INVESTI
 
 export async function worldInvestigate(args = {}, key = null) {
   if (!args.mark) return { error: "bounce", defect: "which mark?", hint: "pass mark: '<by>/<slug>' (ids in /world/state; the telling's [id] tags)" };
-  const w = await world();
+  const w = await sightFor(await world(), chooseStandpoint(args, key).handle ?? null, key);
   const { verbs } = await mods();
   const depth = Number.isFinite(Number(args.depth)) ? Number(args.depth) : 1;
   const r = verbs.investigate(String(args.mark), w, { depth });
@@ -2412,7 +2453,7 @@ export async function worldFind(args = {}, key = null, { words } = {}) {
     hint: "name the mark you are looking for: world { find: \"snug\" } — a name, a slug or an id (GET /world/find?q=snug over plain HTTP)" };
   const choice = chooseStandpoint({ handle: args.handle }, key);
   if (choice.bounce) return choice.bounce;
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const at = choice.handle ? await standCoords(choice.handle, w) : null;
   let service = null;
   try {
@@ -4267,13 +4308,13 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     const dropGuard = dropUnit != null && payload.dropped === `act:${dropUnit.actId}`
       ? (await import("./drop-recovery.mjs")).dropLiveGuard({ actId: dropUnit.actId }) : null;
     try { result = await journalLeaveMark(clean, dropGuard ? { guard: dropGuard } : {}); }
-    catch (e) { if (e?.code) throw e; throw bounce(500, "the mark pass tripped", String(e?.message ?? e).slice(0, 300)); }
+    catch (e) { if (e?.code) throw e; throw bounce(500, "the mark pass tripped", faultLogged("the mark pass tripped", e)); } // its error goes to the log (POS-578)
   } else {
     try {
       result = await draftWrite(worldClone, exec, JSON.stringify(clean), household, `${by}/${slug}`);
     } catch (e) {
       if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-      throw bounce(500, "the mark pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+      throw bounce(500, "the mark pass tripped", faultLogged("the mark pass tripped", e)); // its stderr goes to the log (POS-578)
     }
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
   }
@@ -4422,7 +4463,7 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, {
       if (viaUnit) return viaUnit;
       return await journalWithdraw({ by, slug, household, guard });
     }
-    catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", String(e?.message ?? e).slice(0, 300)); }
+    catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", faultLogged("the withdrawal tripped", e)); } // its error goes to the log (POS-578)
   }
   // THE GIT LANE TAKES NO SET-DOWN UNIT (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
   // on Bevel's first review of #503, R3): a dropped unit's mark is withdrawn only
@@ -4440,7 +4481,7 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, {
     result = await draftWrite(worldClone, exec, JSON.stringify({ op: "withdraw", by, slug, household }), household, mark);
   } catch (e) {
     if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-    throw bounce(500, "the withdrawal tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+    throw bounce(500, "the withdrawal tripped", faultLogged("the withdrawal tripped", e)); // its stderr goes to the log (POS-578)
   }
   // the exec's named reason rides through (the git lane's set-down refusal, R3)
   if (result.error) throw Object.assign(bounce(result.error.code ?? 500, result.error.defect, result.error.hint), result.error.reason ? { reason: result.error.reason } : {});
@@ -4764,7 +4805,7 @@ export async function worldNoteViaOffice(worldClone, payload = {}, key = null) {
   } catch (e) {
     if (e?.name === "NoRecordError")
       throw bounce(503, "this office keeps no notes: it is not pointed at a record", "notes live only in the office's record; ask the town's office, which keeps one");
-    throw bounce(503, "the note could not be kept: the office's record did not answer", `nothing was written anywhere — try again shortly (${String(e?.message ?? e).slice(0, 160)})`);
+    throw bounce(503, "the note could not be kept: the office's record did not answer", `nothing was written anywhere — try again shortly; ${faultLogged("the note could not be kept", e)}`);
   }
   // The receipt echoes the note itself — "did it say what I meant" must not
   // cost a second call (Keemin's clunk, 2026-08-15).
@@ -5323,6 +5364,11 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
       // the same world the enter door adjudicates against (deps.world().marks).
       const w = stack.length ? await deps.world() : null;
       const byId = new Map((w?.marks ?? []).map((m) => [m.id, m]));
+      // ── THE WALK INSIDE A DUNGEON IS FENCED TO THE ROOM YOU ENTERED (WLD-5,
+      // G4). Asked before DEC-5 could offer `exit: true`, because a dungeon
+      // offers no exit at all; world-movement.mjs § walkFenceRefusal holds it.
+      const fenced = w ? walkFenceRefusal({ stack, toward, marks: w.marks ?? [], verbs: law.verbs }) : null;
+      if (fenced) throw bounce(403, fenced.defect, fenced.hint, fenced.fields);
       const leaving = leavingWhileOccupying(stack, toward, (pt, id) => { const m = byId.get(id); return m ? law.verbs.pointWithinMark(pt, m) : null; });
       // ── A WALK DECLARED ABOARD IS THE CHOICE TO GO ASHORE (#2986) ────────
       //
@@ -5491,7 +5537,7 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
       out = await execUnderTownLock(exec, JSON.stringify(clean), env);
     } catch (e) {
       if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-      throw bounce(500, "the walk pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+      throw bounce(500, "the walk pass tripped", faultLogged("the walk pass tripped", e)); // its stderr goes to the log (POS-578)
     }
     result = JSON.parse(out.trim().split("\n").at(-1));
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);

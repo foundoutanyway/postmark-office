@@ -39,6 +39,7 @@ import {
   classifyProblems,
   classifyDisk,
   classifyMeeps,
+  classifyLawPen,
   diskUsage,
   readDiskState,
   MINUTE,
@@ -561,7 +562,7 @@ const GREEN_TABLE = {
   "https://raw.githubusercontent.com/postmark-town/postmark/main/TOWN_BULLETIN/ferrys-daily.md": { status: 200, body: DAILY_MD },
   "https://api.github.com/repos/postmark-town/postmark/commits": { status: 200, body: JSON.stringify([{ commit: { committer: { date: "2026-08-25T06:00:00Z" } } }]) },
   // One read per watched workflow, by its file (the false DOWN of 2026-09-29).
-  "https://api.github.com/repos/keeminlee/postmark-site/actions/workflows/deploy.yml/runs": {
+  "https://api.github.com/repos/postmark-town/postmark-site/actions/workflows/deploy.yml/runs": {
     status: 200,
     body: JSON.stringify({ workflow_runs: [
       { name: "Deploy (snapshot -> dev, release -> prod)", status: "completed", conclusion: "success", created_at: "2026-08-25T11:44:00Z" },
@@ -640,8 +641,15 @@ _wf(_meeps, JSON.stringify({ schema: 1, generated_at: new Date(T0 - 60_000).toIS
 // /srv/postmark-harbor/settlement-auto.json.
 const _settle = join(_wdir, "settlement-auto.json");
 _wf(_settle, JSON.stringify({ at: "2026-08-25T06:00:02Z", status: "published", world_from: "worldprev000", world_to: "worldtip0000", refusal: null, detail: "3 published" }));
+// §12 fixture, same discipline: a real temp law pen state, an ok run a minute
+// before the fixed clock, so the healthy tick exercises the probe and never
+// reads the box's own /srv/world2-lab/state/ingest-law.json. 6h IN THE FIXTURE
+// ONLY, for the clock-walking tests; its own verdicts are pinned in §12 below.
+const _law = join(_wdir, "ingest-law.json");
+_wf(_law, JSON.stringify({ at: new Date(T0 - 60_000).toISOString(), mode: "law", status: "ok", law: { exit: 0, sha: "a".repeat(40) }, detail: "law: ingested law" }));
 const FIXTURE_CONFIG = {
   ..._CFG,
+  lawPen: { ..._CFG.lawPen, path: _law, staleAfterMs: 6 * 60 * 60_000 },
   settlement: { ..._CFG.settlement, receipt: _settle },
   clones: [{ key: "town_clone", label: "the office's town clone", path: _clone }],
   watchers: [{ key: "usdc_watch", label: "the usdc-watch timer", state: _wstate, cadenceMs: 6 * 60 * 60_000 }],
@@ -1724,4 +1732,53 @@ test("§11 wired: a held sweep reaches the board as `settlement`, asks GitHub ON
   assert.equal(t3.probes.find((p) => p.key === "settlement").reason, "S50 covers the 06:00Z sweep (heldworl)");
   assert.deepEqual(t3.alerts.map((a) => `${a.key}:${a.alert.kind}`), ["settlement:recovered"]);
   assert.equal(compares, 1);
+});
+
+// ── §12: the law pen (POS-619, Wright 2026-10-14) ───────────────────────────
+//
+// The state is the one deploy/world2-ingest.sh writes at every law fire. A
+// refusal holds EVERY law update until the mark is fixed, so it pages with
+// the lint's own sentence (test/world2-ingest-modes.test.mjs pins the field).
+
+const LAW_REFUSAL = [
+  `REFUSED: the law at ${"b".repeat(40)} carries 1 mark(s) with a value the parser would silently lose, so law_projection would hold less than the law says. Nothing was written; the law stays where it was (POS-619).`,
+  '  WORLD/marks/the-keeping-works/candy/mark.md: dials: { stolen: true, clue: "No such thing as candy exists" } is not strict JSON, so the record keeps only its number pairs and silently drops stolen, clue (it reads as {}) — write it as strict JSON, every key quoted: dials: { "stolen": true, "clue": "No such thing as candy exists" }',
+].join("\n");
+const LAW_STATE = (over = {}) => JSON.stringify({ at: new Date(T0 - 2 * MINUTE).toISOString(), mode: "law", status: "ok", law: { exit: 0, sha: "a".repeat(40) }, detail: "law: ingested law", ...over });
+
+test("§12 an ok run is OK", () => {
+  assert.equal(CONFIG.lawPen.path, "/srv/world2-lab/state/ingest-law.json");
+  const r = classifyLawPen({ raw: LAW_STATE(), nowMs: T0, staleAfterMs: CONFIG.lawPen.staleAfterMs });
+  assert.equal(r.verdict, "OK");
+  assert.match(r.reason, /^ingested the law at aaaaaaaaa/);
+});
+
+test("§12 a REFUSED law is DOWN, and the reason carries the refusal and the lint's sentence", () => {
+  const r = classifyLawPen({ raw: LAW_STATE({ status: "law-failed", law: { exit: 1, sha: "b".repeat(40) }, refusal: LAW_REFUSAL }), nowMs: T0 });
+  assert.equal(r.verdict, "DOWN");
+  assert.match(r.reason, /^the law pen REFUSED the law, and every law update waits until the mark is fixed: REFUSED: the law at b{40} carries 1 mark/);
+  assert.ok(r.reason.includes('WORLD/marks/the-keeping-works/candy/mark.md: dials: { stolen: true, clue: "No such thing as candy exists" } is not strict JSON'), r.reason);
+});
+
+test("§12 any other failed run is DOWN with its status; a 46-minute-old state is STALE; none is STALE, never UNKNOWN", () => {
+  const failed = classifyLawPen({ raw: LAW_STATE({ status: "law-failed", law: { exit: 2, sha: "" }, detail: "law: checkout refresh failed: no clone" }), nowMs: T0 });
+  assert.equal(failed.verdict, "DOWN");
+  assert.match(failed.reason, /reads "law-failed" \(exit 2\) — the store's law did not advance: law: checkout refresh failed/);
+  assert.equal(CONFIG.lawPen.staleAfterMs, 45 * MINUTE);
+  assert.equal(classifyLawPen({ raw: LAW_STATE({ at: new Date(T0 - 46 * MINUTE).toISOString() }), nowMs: T0, staleAfterMs: CONFIG.lawPen.staleAfterMs }).verdict, "STALE");
+  assert.equal(classifyLawPen({ raw: LAW_STATE({ at: new Date(T0 - 44 * MINUTE).toISOString() }), nowMs: T0, staleAfterMs: CONFIG.lawPen.staleAfterMs }).verdict, "OK");
+  const missing = classifyLawPen({ raw: null, readError: "ENOENT", nowMs: T0, path: CONFIG.lawPen.path });
+  assert.equal(missing.verdict, "STALE");
+  assert.match(missing.reason, /no law pen state at \/srv\/world2-lab\/state\/ingest-law\.json \(ENOENT\)/);
+  assert.equal(classifyLawPen({ raw: "{ half", nowMs: T0 }).verdict, "STALE");
+});
+
+test("§12 THE TICK: a refused law on the box pages through the one route, alone", async () => {
+  const dir = tempDir("sentinel-lawpen-");
+  const refused = join(dir, "ingest-law.json");
+  _wf(refused, LAW_STATE({ status: "law-failed", law: { exit: 1, sha: "b".repeat(40) }, refusal: LAW_REFUSAL }));
+  const config = { ...FIXTURE_CONFIG, lawPen: { ...FIXTURE_CONFIG.lawPen, path: refused } };
+  const { probes, alerts } = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config, readDisk: GREEN_DISK });
+  assert.equal(probes.find((p) => p.key === "law_pen").verdict, "DOWN");
+  assert.deepEqual(alerts.map((a) => a.key), ["law_pen"], "the held law alerts, and nothing else does");
 });

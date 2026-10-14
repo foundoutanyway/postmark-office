@@ -453,6 +453,22 @@ test('F5 · CONTRACT.md: "REST: stable/simple for frozen consumers" — the REST
   const beginLive = full.acts.find((a) => a.act === "begin");
   assert.deepEqual(shapeOf(beginLive), heardShapes[0], "the live begin card asks the question");
   assert.deepEqual(shapeOf(full.acts.find((a) => a.act === "declare")), heardShapes[0]);
+
+  // ⚑ REGENERATED 2026-10-14 FOR POS-574 (the harbor's signs, Wright's ruling
+  // G4a), named here for the same reason. What grew: declare's and begin's
+  // shared shape gained one optional field, `from_town`, the town an agent says
+  // it came from, printed on its berth as its own claim. ADDITIVE and proven so:
+  // the capture diff added exactly `/acts/0/fields/from_town/{type,description}`
+  // and removed or retyped none (docs/2026-10-13/rail/POS-574/). It stays off
+  // the abridged index (household-apex.mjs § OFF_INDEX, F5d). PSA for the
+  // release notes: "declare_household (and begin) take an optional from_town —
+  // the short name of the agent town you already live in, like 1f3d9 — and the
+  // ship's manifest prints it on your berth as your claim."
+  //
+  // The witness: that shared shape carries from_town, in the frozen copy and on
+  // the live door.
+  assert.equal(heardShapes[0].fields.from_town?.type, "string", "the frozen arrival shape carries from_town");
+  assert.equal(beginLive.fields.from_town?.type, "string", "and the live begin card takes it");
 });
 
 test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the connector's bare answer under ${SLIM_CEILING}B`, async () => {
@@ -474,16 +490,16 @@ test(`F5c · and the answer stays BOUNDED — REST under ${REST_CEILING}B, the c
 // Measured on the POS-292 head with them off: connector bare 8,180 B, so the
 // headroom under SLIM_CEILING is 12 B; REST bare 21,668 B under 24,576.
 // POS-570: begin asks the same two fields, on the same rule.
-test("F5d · POS-292 + POS-570: the abridged index leaves declare's and begin's heard fields off, and both cards still carry them", async () => {
+test("F5d · POS-292 + POS-570 + POS-574: the abridged index leaves declare's and begin's heard fields and from_town off, and both cards still carry them", async () => {
   const slim = await householdApex({}, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
   for (const act of ["declare", "begin"]) {
     const entry = slim.acts.find((a) => a.act === act);
     assert.ok(entry, `${act} is on the index`);
-    for (const f of ["heard", "heard_note"]) assert.equal(f in entry.fields, false, `${act}'s ${f} rides the foyer`);
+    for (const f of ["heard", "heard_note", "from_town"]) assert.equal(f in entry.fields, false, `${act}'s ${f} rides the foyer`);
     assert.ok("household" in entry.fields, `the rest of ${act}'s fields are still listed`);
     const card = await householdApex({ read: act }, KEY, ctx({ slim: true, schemas: SCHEMAS, schemaRequired: REQUIRED }));
     const fields = card.card?.fields ?? card.fields ?? {};
-    for (const f of ["heard", "heard_note"]) assert.ok(f in fields, `${f} is on ${act}'s card: ${JSON.stringify(Object.keys(fields))}`);
+    for (const f of ["heard", "heard_note", "from_town"]) assert.ok(f in fields, `${f} is on ${act}'s card: ${JSON.stringify(Object.keys(fields))}`);
   }
 });
 
@@ -951,6 +967,22 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //
   //   full  21848 -> 21924 (+76, +0.35%) = stances +76
   //   slim  19341 -> 19417 (+76, +0.39%) = stances +76
+  //
+  // ⚠ AND RE-CAPTURED A TWELFTH TIME, 2026-10-13 (lane plumb-wld5, WLD-5),
+  // because the PR moved the world pin, ddc8cdd2 -> b4e1ab9e (the head of
+  // postmark-world#199, over main d080dcf6), as the tenth note says a pin move
+  // must. The code was cleared by the diff itself, run leaf by leaf BEFORE the
+  // capture: 1043 paths before, 1045 after, 2 removed, 4 added, 100 changed,
+  // and NOT ONE outside `stances`, the world's own data at the pin: a newer
+  // mark, keith/waiting-room-stool-2026-09-10 (Keith's set-down, POS-451),
+  // now heads `stances.awaiting` and the five rows shift down by one;
+  // `stances_awaiting` 61 -> 62. (This lane's office changes touch no doorstep
+  // segment: the crossings, the exit card, the walk fence, the resident reads.)
+  //
+  // Measured from the file:
+  //
+  //   full  21924 -> 21974 (+50, +0.23%) = stances +50
+  //   slim  19417 -> 19467 (+50, +0.26%) = stances +50
   //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:

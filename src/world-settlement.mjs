@@ -71,6 +71,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { snapshotFoldArgs } from "./world-snapshot.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
 
@@ -719,7 +720,7 @@ export async function settlementOrFile({ asked = null, fileAnswer, engaged, pool
     served = await servedSettlement(await pool(), { settlement: asked, worldRepo, townRepo });
     if (!served) reason = number == null ? "the store holds no settlement that names a snapshot yet" : null;
   } catch (e) {
-    if (number != null) throw e?.code ? e : bounce(503, `S${number} could not be read`, String(e?.message ?? e).slice(0, 200));
+    if (number != null) throw e?.code ? e : bounce(503, `S${number} could not be read`, faultLogged(`S${number} could not be read`, e)); // its error goes to the log (POS-578)
     reason = `the newest settlement could not be read: ${String(e?.message ?? e).slice(0, 200)}`;
     console.error(`[world-settlement] ${reason} — serving the published file`);
   }

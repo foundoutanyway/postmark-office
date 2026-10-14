@@ -42,6 +42,7 @@ import { Worker, isMainThread, parentPort, workerData } from "node:worker_thread
 import { availableParallelism } from "node:os";
 import { Writable } from "node:stream";
 import { workerSafe } from "./role.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 /** True inside a read worker. Everything that must not run twice keys on this. */
 export const IN_READ_WORKER = !isMainThread && workerData?.readWorker === true;
@@ -229,7 +230,7 @@ export function serveReadsInWorker(handle) {
     try { handle(req, res); }
     catch (e) {
       parentPort.postMessage({ type: "answer", id, status: 500, headers: [["Content-Type", "application/json"]],
-        body: Buffer.from(JSON.stringify({ error: "the read worker tripped", hint: String(e?.message ?? e).slice(0, 200) })).buffer });
+        body: Buffer.from(JSON.stringify({ error: "the read worker tripped", hint: faultLogged("the read worker tripped", e) })).buffer }); // its error goes to the log (POS-578)
     }
   });
   parentPort.postMessage({ type: "ready" });

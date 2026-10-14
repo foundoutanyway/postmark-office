@@ -101,6 +101,30 @@
 // EMPTY since 2026-09-24: Keemin ruled `wright/the-lit-name` in ("meant keep it
 // in!"), and it now plans as any other mark does.
 //
+// ── HELD: A VALUE THE PARSER WOULD SILENTLY LOSE (POS-619) ──────────────────
+//
+// The world's parser keeps what it can read and drops the rest without a word:
+// `dials: { stolen: true, clue: "…" }` (bare keys, not strict JSON) reads as
+// {}, a quoted `#` cuts the line, and a `[…]` that is not JSON stays a string.
+// World #200 and #204 name each loss from the raw text (marks-fold.mjs §
+// lossyValues, § lossyMessage), and mark-lint errs on it, but only where a tree
+// is linted: the PR lane. A commit that reaches main past the lane comes in
+// here, so this pen reads each changed mark's raw text at the ref through the
+// ref's OWN helper, and holds a mark with a loss under HELD in the lint's own
+// words, instead of storing the diminished record as if its author wrote it.
+//   · A mixed file (§ POS-614) carries the newest HAND commit's row, so that
+//     commit's text is checked too. The printout writes strict JSON (office
+//     mark-record.mjs § fmtVal) and is never the lossy one.
+//   · A held ADD's children are held with it (§ a held parent): the store
+//     cannot point at a row it does not have, and one lossy mark must never
+//     STOP the town's ingest (Wright 2026-10-14, G2).
+//   · A held AMEND is not re-planned: the head moves on, and the author's fix
+//     is a new commit, which carries it.
+//   · A ref whose marks-fold predates world #204 has no helper to ask, and the
+//     receipt says it was NOT CHECKED (G5).
+// The run still exits 0, and the machine receipt counts `held` (G3).
+// Class marks are LAW and never come here: law-ingest refuses a lossy law.
+//
 // ── THE DRY RUN READS THE STORE; IT CANNOT WRITE IT ─────────────────────────
 //
 // A diff against the store cannot be made without reading the store, so
@@ -125,7 +149,7 @@
 // the argument while the tick holds its lock.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -226,6 +250,11 @@ export function carriedRow(was, ref, carry) {
 
 // ── the plan: ONE function, both arms ────────────────────────────────────────
 
+/** The HELD line for a mark with a value the parser would lose: the lint's own words. */
+export const lossyWhy = (sentences) =>
+  `HELD: the parser would silently lose a value, so the store would hold less than the file says — ${sentences.join(" · ")} (POS-619)`;
+export const LOSSY_NOT_CHECKED = "lossy values: NOT CHECKED — this ref's marks-fold predates world #204 (no lossyValues/lossyMessage), so a value the parser would lose is not held (POS-619)";
+
 /**
  * What the store must learn to say what the file says at `ref`. PURE.
  *
@@ -239,12 +268,15 @@ export function carriedRow(was, ref, carry) {
  * @param {Set}      [o.held]      slugs held by name
  * @param {object[]} [o.derivedAtBase] `deriveSeed` rows at the BASE: given, an amend carries only the
  *                                 fields the file changed across the range (§ an amend carries the file's change)
+ * @param {Map|null} [o.lossy]     slug -> [sentence] for each mark whose text the parser would read
+ *                                 diminished (§ HELD: a value the parser would lose); null when the
+ *                                 ref's marks-fold has no helper, so nothing was checked
  * @param {Map}      [o.mixed]     slug -> { hands, printouts }, each newest first, each entry
  *                                 { commit, before, after, row } (records before/after that commit, and
  *                                 its derived row): a file a hand commit AND the printout changed in the
  *                                 range (`mixedChanges`; § a hand commit and the printout on one file)
  */
-export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, commitFor, held = REFUSED_BY_NAME, derivedAtBase = null, mixed = null }) {
+export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, commitFor, held = REFUSED_BY_NAME, derivedAtBase = null, mixed = null, lossy = null }) {
   const standing = storeRows.filter((r) => r.status === "standing");
   const bySlug = new Map(storeRows.map((r) => [r.slug, r]));
   const fileRecs = new Map(marksFromRows(derived, []).map((m) => [m.id, m]));
@@ -271,6 +303,7 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
     const mix = was ? mixed?.get(slug) : null;
     if (was && !fields.length && !mix) continue;               // the store already says it
     if (held.has(slug)) { heldOut.push({ slug, why: "HELD by the founder's word — refused by name (backfill-register § REFUSED_BY_NAME)" }); continue; }
+    if (lossy?.has(slug)) { heldOut.push({ slug, lossy: lossy.get(slug), why: lossyWhy(lossy.get(slug)) }); continue; }
     if (mix) {
       // § A HAND COMMIT AND THE PRINTOUT ON ONE FILE (POS-614, Wright 2026-10-13: "(a)").
       // Carry only the fields the hand commits changed, at the NEWEST hand commit's
@@ -338,6 +371,26 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
   // the edge is re-pointed through the slug at the store's own id, and a parent
   // neither standing in the store nor added by this ingest is a STOP.
   const slugOfDerivedId = new Map(derived.map((r) => [String(r.id), r.slug]));
+
+  // § A HELD PARENT HOLDS ITS CHILDREN (POS-619, G2). A child whose parent is
+  // held and not standing in the store would be a STOP below, refusing the
+  // whole run; it is held with its parent instead, and so on down.
+  const heldSlugs = new Set(heldOut.map((h) => h.slug));
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const list of [adds, amends]) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const c = list[i];
+        if (c.keepParent !== undefined || !c.row.parent) continue;
+        const pslug = slugOfDerivedId.get(String(c.row.parent));
+        if (!pslug || !heldSlugs.has(pslug) || bySlug.get(pslug)?.status === "standing") continue;
+        list.splice(i, 1);
+        heldSlugs.add(c.slug);
+        heldOut.push({ slug: c.slug, why: `HELD with its parent: ${pslug} is held and not in the store, so this mark has no row to point at (POS-619)` });
+        grew = true;
+      }
+    }
+  }
   const addedSlugs = new Set(adds.map((a) => a.slug));
   for (const c of [...adds, ...amends]) {
     c.parent = null;
@@ -355,6 +408,7 @@ export function planIngest({ derived, storeRows, pathAtRef, pathAtBase = null, c
     adds: adds.sort(sort), amends: amends.sort(sort), retires: retires.sort(sort),
     skipped: skipped.sort(sort), held: heldOut.sort(sort), stops,
     retiresProvable: !!pathAtBase,
+    lossyChecked: lossy !== null,
   };
 }
 
@@ -368,6 +422,7 @@ export function renderPlan(plan, { target, head, base, windowId, classMarks }) {
   out.push(`marks-ingest · ${target.ref} @ ${target.sha.slice(0, 9)} · head ${head ? head.slice(0, 9) : "none"} · ` +
     `base ${base?.sha ? `${base.sha.slice(0, 9)} (${base.source})` : "none — no retire can be proven"} · window ${windowId ?? "?"}`);
   out.push(`class marks at this ref: ${classMarks} — LAW, law-ingest's pen (law_projection), not this one`);
+  if (!plan.lossyChecked) out.push(LOSSY_NOT_CHECKED);
   out.push(`${NL}ADD ${plan.adds.length}:`);
   for (const a of plan.adds) out.push(`  + ${a.slug}  [${a.row.kind}]  ${who(a)}`);
   out.push(`${NL}AMEND ${plan.amends.length}:`);
@@ -505,17 +560,49 @@ export function checkoutAt(repo, sha, label) {
   return { dir: at, dispose: () => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) };
 }
 
-/** slug -> repo-relative path of its mark.md, through the world's own loader at that checkout. */
+/**
+ * slug -> repo-relative path of its mark.md, through the world's own loader at
+ * that checkout; and, through the same checkout's helper, slug -> the lint's
+ * sentences for each mark whose raw text the parser would read diminished
+ * (`lossy`). `lossyOf(text)` asks the same helper of any text (the mixed arm's
+ * hand commit). Both are null when the checkout's marks-fold predates world #204.
+ */
 export async function pathsAt(checkout) {
   const mf = await import(pathToFileURL(join(checkout, "tools", "marks-fold.mjs")).href);
   const recs = mf.loadMarks(join(checkout, "WORLD", "marks"));
+  const lossyOf = typeof mf.lossyValues === "function" && typeof mf.lossyMessage === "function"
+    ? (text) => mf.lossyValues(text).map((l) => mf.lossyMessage(l))
+    : null;
   const paths = new Map();
+  const lossy = lossyOf ? new Map() : null;
   let classMarks = 0;
   for (const r of recs) {
     if (r.kind === "class") { classMarks++; continue; }
     paths.set(r.id, relative(checkout, join(r._dir, "mark.md")).replace(/\\/g, "/"));
+    if (lossyOf) {
+      const found = lossyOf(readFileSync(join(r._dir, "mark.md"), "utf8"));
+      if (found.length) lossy.set(r.id, found);
+    }
   }
-  return { paths, classMarks };
+  return { paths, classMarks, lossy, lossyOf };
+}
+
+/**
+ * The mixed arm carries the newest HAND commit's row, not the ref's text, so
+ * that commit's text is asked too (POS-619, G2). Returns a new map: `lossy`
+ * plus each mixed slug whose hand text loses a value.
+ */
+export function withLossyHands(repo, lossy, mixed, pathAtRef, lossyOf) {
+  if (!lossy || !mixed?.size) return lossy;
+  const out = new Map(lossy);
+  for (const [slug, mix] of mixed) {
+    const sha = mix.hands[0]?.commit?.sha;
+    const path = pathAtRef.get(slug);
+    if (!sha || !path) continue;
+    const found = lossyOf(git(repo, ["show", `${sha}:${path}`]));
+    if (found.length) out.set(slug, [...new Set([...(out.get(slug) ?? []), ...found])]);
+  }
+  return out;
 }
 
 // ── THE SETTLEMENT'S OWN PRINTOUT IS NEVER AN INPUT (POS-614) ───────────────
@@ -711,8 +798,9 @@ export async function ingest(client, { worldRepo, ref = "blessed", since = null,
       const mixedPaths = mixedChanges(repo, { base: base?.sha ?? null, target: target.sha });
       const known = { [target.sha]: derivedAll.marks, ...(base && derivedAtBase ? { [base.sha]: derivedAtBase } : {}) };
       const mixed = mixedPaths.size ? await mixedRecords(repo, mixedPaths, ref_.paths, known) : null;
+      const lossy = withLossyHands(repo, ref_.lossy, mixed, ref_.paths, ref_.lossyOf);
       plan = planIngest({
-        derived: derivedAll.marks, storeRows, pathAtRef: ref_.paths, pathAtBase, derivedAtBase, mixed,
+        derived: derivedAll.marks, storeRows, pathAtRef: ref_.paths, pathAtBase, derivedAtBase, mixed, lossy,
         commitFor: commitReader(repo, { base: base?.sha ?? null, target: target.sha }),
       });
     } finally {
@@ -769,7 +857,8 @@ async function main() {
     // The last line is the machine receipt the unit's state file keeps.
     console.log(JSON.stringify({
       status: r.status, ref, adds: r.plan?.adds.length ?? 0, amends: r.plan?.amends.length ?? 0,
-      retires: r.plan?.retires.length ?? 0, skipped: r.plan?.skipped.length ?? 0, stops: r.plan?.stops.length ?? 0,
+      retires: r.plan?.retires.length ?? 0, skipped: r.plan?.skipped.length ?? 0, held: r.plan?.held.length ?? 0,
+      stops: r.plan?.stops.length ?? 0,
     }));
     process.exitCode = r.status === "refused" ? 1 : 0;
   } catch (e) {

@@ -3,7 +3,7 @@
 #
 # THE DESIGN (founder-ruled 2026-08-26): the dev instance's default state is a
 # certified settlement snapshot, declared as the `sandbox/seed` tag PAIR —
-# postmark-town/postmark + keeminlee/postmark-world (first pair: S47's, town
+# postmark-town/postmark + postmark-town/postmark-world (first pair: S47's, town
 # 830a6996 / world 52c281b8). Both clones hard-reset to their tag, derived
 # state is deleted and rebuilt, the dev service restarts. Local rehearsal
 # commits (TOWN_PUSH=0 keeps them local by construction) are DISCARDED —

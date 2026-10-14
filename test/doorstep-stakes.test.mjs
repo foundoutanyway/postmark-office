@@ -244,7 +244,7 @@ test("the finished doorstep carries the segment, always — serves, args, and th
         assert.match(d.stakes.teach_at, /household \{ read: "stakes" \}/);
         assert.match(d.stakes.abridged, /drops `rule` and `read_the_rest`/);
       } else {
-        assert.match(d.stakes.rule, /commons needs escrow > 0/, "REST answers the read whole — the bundle law");
+        assert.match(d.stakes.rule, /a commons mark with no stamps behind it leaves the world/, "REST answers the read whole — the bundle law");
         assert.equal(d.stakes.teach_at, undefined);
       }
     }
@@ -310,9 +310,9 @@ test("postmark#3757 · an engine that carries no unpublish rule judges nothing, 
   assert.equal(seg.note, undefined);
 });
 
-test("postmark#3757 · the rule's words are the world's, and name all three conditions", () => {
+test("postmark#3757 · the rule's words are the world's: Darko's plain sentence", () => {
   assert.equal(SWEEP_RULE, VERDICT.UNPUBLISH_RULE, "the quoted sentence is the world's, at the pinned clone");
-  assert.match(SWEEP_RULE, /registered path is on main/);
+  assert.match(SWEEP_RULE, /^At each settlement, a commons mark with no stamps behind it leaves the world\./, "Darko's sentence (WLD-51, 14:31 EDT)");
 });
 
 test("postmark#3757 · pathAtRef: in the tree, not in it, and a ref this clone cannot resolve", () => {
@@ -350,5 +350,5 @@ test("postmark#3757 · THE SAFETY HALF: a commons row whose mark now walks home 
   assert.equal(by["keith/the-garage"].at_risk, false, "a home is not swept, whatever its row says");
   assert.equal(by["keith/the-garage"].class, "commons", "the row still reads as the registry holds it");
   assert.equal(by["keith/a-bench-on-the-road"].at_risk, true, "THE CONTROL: a commons mark that walks market is");
-  assert.match(SWEEP_RULE, /walked at the crossing, is still commons/);
+  assert.match(SWEEP_RULE, /your household's ground or the town's never does/);
 });

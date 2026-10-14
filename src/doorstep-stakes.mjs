@@ -95,9 +95,11 @@ const defaultEscrow = async () => {
 };
 
 export const REGISTRY_PATH = "WORLD/settlement-publications.json";
-// The rule in words: world unpublish-verdict.mjs § UNPUBLISH_RULE, verbatim, and
-// test/doorstep-stakes.test.mjs holds the two equal at the pinned world.
-export const SWEEP_RULE = 'the settlement unpublishes a mark its registry holds as class "commons" when no open stamps stand behind it at the crossing, its registered path is on main, and its standing, walked at the crossing, is still commons ("commons needs escrow > 0"); a mark that walks home or constitution, a home or constitution row, and a mark the registry does not hold are never swept';
+// The rule in words: world unpublish-verdict.mjs § UNPUBLISH_RULE, verbatim (Darko's
+// plain sentence, WLD-51, 2026-10-14 14:31 EDT), and test/doorstep-stakes.test.mjs
+// holds the two equal at the pinned world. The words explain; the world's
+// function decides (the path on main and the registry row are in it, not here).
+export const SWEEP_RULE = "At each settlement, a commons mark with no stamps behind it leaves the world. A mark standing on your household's ground or the town's never does, whatever it was first filed as.";
 
 /**
  * A STAKE MADE SINCE THE COPY IS NOT HERE YET, AND THE READ SAYS SO (POS-412).

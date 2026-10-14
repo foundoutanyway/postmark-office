@@ -1004,6 +1004,17 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //   full  21974 -> 22098 (+124, +0.56%) = stakes.rule +124
   //   slim  19467 -> 19467 (0; stances_awaiting is two digits either way)
   //
+  // …and RE-WORDED the same day, before it shipped: Darko ruled the plain
+  // sentence (WLD-51, 14:31 EDT), "At each settlement, a commons mark with no
+  // stamps behind it leaves the world. A mark standing on your household's
+  // ground or the town's never does, whatever it was first filed as."
+  // (postmark-world#212). Same two steps on CI-shaped clones: at 978a1d34 with
+  // the new words, ONE path changed, `full.stakes.rule`; then at #212's head
+  // (c098ecfd, blessed S108), 0 more. Against the train's golden:
+  //
+  //   full  21974 -> 21905 (-69, -0.31%) = stakes.rule -69
+  //   slim  19467 -> 19467 (0)
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,

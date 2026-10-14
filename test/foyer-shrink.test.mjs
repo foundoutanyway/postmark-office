@@ -999,6 +999,23 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //
   //   full  21974 -> 21974 (+0) · slim  19467 -> 19467 (+0)
   //
+  // ⚠ AND RE-CAPTURED A FOURTEENTH TIME, 2026-10-14 (lane plumb-bugs-a,
+  // postmark#3757), for the stakes segment's rule sentence, which is now
+  // Darko's plain sentence (WLD-51, 14:31 EDT), world unpublish-verdict.mjs §
+  // UNPUBLISH_RULE verbatim: "At each settlement, a commons mark with no stamps
+  // behind it leaves the world. A mark standing on your household's ground or
+  // the town's never does, whatever it was first filed as." The world pin moved
+  // bdbf1061 -> c098ecfd (the head of postmark-world#212, tools/ only, blessed
+  // S108 on both). Diffed leaf by leaf BEFORE the capture, on CI-shaped clones
+  // (suite-clones.sh's fetch; a pool tree's clone re-pointed only at HEAD keeps
+  // its old origin/main and shows no move, which red this lane's first try):
+  // against the thirteenth capture, 1063 paths before and after, NONE removed
+  // or added, ONE changed, `full.stakes.rule`. The slim skin drops `rule`.
+  // Re-checked at #212's merge, 5d1ef1e4: 0 paths moved.
+  //
+  //   full  21974 -> 21905 (-69, -0.31%) = stakes.rule -69
+  //   slim  19467 -> 19467 (0)
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,

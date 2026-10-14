@@ -39,7 +39,9 @@ export const FATAL_STEPS = Object.freeze(["lock", "pull", "fetch", "snapshot", "
 export const SOFT_STEPS = Object.freeze([
   "registry", "settle", "standing", "gangway",
   "mint", "welcome", "bugstage", "ballots", "verify", "commit", "push", "sync", "rollback",
-  "settlements", "positions", "hhkeys", "hhkeys_log",
+  // carried and amends: settlements-backfill's two soft steps, recorded apart
+  // from it because each is non-fatal by design (POS-612, review-612).
+  "settlements", "carried", "amends", "positions", "hhkeys", "hhkeys_log",
 ]);
 export const STEPS = Object.freeze(["lock", "pull", "fetch", ...SOFT_STEPS.slice(0, 13), "snapshot", ...SOFT_STEPS.slice(13), "publish"]);
 export const STATUSES = Object.freeze(["ok", "refused", "skip", "notrun"]);

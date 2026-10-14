@@ -54,7 +54,8 @@ import {
   planAmendsCarried, proofFrom, holdsAmend, markFileParts, recordAmendsCarried, verifyAmendsCarried, amendsLine, isDoorAmend,
   HAND_CARRIED, TICK_CAP,
 } from "../world2/tools/amend-carried.mjs";
-import { amendsOnTick } from "../world2/tools/settlements-backfill.mjs";
+import { amendsOnTick, softStepStatus } from "../world2/tools/settlements-backfill.mjs";
+import { SOFT_STEPS, STEPS, buildReceipt, appendReceipt, judgeKeep } from "../deploy/keep-history.mjs";
 import { readMarkReceipt } from "../src/mark-receipt.mjs";
 import { twinReceipt } from "../src/world2-serve.mjs";
 import { __setPoolForTest } from "../src/world2-claims.mjs";
@@ -332,7 +333,11 @@ test("THE CAP counts the rows a tick would write, not amends that will never get
   assert.deepEqual(await rowsNow(), [`${STOOL}@S3`, `${STOOL}@S6`]);
 });
 
-test("THE KEEP TICK'S EXIT CODE: a broken amends step is one line and settlements-backfill --apply still exits 0", { skip }, async () => {
+/** office-keep.sh's own reading of a run's output: `--soft-step <step>` on stdin. */
+const softStep = (text, step) => spawnSync(process.execPath, ["world2/tools/settlements-backfill.mjs", "--soft-step", step],
+  { cwd: OFFICE, input: text, encoding: "utf8", timeout: 60000 }).stdout.trim();
+
+test("THE KEEP TICK'S EXIT CODE: a broken amends step is one line, settlements-backfill --apply still exits 0, and the step is RECORDED refused", { skip }, async () => {
   await owner((c) => c.query("REVOKE SELECT ON amend_carried FROM office_api"));
   try {
     const run = spawnSync(process.execPath, ["world2/tools/settlements-backfill.mjs", "--apply", "--prod", "--quiet", "--world-repo", world, "--pg-url", store.url("office_api")],
@@ -340,7 +345,11 @@ test("THE KEEP TICK'S EXIT CODE: a broken amends step is one line and settlement
     const out = `${run.stdout}\n${run.stderr}`;
     assert.match(out, /amends: NOT recorded \(non-fatal\) — permission denied/, out);
     assert.match(out, /carried: /, "the carried step ran before it");
-    assert.equal(run.status, 0, `the amends step never changes the tick's verdict:\n${out}`);
+    assert.equal(run.status, 0, `the amends step never changes the tick's verdict: rows written stay written\n${out}`);
+    // review-612's re-check: exit 0 and `settlements ok` must not make the
+    // failure silent. office-keep.sh records the step from this very output.
+    assert.equal(softStep(out, "amends"), "refused write-failed", "the amends step reads refused, which the roll-call alarms on");
+    assert.equal(softStep(out, "carried"), "ok", "the carried step beside it wrote, and reads ok");
   } finally {
     await owner((c) => c.query("GRANT SELECT ON amend_carried TO office_api"));
   }
@@ -429,4 +438,67 @@ test("075 NOT APPLIED: the tick says so in one line, and both doors disclose rat
     for (const [k, v] of Object.entries(env)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     await p.end();
   }
+  // and office-keep.sh records the absent table as a refused amends step
+  assert.equal(softStep(t.line, "amends"), "refused prereq:migration");
+});
+
+// ── THE ONE ALARM ROUTE (review-612's re-check) ─────────────────────────────
+//
+// carried and amends are non-fatal by design: rows written stay written, the
+// run exits 0 and office-keep.sh records `settlements ok`. So each is recorded
+// as its own keep step, read from the run's own output, and the roll-call
+// alarms on three scheduled ticks that are not ok.
+
+test("softStepStatus: wrote → ok; failed, absent, capped or unknown → refused with a reason the receipt keeps; no line → notrun", () => {
+  assert.equal(softStepStatus("amends: wrote 2 (S3: 1, S6: 1); the table holds 2 · no row: …", "amends"), "ok");
+  assert.equal(softStepStatus("amends: wrote 0; the table holds 7", "amends"), "ok", "nothing to write is not a failure");
+  assert.equal(softStepStatus("amends: NOT recorded (non-fatal) — permission denied", "amends"), "refused write-failed");
+  assert.equal(softStepStatus("amends: no `amend_carried` table yet (075 not applied) — nothing recorded", "amends"), "refused prereq:migration");
+  assert.equal(softStepStatus("amends: SKIPPED — 300 proven amends have no row", "amends"), "refused prereq:history");
+  assert.equal(softStepStatus("amends: something new", "amends"), "refused write-failed", "a line this does not know is never ok");
+  assert.equal(softStepStatus("wrote 3 row(s)\ncarried: wrote 1 (S7: 1); the table holds 9", "amends"), "notrun");
+  assert.equal(softStepStatus("carried: REFUSED, nothing written — 1 row(s) disagree", "carried"), "refused write-failed");
+  assert.equal(softStepStatus("carried: NOT recorded (non-fatal) — boom", "carried"), "refused write-failed");
+  assert.equal(softStepStatus("carried: wrote 0; the table holds 9 of 9 published at S6", "carried"), "ok");
+  // every reason is one keep-history keeps (REASON_RE), so the receipt names it
+  for (const reason of ["write-failed", "prereq:migration", "prereq:history"]) {
+    const r = buildReceipt({ stepsText: `amends\trefused\t${reason}`, source: "scheduled", run: "t", started: "2026-10-14T19:07:00Z", at: "2026-10-14T19:08:00Z", exit: 0 });
+    assert.deepEqual(r.steps.amends, { s: "refused", r: reason });
+  }
+});
+
+test("office-keep.sh records carried and amends as their own keep steps, from the run's own output", () => {
+  const sh = readFileSync(join(OFFICE, "deploy", "office-keep.sh"), "utf8").replace(/\r\n/g, "\n");
+  for (const step of ["carried", "amends"]) {
+    const want = `keep_step ${step} $(printf '%s\\n' "$settled" | node world2/tools/settlements-backfill.mjs --soft-step ${step} 2>/dev/null || echo notrun)`;
+    assert.ok(sh.split("\n").includes(want), `${step}: ${want}`);
+    assert.ok(sh.indexOf(want) > sh.indexOf("keep_step settlements ok"), `${step} is read after the run that printed its line`);
+  }
+});
+
+test("the roll-call alarms on three scheduled ticks whose amends step was refused, though settlements read ok", () => {
+  const manifest = JSON.parse(readFileSync(join(OFFICE, "deploy", "box-rollcall-manifest.json"), "utf8"));
+  const keep = (function find(o) {
+    if (o && typeof o === "object") {
+      if (o.outcome?.kind === "keep_steps") return o;
+      for (const v of Object.values(o)) { const hit = find(v); if (hit) return hit; }
+    }
+    return null;
+  })(manifest);
+  for (const step of ["carried", "amends"]) {
+    assert.ok(SOFT_STEPS.includes(step), `${step} is a soft step`);
+    assert.ok(STEPS.includes(step), `${step} is in the receipt's step list`);
+    assert.ok(keep.outcome.steps.includes(step), `the manifest's keep outcome judges ${step}`);
+  }
+  const T = Date.parse("2026-10-14T19:07:00Z");
+  const iso = (ms) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+  let log = "";
+  for (let i = 0; i < 3; i++) {
+    const okSteps = SOFT_STEPS.filter((s) => s !== "amends").map((s) => `${s}\tok\t`).join("\n");
+    log = appendReceipt(log, buildReceipt({
+      stepsText: `${okSteps}\namends\trefused\twrite-failed`, source: "scheduled", run: `r${i}`,
+      started: iso(T + i * 15 * 60e3), at: iso(T + i * 15 * 60e3 + 60e3), exit: 0 }));
+  }
+  const alarms = judgeKeep(log, { steps: keep.outcome.steps, n: 3, staleMinutes: 45, now: T + 32 * 60e3 });
+  assert.deepEqual(alarms, ["amends has not been ok on the last 3 scheduled ticks (refused, refused, refused)"]);
 });

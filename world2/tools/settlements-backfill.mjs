@@ -205,6 +205,35 @@ export async function carriedOnTick(client, repo) {
  * store without 075 says so. It reads claims and settlements, not mark_carried,
  * so it does not wait on the carried step.
  */
+/**
+ * A SOFT STEP'S KEEP STATUS, read from this tool's own output (POS-612,
+ * review-612's re-check). The carried and amends steps are non-fatal by design:
+ * rows already committed stay committed and the tool exits 0. But a step that
+ * fails on every tick must still reach the one alarm route, so office-keep.sh
+ * records each as its own keep step (`keep_step <step> <status> [reason]`), and
+ * box-rollcall alarms on N consecutive scheduled ticks that are not ok
+ * (deploy/keep-history.mjs § SOFT_STEPS). PURE.
+ *
+ *   `<step>: wrote …`                       ok
+ *   `<step>: SKIPPED …` (the cap)           refused prereq:history
+ *   `<step>: no \`…\` table yet` (absent)   refused prereq:migration
+ *   `<step>: REFUSED …`, `NOT recorded …`,
+ *    or any line this does not know         refused write-failed
+ *   no `<step>:` line at all                notrun (the step never ran)
+ *
+ * Returns the words office-keep.sh hands keep_step: "ok", "refused <reason>"
+ * or "notrun". The reasons are keep-history's fixed vocabulary (REASON_RE).
+ */
+export function softStepStatus(text, step) {
+  const line = String(text ?? "").split(/\r?\n/).map((l) => l.trim()).find((l) => l.startsWith(`${step}: `));
+  if (!line) return "notrun";
+  const rest = line.slice(step.length + 2);
+  if (rest.startsWith("wrote ")) return "ok";
+  if (rest.startsWith("SKIPPED")) return "refused prereq:history";
+  if (rest.startsWith("no `")) return "refused prereq:migration";
+  return "refused write-failed";
+}
+
 export async function amendsOnTick(client, repo, { record = recordAmendsCarried } = {}) {
   try {
     const r = await record(client, repo, { apply: true, cap: AMENDS_CAP });
@@ -277,6 +306,18 @@ function render(plan, extra, { dbName, user, repo, mode }) {
 }
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).pop())) {
+  // `--soft-step <carried|amends>`: read a previous run's output on stdin and
+  // print that step's keep status (softStepStatus). office-keep.sh's use; it
+  // opens no checkout and no connection.
+  if (flag("soft-step")) {
+    const step = arg("soft-step");
+    if (!["carried", "amends"].includes(step)) { console.error("--soft-step takes carried or amends"); process.exit(2); }
+    const { readFileSync } = await import("node:fs");
+    let text = "";
+    try { text = readFileSync(0, "utf8"); } catch { text = ""; }
+    console.log(softStepStatus(text, step));
+    process.exit(0);
+  }
   const apply = flag("apply"), verify = flag("verify"), json = flag("json"), quiet = flag("quiet");
   if (apply && verify) { console.error("--apply and --verify are two different questions; ask one"); process.exit(2); }
   const mode = apply ? "APPLY" : verify ? "VERIFY" : "dry-run";

@@ -45,9 +45,12 @@ function ticks(count, stepsFor = () => ({})) {
 const judge = (text, opt = {}) => judgeKeep(text, { steps: ["mint", "push", "settlements"], n: 3, staleMinutes: 45, now: T0 + MIN, ...opt });
 const alarmsFor = (alarms, step) => alarms.filter((a) => a.startsWith(`${step} `));
 
-test("the step list is the script's: 22 steps, 5 fatal and 17 soft, no step twice", () => {
-  assert.equal(STEPS.length, 22);
-  assert.equal(new Set(STEPS).size, 22);
+// 24 since POS-612: settlements-backfill's carried and amends steps are recorded
+// apart from it (review-612's re-check), between settlements and positions.
+test("the step list is the script's: 24 steps, 5 fatal and 19 soft, no step twice", () => {
+  assert.equal(STEPS.length, 24);
+  assert.equal(new Set(STEPS).size, 24);
+  assert.deepEqual(STEPS.slice(STEPS.indexOf("settlements"), STEPS.indexOf("settlements") + 4), ["settlements", "carried", "amends", "positions"]);
   assert.deepEqual([...STEPS].sort(), [...FATAL_STEPS, ...SOFT_STEPS].sort());
   assert.deepEqual(STEPS.slice(0, 3), ["lock", "pull", "fetch"]);
   assert.equal(STEPS[16], "snapshot");

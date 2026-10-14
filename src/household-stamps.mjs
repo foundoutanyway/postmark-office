@@ -35,6 +35,7 @@ const unreachable = (e) => e?.name === "TownIndexUnreachable";
 import { intakeDisclosure } from "./fund.mjs";
 import { readIntakeMap } from "./intake-map.mjs";
 import { heldFor, stampsBlock, toConfirm, NOTHING_MOVED } from "./stamps-preview.mjs"; // POS-83: one grammar for every act that moves stamps
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const bounce = (code, defect, hint, extra = {}) => ({ error: "bounce", code, defect, hint, ...extra });
 
@@ -261,7 +262,7 @@ export async function potStakeViaOffice(clone, { from, pot, stamps, preview }, k
       clipped = clipPotStake({ state, pots, handle: from, pot, n: stamps, date: townDay() });
     } catch (e) {
       return bounce(503, "not-yet-open",
-        `the office could not read the ballot state or the pot board, so this stake could not be previewed: ${String(e?.message ?? e).slice(0, 160)}`);
+        `the office could not read the ballot state or the pot board, so this stake could not be previewed; ${faultLogged("the stake preview could not read the ballot state or the pot board", e)}`);
     }
     if (clipped.error) return bounce(clipped.error.code ?? 500, clipped.error.defect, clipped.error.hint);
     const held = await heldFor(clone, from);
@@ -299,7 +300,7 @@ export async function potStakeViaOffice(clone, { from, pot, stamps, preview }, k
     out = await execUnderTownLock(exec, payload, { ...process.env, TOWN_CLONE: clone });
   } catch (e) {
     if (lockTimedOut(e)) return bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-    return bounce(500, "the keeping-stake pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+    return bounce(500, "the keeping-stake pass tripped", faultLogged("the keeping-stake pass tripped", e)); // its stderr goes to the log (POS-578)
   }
   const result = JSON.parse(out.trim().split("\n").at(-1));
   if (result.error) return bounce(result.error.code ?? 500, result.error.defect, result.error.hint);

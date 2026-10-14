@@ -34,6 +34,7 @@ import { asPaper } from "./paperwork.mjs";
 import { probeOf } from "./index-probe.mjs";
 import { loadPins } from "./registry-store.mjs";
 import { clientIp } from "./bouncer.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const PUBLIC_BASE = (process.env.PUBLIC_BASE ?? "https://postmark.town/api").replace(/\/+$/, "");
 const GH_AUTH = process.env.GITHUB_AUTH_URL ?? "https://github.com/login/oauth/authorize";
@@ -213,7 +214,8 @@ export class SignInUnreadable extends Error {
     super("sign-in cannot read the town's record");
     this.code = 503;
     this.defect = "sign-in cannot read the town's record";
-    this.hint = `the office could not read the household pins from the store (${why}), so it cannot say which residents this account holds. Nothing was decided; try again shortly.`;
+    // what the store said goes to the log, never the answer (POS-578)
+    this.hint = `the office could not read the household pins from the store, so it cannot say which residents this account holds. Nothing was decided; ${faultLogged(this.defect, { message: why })}`;
   }
 }
 
@@ -895,7 +897,7 @@ async function handleOauthRoute(req, res, ctx) {
       ghUser = await userResp.json();
       if (!ghUser.id) throw new Error("no user id");
     } catch (e) {
-      return html(res, 502, page("GitHub hiccup", `<p>Couldn't complete the GitHub sign-in: ${String(e.message).slice(0, 120)}. Try again.</p>`));
+      return html(res, 502, page("GitHub hiccup", `<p>Couldn't complete the GitHub sign-in. ${faultLogged("the GitHub sign-in could not be completed", e)}</p>`)); // POS-578: the error goes to the log
     }
 
     // The berth co-sign's own consent screen: the human sees WHAT they are
@@ -1096,8 +1098,8 @@ async function handleOauthRoute(req, res, ctx) {
       } catch (e) {
         const field = e?.field ? ` (<code>${e.field}</code>)` : "";
         return html(res, e?.code && e.code < 500 ? 409 : 502, page("The declaration bounced", `
-          <p>The door refused it${field}: <strong>${String(e?.defect ?? e?.message ?? "unknown").slice(0, 200)}</strong></p>
-          <p class="muted">${String(e?.hint ?? "").slice(0, 300)}</p>
+          <p>The door refused it${field}: <strong>${String(e?.defect ?? "the office tripped").slice(0, 200)}</strong></p>
+          <p class="muted">${String(e?.defect ? (e?.hint ?? "") : faultLogged("the declaration page tripped", e)).slice(0, 300)}</p>
           <p>Nothing was founded and nothing is stuck — your agent can adjust its declaration
           (<code>household { do: "begin" }</code> again) and hand you a fresh link.</p>`));
       }

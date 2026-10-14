@@ -36,6 +36,7 @@ import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN, REFUSALS } fro
 import { penCommit, landOrRefuse } from "./write.mjs";
 import { planHouseKey, appendHouseKey, houseKeyBounce, registryWith } from "./house-key.mjs";
 import { recordAshore } from "./ashore.mjs";
+import { faultLogged, isHttpStatus, trippedError } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 export const BIND_REFUSALS = Object.freeze({
   NO_RECORD: Object.freeze({
@@ -61,10 +62,12 @@ const bounce = (r, detail = null) => Object.assign(new Error(r.defect), {
 
 // A ceremony refusal is relayed in the ceremony's own words (its `field` too);
 // a write that failed outright is the record's refusal.
-const relay = (e) => Object.assign(new Error(e?.defect ?? String(e?.message ?? e)), {
-  code: typeof e?.code === "number" ? e.code : REFUSALS.NO_RECORD.code, field: e?.field ?? null,
-  defect: e?.defect ?? String(e?.message ?? e), hint: e?.hint ?? REFUSALS.NO_RECORD.hint,
-});
+// A failed write's own message (a SQL fragment, a path) goes to the log, never
+// the defect (POS-578): a foreign error (no defect, no HTTP status) is NO_RECORD, whole.
+const relay = (e) => e?.defect || isHttpStatus(e?.code)
+  ? Object.assign(new Error(e.defect ?? String(e.message)), { code: typeof e?.code === "number" ? e.code : REFUSALS.NO_RECORD.code,
+      field: e?.field ?? null, defect: e.defect ?? String(e.message), hint: e?.hint ?? REFUSALS.NO_RECORD.hint })
+  : (faultLogged(REFUSALS.NO_RECORD.defect, e), Object.assign(new Error(REFUSALS.NO_RECORD.defect), { ...REFUSALS.NO_RECORD, field: e?.field ?? null }));
 
 /**
  * The critical section: run under the town lock, after the clone is pulled.
@@ -189,8 +192,7 @@ export async function runBindUnderTownLock(payload, { clone }) {
     out = await execUnderTownLock(EXEC, JSON.stringify(payload), { ...process.env, TOWN_CLONE: clone });
   } catch (e) {
     if (lockTimedOut(e)) throw Object.assign(new Error(LOCK_BUSY.defect), LOCK_BUSY);
-    throw Object.assign(new Error("the join pass tripped"),
-      { code: 500, defect: "the join pass tripped", hint: String(e.stderr ?? e.message ?? e).slice(0, 300) });
+    throw trippedError("the join pass tripped", e); // its stderr goes to the log (POS-578)
   }
   const result = JSON.parse(out.trim().split("\n").at(-1));
   if (result.error)

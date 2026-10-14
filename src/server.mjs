@@ -59,6 +59,7 @@ import { settlements } from "./settlements.mjs";
 import { worldSummary, worldOrient, worldEyes, worldInvestigate, worldFind, worldStateRaw, worldSkeletonRaw, worldMyMarks, leaveMarkViaOffice, walkViaOffice, worldNoteViaOffice, worldWalkers, worldPresent, worldConversations, worldSay, worldSayHuman, worldSayStream, serveSayStream, whoami, worldBlockForHandle, WORLD_CLONE, MISTS_UNREADABLE, MISTS_RETRY_AFTER_S } from "./world.mjs";
 import { world2MyDrafts, world2MyMarks, world2Pool, world2Serve, world2ServeEnabled } from "./world2-serve.mjs";
 import { isStoreLostCode, isStoreUnreachable } from "./store-pool.mjs"; // POS-544: a store lost mid-request answers 503, not 500
+import { STORE_LOST, READ_RETRY, ACT_RETRY, FAULT_LOGGED, STORE_RETRY_AFTER_S, isHttpStatus, foreignAnswer } from "./fault-words.mjs"; // the office's own words for its own fault, one owner (POS-568, POS-573/578)
 import { rowsFixtureActive } from "./world-graph-snapshot.mjs"; // POS-270 lane W 3b: the world graph's switch
 import { blessedSha } from "./world-branches.mjs";
 import { officeStoreFold, storeFingerprint, worldStateServed } from "./world2-fold.mjs"; // POS-142: /world/state from the store's rows, behind W2_FOLD
@@ -674,14 +675,9 @@ const withBounceCode = (code, obj) =>
 // AND THE TOWN INDEX'S 503 SAYS WHEN TO ASK AGAIN. Its refusal (index-probe.mjs §
 // UNREACHABLE_DEFECT, from the doors and the write path's probe alike) says "ask
 // again shortly"; it now carries Retry-After as the bearer check's 503 does.
-const STORE_RETRY_AFTER_S = 30;
-const STORE_LOST = "the town's store went away mid-request; nothing is wrong with your request, retry";
-const READ_RETRY = "the office lost its connection to the town's store while answering: an outage, not your request. A read is safe to repeat; send the same request again after Retry-After seconds.";
-const ACT_RETRY = "the office lost its connection to the town's store while performing this act, so it may not have been recorded: read before you send it again (an act with a nonce is safe to repeat), after Retry-After seconds.";
-// The office's own words for its own fault (POS-568): what tripped is the
-// defect, and this is the hint. The error itself is in the office's log.
-const FAULT_LOGGED = "nothing in your request caused it. What failed is in the office's log, not in this answer; try again shortly, and if it keeps happening, tell the town.";
-const isHttpStatus = (code) => Number.isInteger(code) && code >= 100 && code <= 599;
+// STORE_LOST, READ_RETRY, ACT_RETRY and FAULT_LOGGED (the office's own words for
+// its own fault, POS-568) live in fault-words.mjs since POS-573/578, because the
+// MCP door and the modules that build their own 5xx bounces say them too.
 // A read worker's response carries no request, and a worker only ever answers reads.
 const isRead = (res) => ["GET", "HEAD"].includes(res.req?.method ?? "GET");
 // `cause` is the error a catch rebuilt, when it handed one over: its message is
@@ -696,9 +692,8 @@ function notAStatus(res, code, obj, cause) {
   const lost = isStoreLostCode(code);
   const foreignHint = obj?.hint ? ` (its hint: ${String(obj.hint).slice(0, 300)})` : "";
   console.error(`[office] an answer carried code ${JSON.stringify(code)}, not an HTTP status: answered ${lost ? "503 (the store is gone)" : 500}${causeSaid(cause)}${foreignHint}`);
-  if (lost) return [503, { error: "bounce", defect: STORE_LOST, hint: isRead(res) ? READ_RETRY : ACT_RETRY }];
-  return [500, { error: "bounce", defect: obj?.defect ?? "the office tripped",
-    hint: `a handler's error carried code ${JSON.stringify(code)}, which is not an HTTP status; ${FAULT_LOGGED}`.slice(0, 300) }];
+  const { status, body } = foreignAnswer(code, obj, { read: isRead(res) });
+  return [status, body];
 }
 const j = (res, code, obj, cause) => {
   if (!isHttpStatus(code)) [code, obj] = notAStatus(res, code, obj, cause);

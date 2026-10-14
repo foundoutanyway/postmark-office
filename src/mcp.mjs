@@ -40,6 +40,8 @@ import { uploadMedia } from "./media.mjs";
 import { WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // a window starts with its human (POS-248) — one telling, shared with the window read
 import { harborGated, HARBOR_BOUNCE } from "./harbor-gate.mjs";
 import { validateArgs } from "./validate-args.mjs"; // one owner for "does this door take that field" — re-exported below
+import { ACT_RETRY, READ_RETRY, STORE_LOST, STORE_RETRY_AFTER_S, caughtBounce, faultLogged, foreignAnswer, isHttpStatus } from "./fault-words.mjs"; // the office's own words for its own fault (POS-573)
+import { isStoreUnreachable } from "./store-pool.mjs"; // a lost store, said as an outage (POS-573)
 import { standingBounce } from "./standing.mjs";
 import { roleGate, ROLE_SUBSCRIBER } from "./roles.mjs";
 import { WORLD_TOOLS, callWorldTool, townPost, worldBlockForHandle } from "./world.mjs";
@@ -659,8 +661,10 @@ export async function callTool(name, args, ctx) {
       // must stay in step with it: both REBUILD the bounce, so a field named in
       // one and not the other reaches one door and not the other. `walk` joined
       // 2026-09-11 with the enter door's reach refusal.
-      if (e.code) return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint,
-        ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) };
+      // A foreign code (pg's SQLSTATE, Node's ENOENT) keeps only its code, and
+      // its message and hint go to the log (fault-words.mjs § caughtBounce, POS-573).
+      if (e.code) return caughtBounce(e, { code: e.code, defect: e.defect, hint: e.hint,
+        ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) });
       throw e;
     }
   }
@@ -843,7 +847,7 @@ export async function callTool(name, args, ctx) {
         const { sendAtDoor } = await import("./send-at-door.mjs");
         return (await sendAtDoor(args, key, { db, clone, odb })).result;
       }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     case "read_stamps":
       if (townIndexReads()) return fromStore(async (c) => (args.handle
@@ -875,7 +879,7 @@ export async function callTool(name, args, ctx) {
       const idea = ideaPrecheck(args, TOOLS.find((t) => t.name === "town_post"));
       if (idea) return idea;
       try { return await townPost(args, key); }
-      catch (e) { if (e.code) return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { code: e.code, defect: e.defect, hint: e.hint }); throw e; }
     }
     // The stake gesture's three flats. They return bounce OBJECTS rather than
     // throwing (world-stake.mjs's shape, which they wrap), so no try/catch
@@ -906,12 +910,12 @@ export async function callTool(name, args, ctx) {
       try {
         if (args.topic) return (await voteView(clone, args.topic, key)) ?? notFound(`no ballot topic "${args.topic}"`, "omit topic for the list");
         return await voteList(clone);
-      } catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      } catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     case "stake_vote": {
       if (!canWrite || !votesAvailable(clone)) return notFound("not-yet-open", "the office has no town clone with the ballot engine");
       try { return await stakeViaOffice(clone, args, key); }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     case "request_blessing": return notFound("not-yet-open", "the blessing lane gates irreversible spends (transfers, burns), which stay dormant; stakes need no blessing — a stake is not a spend, it returns");
     case "whoami": {
@@ -923,7 +927,7 @@ export async function callTool(name, args, ctx) {
     }
     case "request_residency": {
       try { return await requestResidency(args, key, db, pen); }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     // join-as-declaration (Keemin's ruling, 2026-08-14) — the first-class join
     // verb. A bounce carries the FIELD that failed: this door's whole contract
@@ -932,7 +936,7 @@ export async function callTool(name, args, ctx) {
     case "declare_household": {
       if (!canWrite) return notFound("not-yet-open", "the office has no town clone to declare into; join by PR meanwhile (JOINING.md)");
       try { return await declareViaOffice(clone, args, key, { db, odb, dbPath }); }
-      catch (e) { if (e.code) return { error: "bounce", field: e.field ?? null, defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { field: e.field ?? null, defect: e.defect, hint: e.hint }); throw e; }
     }
     // The media door: same handler as POST /media — two doors, one lane.
     case "upload_media": {
@@ -940,7 +944,7 @@ export async function callTool(name, args, ctx) {
       // ONE tree a resident's path may name, and the handler takes it from the
       // caller rather than reaching for a path of its own.
       try { return await uploadMedia(args, key, odb, { clone }); }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     case "household": {
       // `slim: true` is THE CONNECTOR SKIN saying so out loud. It reaches
@@ -984,7 +988,7 @@ export async function callTool(name, args, ctx) {
         // the answer exactly as it did — same shape, same field, one owner.
         return await verb(args, key, db, clone, odb);
       }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     default: return null; // unknown tool → JSON-RPC error upstream
   }
@@ -1136,14 +1140,34 @@ async function handleMessage(msg, ctx) {
       if (bad) return refusal(msg.id, bad);
       try {
         // `door: "mcp"` marks the MCP door's own calls: only they carry a read shape (POS-486)
-        const result = await callTool(name, args, { ...ctx, door: "mcp" });
+        let result = await callTool(name, args, { ...ctx, door: "mcp" });
         const isBounce = result && typeof result === "object" && result.error === "bounce";
+        // A FOREIGN CODE IS CLASSIFIED HERE, AS REST'S j DOES (POS-573). A bounce
+        // whose code is not an HTTP status came from pg, Node or the pool by way
+        // of a catch (fault-words.mjs § caughtBounce): a lost store says the
+        // outage in the read's or the act's words, and anything else is the
+        // office's own fault, in its own words.
+        if (isBounce && result.code != null && !isHttpStatus(result.code)) {
+          const { status, body } = foreignAnswer(result.code, result, { read: !writeShaped(name, args) });
+          const foreignHint = result.hint ? ` (its hint: ${String(result.hint).slice(0, 300)})` : "";
+          console.error(`[office] mcp ${name}: a bounce carried code ${JSON.stringify(result.code)}, not an HTTP status: answered as ${status}${foreignHint}`);
+          // a JSON-RPC answer has no Retry-After header, so the outage says it in the body
+          result = { ...body, code: status, ...(status === 503 ? { retry_after: STORE_RETRY_AFTER_S } : {}) };
+        }
         return rpcResult(msg.id, {
           content: contentFor(isBounce ? markRefused(result) : result),
           isError: Boolean(isBounce),
         });
       } catch (e) {
-        return refusal(msg.id, { error: "bounce", defect: "the office tripped", hint: String(e?.message ?? e).slice(0, 200) }, { compact: true });
+        // THE LAST RESORT KEEPS ITS ERROR IN THE LOG (POS-573, POS-568's twin at
+        // this door): the raw message was the hint, and could be a SQL fragment
+        // or a path on the box. A lost store says so, in the read's or the act's
+        // words; anything else is "the office tripped" and FAULT_LOGGED.
+        if (isStoreUnreachable(e)) {
+          faultLogged(`mcp ${name}: the store went away`, e);
+          return refusal(msg.id, { error: "bounce", code: 503, defect: STORE_LOST, hint: writeShaped(name, args) ? ACT_RETRY : READ_RETRY, retry_after: STORE_RETRY_AFTER_S }, { compact: true });
+        }
+        return refusal(msg.id, { error: "bounce", defect: "the office tripped", hint: faultLogged(`mcp ${name}: the office tripped`, e) }, { compact: true });
       }
     }
     default:

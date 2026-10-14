@@ -172,6 +172,7 @@ export const DECLARE_DESCRIPTION =
 // is additive to the office's existing { code, defect, hint } shape.
 import { appendTownJournal, pendingHandles, SETTLE_THRESHOLD, townLogEnabled } from "./town-journal.mjs";
 import { HEARD_FIELDS } from "./arrival-heard.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const bounce = (code, field, defect, hint) => {
   const e = new Error(defect);
@@ -829,7 +830,7 @@ export async function declareViaOffice(clone, args, key, { db, odb, dbPath, mint
         out = await execUnderTownLock(exec, payload, { ...process.env, TOWN_CLONE: clone });
       } catch (e) {
         if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, null, LOCK_BUSY.defect, LOCK_BUSY.hint);
-        throw bounce(500, null, "the declaration pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+        throw bounce(500, null, "the declaration pass tripped", faultLogged("the declaration pass tripped", e)); // its stderr goes to the log (POS-578)
       }
       const result = JSON.parse(out.trim().split("\n").at(-1));
       if (result.error)

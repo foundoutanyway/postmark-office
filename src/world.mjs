@@ -4965,16 +4965,20 @@ export async function occupiedNowBy(who, thresholds, deps) {
 // standing there, `position.arrived` is true, the arrival instant IS this
 // instant — keeps today's words untouched.
 //
-// THE DOOR'S OWN WORDS RIDE EITHER SHAPE. `entered` and `within` are the two
-// keys that assert a present fact, and only they are withheld; a refusal and a
+// THE DOOR'S OWN WORDS RIDE EITHER SHAPE. The keys that assert a present fact
+// are withheld: `entered` and `within`, and since WLD-5's pre-check also
+// `aboard`, `exited`, `landed`, `walk_ended`, `ground` and a portal's next
+// `portals` (a dungeon room's ways out are hidden until it is entered), plus
+// the pen's `ledger`/`log`, which a pre-check never wrote. A refusal and a
 // counter-edge door's terms are facts at departure whatever the tense, and the
 // walk tool's own description promises the resident both of them by name
 // (test/walk-grammar.test.mjs, ruling 3). A queued receipt that dropped them
 // would trade an early sentence for a missing one.
 //
-// `eta` is the ARRIVAL CROSSING itself, from the unrounded remainder, so it
-// names the same instant as `arrives_at` — not the `eta_crossings` duration
-// the same answer already carries.
+// `eta` is the ARRIVAL CROSSING itself, from the whole-metre remainder
+// (positionAt.remainingM, not the eta rounded to a hundredth of a crossing), so
+// it names the same instant as `arrives_at`, to the second. It is not the
+// `eta_crossings` duration the same answer already carries.
 //
 // CONSUMERS: `walkViaOffice`'s own reply, and nothing else. `arrived_note` has
 // one writer and no reader in the office; `grep` over postmark-site,
@@ -4988,7 +4992,7 @@ export function walkEntryReceipt(entry, { arrived, stop, eta, queued = true, why
       ? `arrived; entry refused: ${entry.refused}`
       : "arrived, and stepped inside — the entry was adjudicated at the arrival instant, by its own door",
   };
-  const { entered, within, ...doorsWords } = entry;
+  const { entered, within, aboard, exited, landed, walk_ended, ground, portals, ledger, log, ...doorsWords } = entry;
   if (queued === false) return { entry: { queued_for_arrival: false, stop, eta, ...doorsWords,
     note: `nothing is queued: ${why ?? "the mark would not let you in as its law stands now"}. Nothing has been entered` } };
   return { entry: { queued_for_arrival: true, stop, eta, ...doorsWords,
@@ -5607,8 +5611,9 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
   let arrivedAtCrossing = null;
   let queued = null, queueWhy = null;
   if (enterOnArrival) {
-    // The arrival on the town clock, from the UNROUNDED remainder and the
-    // leg's own stride: the instant `arrives_at` names, as a crossing.
+    // The arrival on the town clock, from the whole-metre remainder
+    // (positionAt.remainingM, not the eta rounded to a hundredth of a crossing)
+    // and the leg's own stride: the instant `arrives_at` names, as a crossing.
     const strideKm = result.pace > 0 ? result.pace : WALK_KM_PER_CROSSING;
     arrivedAtCrossing = at + (Number(result.position.remainingM ?? 0) / (strideKm * 1000));
     const { entryAtTheWalk } = await import("./arrival-entries.mjs");

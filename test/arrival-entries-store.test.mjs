@@ -114,6 +114,19 @@ test("THE TICK ON THE STORE · arrived → entered; overtaken by a later walk; s
     await walkAct(api, { handle: "cy", from: { x: 5, y: 90 }, toward: { x: 9, y: 90 }, ms: Date.now() + 1000 });
     resetArrivalLines();
     assert.deepEqual(await arrivalLineFor("cy", { now: Date.now() + 20_000, query }), {}, "and gone after their next act");
+
+    // A WALK ACT THAT CANNOT BE READ BACK (a payload the record's converter refuses):
+    // it stands aside, then expires a day after it fell due, and the walker reads that
+    const { rows: [bad] } = await api.query(
+      `INSERT INTO acts (at, crossing, actor, action, object, class, payload, effect, household)
+       VALUES ($1, $2, 'dee', 'walk', 'd/room', 'move', '{"note":"no road"}'::jsonb, 'the walk is declared', 'dee-house') RETURNING id::text AS id`,
+      [new Date(Date.now() - 2 * 864e5).toISOString(), ferryOf(Date.now() - 2 * 864e5)]);
+    await queueArrival({ walkActId: bad.id, handle: "dee", mark: "d/room", dueAt: new Date(Date.now() - 2 * 864e5 + 60_000).toISOString() }, { query });
+    const expired = await arrivalTick({ deferredIds: new Map(), now: Date.now(), query, enter: async () => { throw new Error("never asked"); } });
+    assert.deepEqual(expired.expired, [bad.id], expired.line);
+    resetArrivalLines();
+    const deeLine = await arrivalLineFor("dee", { now: Date.now() + 40_000, query });
+    assert.equal(deeLine.arrival?.outcome, "expired");
   } finally {
     resetArrivalLines();
     if (env.pg == null) delete process.env.WORLD2_PG; else process.env.WORLD2_PG = env.pg;
@@ -134,13 +147,25 @@ test("NEVER TWICE, THROUGH THE PEN · crossing-exec writes an arrival's enter on
         env: { ...process.env, WORLD_CLONE: CLONE, WORLD_SINGLE_LOG: "1", WORLD2_PG: "1", WORLD2_PG_URL: s.url("office_api") }, encoding: "utf8" });
       return JSON.parse(out.stdout.trim().split("\n").at(-1));
     };
-    const first = run("4242");
+    const walkA = await walkAct(api, { handle: "ann", from: { x: 0, y: 0 }, toward: { x: 100, y: 0 }, ms: Date.now() - 60_000 });
+    const first = run(walkA);
     assert.ok(first.seq, `the first enter was written: ${JSON.stringify(first).slice(0, 200)}`);
-    const second = run("4242");
+    const second = run(walkA);
     assert.equal(second.error?.code, 409);
     assert.equal(second.error.arrival_settled, String(first.seq), "the refusal names the enter that stands");
     const rows = (await api.query("SELECT id::text AS id, payload->>'arrival_of' AS arrival_of FROM acts WHERE actor = 'ann' AND action = 'enter'")).rows;
-    assert.deepEqual(rows, [{ id: String(first.seq), arrival_of: "4242" }], "one enter, carrying its walk");
+    assert.deepEqual(rows, [{ id: String(first.seq), arrival_of: walkA }], "one enter, carrying its walk");
+
+    // THE G4 RACE, IN THE PEN: bea's walk A is queued, then walk B reaches the
+    // record (as during the town-lock wait); the entry for A is refused inside the
+    // write's own transaction, and nothing is written
+    const beaA = await walkAct(api, { handle: "bea", from: { x: 0, y: 10 }, toward: { x: 100, y: 10 }, ms: Date.now() - 60_000 });
+    await walkAct(api, { handle: "bea", from: { x: 50, y: 10 }, toward: { x: -100, y: 10 }, ms: Date.now() - 1000 });
+    const beaLine = grammar.formatEnterExit({ handle: "bea", act: "enters", mark: "a/room", at, word: "neutral", iso: new Date().toISOString() });
+    const raced = JSON.parse(spawnSync(process.execPath, [EXEC, JSON.stringify({ handle: "bea", act: "enter", at, lines: [beaLine], summary: "enters a/room", mark: "a/room", arrival_of: beaA })], {
+      env: { ...process.env, WORLD_CLONE: CLONE, WORLD_SINGLE_LOG: "1", WORLD2_PG: "1", WORLD2_PG_URL: s.url("office_api") }, encoding: "utf8" }).stdout.trim().split("\n").at(-1));
+    assert.equal(raced.error?.arrival_overtaken, true, JSON.stringify(raced).slice(0, 300));
+    assert.equal((await api.query("SELECT count(*)::int AS n FROM acts WHERE actor = 'bea' AND action = 'enter'")).rows[0].n, 0, "nothing written for the overtaken walk");
     const plain = run(null);
     assert.ok(plain.seq, "an ordinary enter carries no arrival_of and is never guarded");
   } finally { await api.end(); await s.stop(); }

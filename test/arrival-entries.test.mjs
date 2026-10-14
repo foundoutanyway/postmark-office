@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
-  ARRIVAL_OUTCOMES, arrivalLine, arrivalOutcome, arrivalTick, enterAtArrival, entryAtTheWalk,
+  ARRIVAL_DEFER_MS, ARRIVAL_OUTCOMES, arrivalLine, arrivalOutcome, arrivalTick, enterAtArrival, entryAtTheWalk,
   precheckVerdict, startArrivalTick, stopArrivalTick,
 } from "../src/arrival-entries.mjs";
 import { enterViaOffice } from "../src/world-crossings.mjs";
@@ -27,13 +27,16 @@ import { NO_WORLD, worldClone } from "./fixture-paths.mjs";
 
 // ── a store the tick can be driven against ──────────────────────────────────
 
-function queue(rows) {
+function queue(rows, { priors = {} } = {}) {
   const settled = [];
   const query = async (text, params) => {
     if (/FROM arrival_entries\s+WHERE settled_at IS NULL AND due_at <= \$1/.test(text)) {
       const now = Date.parse(params[0]);
-      return rows.filter((r) => !r.settled && Date.parse(r.due_at) <= now).slice(0, params[1]);
+      const skip = new Set((params[2] ?? []).map(String));
+      return rows.filter((r) => !r.settled && Date.parse(r.due_at) <= now && !skip.has(String(r.walk))).slice(0, params[1]);
     }
+    // the re-run's read: an enter already carrying this walk's arrival_of
+    if (/payload->>'arrival_of' = \$2/.test(text)) return priors[params[1]] ? [{ id: priors[params[1]] }] : [];
     if (/^\s*UPDATE arrival_entries/.test(text)) {
       const r = rows.find((x) => String(x.walk) === params[0] && !x.settled);
       if (!r) return [];
@@ -55,7 +58,7 @@ const bounce = (code, defect, hint, extra = {}) => Object.assign(new Error(defec
 test("OVERTAKEN — a later departure replaces the intent: settled overtaken, nothing entered (Darko, G4)", async () => {
   const q = queue([row(10)]);
   let entered = 0;
-  const r = await arrivalTick({ now: NOW, query: q.query, current: async () => "11", arrival: async () => ({ arrived: true }),
+  const r = await arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query, current: async () => "11", arrival: async () => ({ arrived: true }),
     enter: async () => { entered += 1; return { answer: { entered: ["a/room"] }, seq: "1" }; } });
   assert.deepEqual(q.settled, [{ walk: "10", outcome: "overtaken", enter_act_id: null, words: null }]);
   assert.equal(entered, 0, "an overtaken intent never reaches the enter");
@@ -65,7 +68,7 @@ test("OVERTAKEN — a later departure replaces the intent: settled overtaken, no
 test("STILL WALKING — due by the clock but not arrived by the walk record: left for the next tick, nothing entered", async () => {
   const q = queue([row(10)]);
   let entered = 0;
-  const r = await arrivalTick({ now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: false }),
+  const r = await arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: false }),
     enter: async () => { entered += 1; } });
   assert.deepEqual(q.settled, []);
   assert.equal(entered, 0);
@@ -75,7 +78,7 @@ test("STILL WALKING — due by the clock but not arrived by the walk record: lef
 test("ENTERED — the walk stands and has arrived: the ordinary enter runs, and the row is settled with its act", async () => {
   const q = queue([row(10)]);
   const seen = [];
-  await arrivalTick({ now: NOW, query: q.query, current: async () => "10", arrival: async (r) => ({ arrived: true, target: { x: 1, y: 2 }, r }),
+  await arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query, current: async () => "10", arrival: async (r) => ({ arrived: true, target: { x: 1, y: 2 }, r }),
     enter: async (r, a) => { seen.push({ walk: r.walk, target: a.target }); return { answer: { entered: ["a/room"] }, seq: "77" }; } });
   assert.deepEqual(seen, [{ walk: "10", target: { x: 1, y: 2 } }]);
   assert.deepEqual(q.settled, [{ walk: "10", outcome: "entered", enter_act_id: "77", words: null }]);
@@ -83,7 +86,7 @@ test("ENTERED — the walk stands and has arrived: the ordinary enter runs, and 
 
 test("REFUSED AT ARRIVAL — the mark's word changed on the way: settled refused in its own words, and nothing else is written", async () => {
   const q = queue([row(10)]);
-  await arrivalTick({ now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: true }),
+  await arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: true }),
     enter: async () => { throw bounce(422, "a/room is opposed to you", "it answers everyone the same"); } });
   assert.deepEqual(q.settled, [{ walk: "10", outcome: "refused", enter_act_id: null, words: "a/room is opposed to you — it answers everyone the same" }]);
 });
@@ -91,19 +94,57 @@ test("REFUSED AT ARRIVAL — the mark's word changed on the way: settled refused
 test("HELD — the pen busy or the store away: the row waits, and the next tick enters", async () => {
   const q = queue([row(10)]);
   let busy = true;
-  const deps = { now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: true }),
+  const deferredIds = new Map();
+  const deps = { deferredIds, now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: true }),
     enter: async () => { if (busy) throw bounce(503, "the office pen is busy — other writes hold the town lock"); return { answer: { entered: ["a/room"] }, seq: "78" }; } };
   const first = await arrivalTick(deps);
   assert.deepEqual(q.settled, [], "a 503 is not a refusal");
   assert.equal(first.held.length, 1);
   busy = false;
-  await arrivalTick(deps);
+  const soon = await arrivalTick({ ...deps, now: NOW + 10_000 });
+  assert.equal(soon.due, 0, "a held row stands aside for a minute: the due probe skips it");
+  await arrivalTick({ ...deps, now: NOW + ARRIVAL_DEFER_MS });
   assert.deepEqual(q.settled, [{ walk: "10", outcome: "entered", enter_act_id: "78", words: null }]);
+});
+
+test("A WORLD FREEZE HOLDS — the enter's freeze answer (a value, not a throw) waits for the next try, and never settles", async () => {
+  const q = queue([row(10)]);
+  const r = await arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: true }),
+    enter: async () => ({ answer: { error: "bounce", code: 503, defect: "the world is frozen for the crossing", hint: "try again in a minute" }, seq: null }) });
+  assert.deepEqual(q.settled, [], "a freeze is not a refusal");
+  assert.equal(r.held.length, 1);
+});
+
+test("A RE-RUN AFTER A CRASH settles as the enter already written, for a mark and a portal alike, and never judges again", async () => {
+  const q = queue([row(10), row(11, { handle: "bea", mark: "spire/doors-outside" })], { priors: { 10: "55", 11: "56" } });
+  let entered = 0;
+  await arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query, current: async (h) => (h === "ann" ? "10" : "11"), arrival: async () => ({ arrived: true }),
+    enter: async () => { entered += 1; throw bounce(409, "you are not at that portal ~22 m"); } });
+  assert.equal(entered, 0, "the enter is never run again");
+  assert.deepEqual(q.settled.map((s) => [s.walk, s.outcome, s.enter_act_id]), [["10", "entered", "55"], ["11", "entered", "56"]]);
+});
+
+test("HEAD-OF-LINE — rows that cannot be read stand aside and never starve the rows behind them, and expire a day after they fell due", async () => {
+  // twenty-one rows: the oldest twenty have unreadable walk acts, the newest is an ordinary arrival
+  const stuck = Array.from({ length: 20 }, (_, i) => row(100 + i, { handle: `h${i}`, due_at: "2026-10-14T10:00:00.000Z" }));
+  const q = queue([...stuck, row(200, { handle: "zed", due_at: "2026-10-14T11:00:00.000Z" })]);
+  const deferredIds = new Map();
+  const deps = { deferredIds, query: q.query, current: async (h) => (h === "zed" ? "200" : String(100 + Number(h.slice(1)))),
+    arrival: async (r) => (r.walk === "200" ? { arrived: true } : { arrived: false, why: "the walk act could not be read back" }),
+    enter: async (r) => ({ answer: { entered: [r.mark] }, seq: "77" }) };
+  await arrivalTick({ ...deps, now: NOW });
+  assert.deepEqual(q.settled, [], "the first tick takes the twenty oldest, all unreadable");
+  await arrivalTick({ ...deps, now: NOW + 10_000 });
+  assert.deepEqual(q.settled.map((s) => s.walk), ["200"], "the next tick skips them and reaches the row behind");
+  // a day after they fell due, each is settled expired, with the office's words
+  await arrivalTick({ ...deps, deferredIds: new Map(), now: Date.parse("2026-10-15T10:00:01.000Z") });
+  assert.equal(q.settled.filter((s) => s.outcome === "expired").length, 20);
+  assert.match(q.settled.find((s) => s.outcome === "expired").words, /could not read this walk back/);
 });
 
 test("NEVER TWICE — a re-run whose enter the pen already holds is settled as that enter, not written again", async () => {
   const q = queue([row(10)]);
-  await arrivalTick({ now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: true }),
+  await arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query, current: async () => "10", arrival: async () => ({ arrived: true }),
     enter: async () => { throw bounce(409, "walk 10 was already entered on arrival, by act 55", "nothing was written a second time", { arrival_settled: "55" }); } });
   assert.deepEqual(q.settled, [{ walk: "10", outcome: "entered", enter_act_id: "55", words: null }]);
 });
@@ -111,7 +152,7 @@ test("NEVER TWICE — a re-run whose enter the pen already holds is settled as t
 test("RESTART CATCH-UP — rows that fell due while the office was down are entered at the tick's first run, at boot", async () => {
   const q = queue([row(10, { due_at: "2026-10-14T09:00:00.000Z" }), row(11, { handle: "bea", due_at: "2026-10-14T10:30:00.000Z" })]);
   const calls = [];
-  const tick = async () => { calls.push("tick"); return arrivalTick({ now: NOW, query: q.query, current: async (h) => (h === "ann" ? "10" : "11"),
+  const tick = async () => { calls.push("tick"); return arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query, current: async (h) => (h === "ann" ? "10" : "11"),
     arrival: async () => ({ arrived: true }), enter: async (r) => ({ answer: { entered: [r.mark] }, seq: `9${r.walk}` }) }); };
   try {
     assert.equal(startArrivalTick({ port: 4380, env: { WORLD2_PG: "1", WORLD2_PG_URL: "postgres://x/y" }, log: {}, tick }), true);
@@ -353,4 +394,77 @@ test("[pin] the line rides the walker's own standpoint (every read) and their do
   assert.match(block, /const arrival = await \(await import\("\.\/arrival-entries\.mjs"\)\)\.arrivalLineFor\(handle\)/);
   assert.equal(block.split("...(transport ? { transport } : {}), ...arrival };").length - 1, 2, "both of the doorstep block's answers carry it");
   assert.equal((src.match(/arrivalLineFor\(/g) ?? []).length, 2, "and no other reader of world.mjs");
+});
+
+// ── THE G4 RACE (review of #541, finding 1; its review-race.mjs, on the clone's verbs) ──
+//
+// The tick checks `current()`, then waits for the town lock. A V2 walk takes no
+// lock, so walk B can reach the record inside that wait. Two fixes, each pinned:
+// the tick passes `walking: null` (an arrived walk is never live, so it stops
+// nobody), and the pen's guard refuses an entry whose walk is no longer the
+// current departure (`arrival_overtaken`, settled overtaken, nothing written).
+
+/** crossingDeps() in miniature, with walk B LIVE at the enter and a pen that asks the guard's question. */
+async function officeWithWalkB({ stand, currentIs }) {
+  const o = await officeAt({ published: stand });
+  const base = { ...o.base, walking: async () => ({ live: true, x: stand.x, y: stand.y }) };
+  const pen = o.base.record;
+  base.record = async (p) => {
+    if (p.arrival_of && currentIs() !== p.arrival_of)
+      throw Object.assign(new Error("overtaken"), { code: 409, defect: `walk ${p.arrival_of} was overtaken by a later departure (act 11) before its entry was written`, arrival_overtaken: true });
+    return pen(p);
+  };
+  return { o, base };
+}
+
+test("THE G4 RACE · walk B declared during the lock wait: the pen refuses, the row settles overtaken, and walk B is neither stopped nor landed over, for a mark and a portal", { skip: SKIP }, async () => {
+  for (const [mark, stand] of [["spire/forecourt", { x: 790, y: 1000 }], ["spire/doors-outside", OUTSIDE_FACE]]) {
+    const { o, base } = await officeWithWalkB({ stand, currentIs: () => "11" });   // walk B (act 11) is now current
+    const q = queue([row(10, { mark })]);
+    await arrivalTick({ deferredIds: new Map(), now: NOW, query: q.query,
+      current: async () => "10",                      // the tick's own check ran before walk B existed
+      arrival: async () => ({ arrived: true }),
+      enter: (r, a) => enterAtArrival(r, a, { base, enter: enterViaOffice, worldClone: CLONE }) });
+    assert.deepEqual(q.settled, [{ walk: "10", outcome: "overtaken", enter_act_id: null, words: null }], mark);
+    assert.equal(o.records.length, 0, `${mark}: nothing written`);
+    assert.deepEqual(o.stops, [], `${mark}: walk B is neither stopped nor landed over`);
+  }
+});
+
+test("THE TICK NEVER STOPS A WALK · with walk B live and the pen allowing the entry, an ordinary arrival writes no stop (walking: null by construction)", { skip: SKIP }, async () => {
+  const { o, base } = await officeWithWalkB({ stand: { x: 790, y: 1000 }, currentIs: () => ROW.walk });
+  const { answer } = await enterAtArrival({ ...ROW, mark: "spire/forecourt" }, { arrived: true }, { base, enter: enterViaOffice, worldClone: CLONE });
+  assert.ok(answer.entered.includes("spire/forecourt"));
+  assert.deepEqual(o.stops, [], "no walk-ending stop from the tick");
+  assert.equal("walk_ended" in answer, false);
+});
+
+test("THE PRE-CHECK NAMES ITS REFUSAL · reach ('the walk will not end within the mark's own ground') is never blamed on the mark's law", async () => {
+  const reach = await entryAtTheWalk({ ...WALK, arrived: false }, { crossingDeps: officeDeps,
+    enter: async () => { throw bounce(409, "you are not at that door — x stands ~4 m from where you stand", "walk to it", { walk: { to: { x: 1, y: 2 }, mark: "a/room" } }); },
+    queue: async () => ({ queued: true }) });
+  assert.match(reach.why, /will not end within the mark's own ground/);
+  assert.doesNotMatch(reach.why, /law/);
+  const law = await entryAtTheWalk({ ...WALK, arrived: false }, { crossingDeps: officeDeps,
+    enter: async () => { throw bounce(422, "a/room is opposed to you"); }, queue: async () => ({ queued: true }) });
+  assert.match(law.why, /refuses you as its law stands now/);
+});
+
+test("THE QUEUED RECEIPT says nothing in the present tense: aboard, exited, landed, a portal's next portals and its ground are withheld from the pre-check's answer", async () => {
+  const { walkEntryReceipt } = await import("../src/world.mjs");
+  const dry = { entered: ["the-town/the-post-office"], within: [], aboard: true, exited: ["a/b"], landed: { x: 1, y: 2 }, portals: [{ id: "spire/hall-door" }],
+    ground: { mark: "x" }, walk_ended: {}, ledger: null, log: { seq: 1 }, terms: [{ edge: "aboard" }], chain: ["the-town/the-post-office"], into: "spire/vestibule" };
+  for (const queued of [true, false]) {
+    const { entry } = walkEntryReceipt(dry, { arrived: false, stop: "x", eta: 250, queued, why: "w" });
+    for (const k of ["entered", "within", "aboard", "exited", "landed", "portals", "ground", "walk_ended", "ledger", "log"])
+      assert.equal(k in entry, false, `${k} withheld (queued ${queued})`);
+    assert.deepEqual(entry.terms, [{ edge: "aboard" }], "the terms are a fact at departure, and stay");
+    assert.equal(entry.into, "spire/vestibule");
+  }
+});
+
+test("AN EXPIRY READS ON THE STANDPOINT like a refusal, until the walker's next act", () => {
+  const e = arrivalLine({ mark: "a/room", settled_at: new Date("2026-10-15T10:00:01Z"), outcome: "expired", words: "the office could not read this walk back, so the entry was never made" });
+  assert.equal(e.arrival.outcome, "expired");
+  assert.match(e.arrival.note, /never made/);
 });

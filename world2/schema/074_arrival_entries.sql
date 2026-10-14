@@ -31,11 +31,12 @@
 --   mark         the mark to enter.  accept  the walker's word for a mark that
 --                asks for terms.  into_mark  the pick for a portal that leads
 --                more than one way.
---   due_at       when the walk arrives, from the unrounded remainder.
+--   due_at       when the walk arrives, from the whole-metre remainder.
 --   settled_at, outcome, enter_act_id, words — written once, by the tick:
---                entered · refused · already · overtaken. `words` is the
---                refusal as the walker reads it on their own standpoint
---                (Darko, G3), and nowhere else.
+--                entered · refused · already · overtaken · expired. `words`
+--                is the refusal (or the expiry: a row that could not be
+--                decided a day after it fell due) as the walker reads it on
+--                their own standpoint (Darko, G3), and nowhere else.
 --
 -- ── THE PEN ──────────────────────────────────────────────────────────────────
 --
@@ -71,7 +72,7 @@ CREATE TABLE IF NOT EXISTS arrival_entries (
   due_at        timestamptz NOT NULL,
   queued_at     timestamptz NOT NULL DEFAULT now(),
   settled_at    timestamptz,
-  outcome       text CHECK (outcome IN ('entered', 'refused', 'already', 'overtaken')),
+  outcome       text CHECK (outcome IN ('entered', 'refused', 'already', 'overtaken', 'expired')),
   enter_act_id  bigint,
   words         text CHECK (words IS NULL OR char_length(words) <= 600),
   CHECK ((settled_at IS NULL) = (outcome IS NULL))

@@ -42,9 +42,16 @@ import { DEPARTURE_ACTIONS, departureRecordOf, fractionalCrossing } from "../wor
 
 export const ARRIVAL_TICK_MS = 10_000;
 export const ARRIVAL_TICK_BATCH = 20;
-export const ARRIVAL_OUTCOMES = Object.freeze(["entered", "refused", "already", "overtaken"]);
-// a refusal stays on the standpoint until the walker's next act, and at most this long
-const REFUSAL_SHOWN_MS = 24 * 3600 * 1000;
+export const ARRIVAL_OUTCOMES = Object.freeze(["entered", "refused", "already", "overtaken", "expired"]);
+// A row that cannot be decided (its walk act unreadable, the walk never arriving
+// by its own record, a step that keeps tripping) is settled `expired` this long
+// after it fell due, so it cannot hold the queue (review of #541, finding 4). A
+// row held because the office could not TRY (the pen busy, the store away, a
+// world freeze) never expires: that is an outage, and the tick enters after it.
+export const ARRIVAL_EXPIRE_MS = 24 * 3600 * 1000;
+// A held or unreadable row stands aside this long in this process, and the due
+// probe skips it, so twenty stuck rows cannot starve the rows behind them.
+export const ARRIVAL_DEFER_MS = 60_000;
 const WORDS_MAX = 600;
 
 const QUEUE_SQL = `
@@ -55,7 +62,7 @@ const QUEUE_SQL = `
 const DUE_SQL = `
   SELECT walk_act_id::text AS walk, handle, household, mark, accept, into_mark, due_at
     FROM arrival_entries
-   WHERE settled_at IS NULL AND due_at <= $1
+   WHERE settled_at IS NULL AND due_at <= $1 AND NOT (walk_act_id = ANY($3::bigint[]))
    ORDER BY due_at, walk_act_id
    LIMIT $2`;
 const SETTLE_SQL = `
@@ -71,8 +78,11 @@ const CURRENT_SQL = `
    ORDER BY at DESC, id DESC
    LIMIT 1`;
 const WALK_SQL = `SELECT id, at, crossing, actor, action, payload FROM acts WHERE id = $1::bigint`;
+// The enter an arrival already wrote, if any: the guard's own read, asked first on a re-run.
+const PRIOR_SQL = `SELECT id::text AS id FROM acts WHERE actor = $1 AND action = 'enter' AND payload->>'arrival_of' = $2 ORDER BY id LIMIT 1`;
 // Who has a line on their standpoint: a pending row whose walk is still the
-// current departure, or a refusal with no act of theirs since it.
+// current departure, or a refusal (or an expiry) with no act of theirs since it:
+// "until their next act", Darko's G3, and no other bound.
 const STANDING_SQL = `
   SELECT DISTINCT ON (e.handle) e.handle, e.walk_act_id::text AS walk, e.mark, e.due_at, e.settled_at, e.outcome, e.words
     FROM arrival_entries e
@@ -80,7 +90,7 @@ const STANDING_SQL = `
           AND e.walk_act_id = (SELECT a.id FROM acts a
                                 WHERE a.actor = e.handle AND a.action = ANY($1) AND a.payload->>'_ledger' IS NULL
                                 ORDER BY a.at DESC, a.id DESC LIMIT 1))
-      OR (e.outcome = 'refused' AND e.settled_at > $2
+      OR (e.outcome IN ('refused', 'expired')
           AND NOT EXISTS (SELECT 1 FROM acts a WHERE a.actor = e.handle AND a.at > e.settled_at))
    ORDER BY e.handle, e.walk_act_id DESC`;
 
@@ -151,7 +161,14 @@ export async function entryAtTheWalk({ who, key, mark, accept = false, into = nu
   };
   let answer;
   try { answer = await enter(payload, key, dry); }
-  catch (e) { return { entry: refusalOf(e), queued: false, why: precheckVerdict({ refused: refusalOf(e).refused }).why }; }
+  catch (e) {
+    // WHICH REFUSAL: a reach refusal carries the walk to the threshold (`walk`) and
+    // says nothing about the mark's law; anything else is the law, or the office.
+    const why = e?.walk
+      ? "the walk will not end within the mark's own ground, so it could not be entered from where you will stand: walk to it and enter by hand"
+      : precheckVerdict({ refused: refusalOf(e).refused }).why;
+    return { entry: refusalOf(e), queued: false, why };
+  }
   const verdict = precheckVerdict(answer);
   if (!verdict.would) return { entry: answer, queued: false, why: verdict.why };
   const q = await queue({ walkActId, handle: who, household, mark, accept, into, dueAt });
@@ -175,11 +192,16 @@ function refusalOf(e) {
 export function arrivalOutcome({ answer = null, error = null, seq = null } = {}) {
   if (error) {
     if (error.arrival_settled != null) return { outcome: "entered", enterActId: String(error.arrival_settled) };
+    // a later departure reached the record while the entry waited for the pen: G4, nothing written
+    if (error.arrival_overtaken) return { outcome: "overtaken" };
     if (error.code === 503 || error.name === "PenUnreachableError") return { held: error.defect ?? "the office's record could not be reached" };
     if (isHttpStatus(error.code) && error.defect) return { outcome: "refused", words: wordsOf(error.defect, error.hint) };
     return { outcome: "refused", words: wordsOf("the office could not make the entry", faultLogged("an arrival entry tripped", error)) };
   }
   if (!answer) return { outcome: "refused", words: "the mark gave no answer" };
+  // A WORLD FREEZE answers as a value, not a throw (freeze.mjs): the office could not try, so the row waits
+  if (answer.error === "bounce")
+    return answer.code === 503 ? { held: answer.defect ?? "the world is frozen" } : { outcome: "refused", words: wordsOf(answer.defect, answer.hint) };
   if (answer.choose) return { outcome: "refused", words: wordsOf(answer.note ?? "this portal leads more than one way, and the way you named is not one of them") };
   if (answer.awaiting && !answer.entered?.length)
     return { outcome: "refused", words: wordsOf("the mark now asks for your word before you enter, and you had not given it", "walk again with accept: true, or enter by hand") };
@@ -189,44 +211,70 @@ export function arrivalOutcome({ answer = null, error = null, seq = null } = {})
   return { outcome: "entered", enterActId: seq };
 }
 
+const deferred = new Map();   // walk act id → the ms before which this process skips it
+
 /**
- * One tick. Never throws for one row: each row is decided, held or skipped on
- * its own. Answers the counts and one line for the log.
+ * One tick. Never throws for one row: each row is decided, held, deferred or
+ * skipped on its own. Answers the counts and one line for the log.
+ *
+ * THE ORDER CANNOT STARVE: oldest due first, and a row this process could not
+ * decide (held, or its walk act unreadable) stands aside for ARRIVAL_DEFER_MS,
+ * skipped by the due probe itself, so the rows behind it are reached. A row
+ * that still cannot be decided ARRIVAL_EXPIRE_MS after it fell due is settled
+ * `expired`, unless the office simply could not try (an outage never expires).
  *
  * deps (all injectable; the defaults are the office's own):
  *   query(text, params)  the store (actsQuery)
+ *   prior(row)           an enter already carrying this walk's `arrival_of` (a re-run after a crash)
  *   current(handle)      the walker's current departure act id
- *   arrival(row)         { arrived, target } from the walk act and the clock
+ *   arrival(row)         { arrived, target, why? } from the walk act and the clock
  *   enter(row)           { answer, seq } from the ordinary enter, or throws
  */
-export async function arrivalTick({ now = Date.now(), query = actsQuery, current, arrival, enter, batch = ARRIVAL_TICK_BATCH } = {}) {
+export async function arrivalTick({ now = Date.now(), query = actsQuery, prior, current, arrival, enter, batch = ARRIVAL_TICK_BATCH, deferredIds = deferred } = {}) {
+  prior ??= async (row) => (await query(PRIOR_SQL, [row.handle, String(row.walk)]))?.[0]?.id ?? null;
   current ??= (h) => currentDeparture(h, { query });
   arrival ??= (row) => arrivalOf(row, { query, now });
   enter ??= enterAtArrival;
-  const rows = (await query(DUE_SQL, [iso(now), batch])) ?? [];
-  const out = { due: rows.length, entered: [], refused: [], already: [], overtaken: [], held: [], walking: [] };
+  for (const [w, until] of deferredIds) if (until <= now) deferredIds.delete(w);
+  const rows = (await query(DUE_SQL, [iso(now), batch, [...deferredIds.keys()]])) ?? [];
+  const out = { due: rows.length, entered: [], refused: [], already: [], overtaken: [], expired: [], held: [], walking: [] };
+  const defer = (walk) => deferredIds.set(walk, now + ARRIVAL_DEFER_MS);
   for (const row of rows) {
     const walk = String(row.walk);
+    const stale = now - Date.parse(iso(row.due_at)) >= ARRIVAL_EXPIRE_MS;
     let settle;
     try {
-      const cur = await current(row.handle);
-      if (cur !== walk) settle = { outcome: "overtaken" };
+      // A RE-RUN AFTER A CRASH between the write and the settle: the enter that
+      // was written is the answer, never a second judgement (review, finding 2).
+      const done = await prior(row);
+      if (done) settle = { outcome: "entered", enterActId: String(done) };
+      else if ((await current(row.handle)) !== walk) settle = { outcome: "overtaken" };
       else {
         const a = await arrival(row);
-        if (!a.arrived) { out.walking.push(walk); continue; }   // due by the clock, not yet by the record: next tick
-        let r;
-        try { r = arrivalOutcome(await enter(row, a)); }
-        catch (error) { r = arrivalOutcome({ error }); }
-        if (r.held) { out.held.push({ walk, why: r.held }); continue; }
-        settle = r;
+        if (!a.arrived) {
+          if (stale) settle = { outcome: "expired", words: a.why
+            ? "the office could not read this walk back, so the entry was never made"
+            : "this walk had not arrived by its own record a day after it was due, so the entry was never made" };
+          else { out.walking.push(walk); if (a.why) defer(walk); continue; }   // still walking: next tick
+        } else {
+          let r;
+          try { r = arrivalOutcome(await enter(row, a)); }
+          catch (error) { r = arrivalOutcome({ error }); }
+          if (r.held) { out.held.push({ walk, why: r.held }); defer(walk); continue; }   // could not try: an outage never expires
+          settle = r;
+        }
       }
-      const done = await query(SETTLE_SQL, [walk, settle.outcome, settle.enterActId ?? null, settle.words ?? null]);
-      if (done?.length) out[settle.outcome].push(walk);
     } catch (e) {
-      out.held.push({ walk, why: errorSaid(e).split("\n")[0].slice(0, 160) });   // the log line's, never an answer
+      if (!stale) { out.held.push({ walk, why: errorSaid(e).split("\n")[0].slice(0, 160) }); defer(walk); continue; }   // the log line's, never an answer
+      settle = { outcome: "expired", words: `the office could not decide this entry (${faultLogged("an arrival entry kept tripping", e)})` };
     }
+    try {
+      const done = await query(SETTLE_SQL, [walk, settle.outcome, settle.enterActId ?? null, settle.words ?? null]);
+      if (done?.length) { out[settle.outcome].push(walk); deferredIds.delete(walk); }
+    } catch (e) { out.held.push({ walk, why: errorSaid(e).split("\n")[0].slice(0, 160) }); defer(walk); }
   }
   out.line = `arrivals: ${out.due} due · ${out.entered.length} entered · ${out.refused.length} refused · ${out.already.length} already · ${out.overtaken.length} overtaken`
+    + (out.expired.length ? ` · ${out.expired.length} expired (${out.expired.map((w) => `walk ${w}`).join(", ")})` : "")
     + (out.walking.length ? ` · ${out.walking.length} still walking` : "")
     + (out.held.length ? ` · ${out.held.length} held (${out.held.map((h) => `walk ${h.walk}: ${h.why}`).join("; ")})` : "");
   return out;
@@ -270,6 +318,10 @@ export async function enterAtArrival(row, a, { base = null, enter = null, worldC
   let seq = null;
   const deps = {
     ...base,
+    // AN ARRIVED WALK IS NEVER LIVE, by construction rather than by timing: the
+    // tick never stops a walk (review of #541, finding 1). A later walk declared
+    // while this entry waits for the pen is the guard's to see, below.
+    walking: async () => null,
     record: async (p) => { const r = await base.record({ ...p, arrival_of: String(row.walk) }); seq = r?.seq ?? seq; return r; },
   };
   const key = { handles: new Set([row.handle]), household: row.household ?? null };
@@ -282,19 +334,29 @@ export async function enterAtArrival(row, a, { base = null, enter = null, worldC
 // ── NEVER TWICE: the pen's guard ─────────────────────────────────────────────
 
 /**
- * crossing-exec's guard for an enter that carries `arrival_of`: inside the
- * write's own transaction, under the walk's advisory lock, refuse when an
- * enter for this walk is already in the record. The refusal carries that act's
- * id as `arrival_settled`, so the tick settles the row as entered.
+ * crossing-exec's guard for an enter that carries `arrival_of`, inside the
+ * write's own transaction, under the walk's advisory lock. Two refusals:
+ *   · an enter for this walk is already in the record: it carries that act's
+ *     id as `arrival_settled`, so the tick settles the row as entered;
+ *   · the walk is no longer the walker's current departure: a later walk
+ *     reached the record after the tick's own check, while this entry waited
+ *     for the town lock (review of #541, finding 1). It carries
+ *     `arrival_overtaken`, so the tick settles the row overtaken and nothing is
+ *     written: the later walk wins, as Darko's G4 rules.
+ * Residual, named: a later walk committed in the milliseconds between this
+ * write and a portal's landing (`deps.stop`) is still set down over.
  */
 export const arrivalOnceGuard = ({ walk, actor }) => async (client) => {
   await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`arrival:${walk}`]);
-  const { rows } = await client.query(
-    "SELECT id::text AS id FROM acts WHERE actor = $1 AND action = 'enter' AND payload->>'arrival_of' = $2 ORDER BY id LIMIT 1",
-    [actor, String(walk)]);
+  const { rows } = await client.query(PRIOR_SQL, [actor, String(walk)]);
   if (rows.length) {
     const defect = `walk ${walk} was already entered on arrival, by act ${rows[0].id}`;
     throw Object.assign(new Error(defect), { code: 409, defect, hint: "nothing was written a second time", arrival_settled: rows[0].id });
+  }
+  const { rows: [cur] } = await client.query(CURRENT_SQL, [actor, [...DEPARTURE_ACTIONS]]);
+  if (cur?.id !== String(walk)) {
+    const defect = `walk ${walk} was overtaken by a later departure (act ${cur?.id ?? "none"}) before its entry was written`;
+    throw Object.assign(new Error(defect), { code: 409, defect, hint: "nothing was written: the later walk stands", arrival_overtaken: true });
   }
 };
 
@@ -313,7 +375,7 @@ export async function arrivalLineFor(handle, { now = Date.now(), query = actsQue
   if (!standing.map || now - standing.at >= ARRIVAL_TICK_MS) {
     standing.inflight ??= (async () => {
       try {
-        const rows = await query(STANDING_SQL, [[...DEPARTURE_ACTIONS], iso(now - REFUSAL_SHOWN_MS)]);
+        const rows = await query(STANDING_SQL, [[...DEPARTURE_ACTIONS]]);
         standing.map = new Map((rows ?? []).map((r) => [r.handle, r]));
       } catch { standing.map ??= new Map(); }
       standing.at = now;
@@ -331,6 +393,8 @@ export function arrivalLine(r) {
     note: `you enter ${r.mark} when you arrive, by its own law at that moment. A new walk before then replaces it` } };
   if (r.outcome === "refused") return { arrival: { mark: r.mark, outcome: "refused", words: r.words ?? null, at: iso(r.settled_at),
     note: `you arrived at ${r.mark} and the entry you asked for was not made. You are standing at it; enter by hand if it will have you` } };
+  if (r.outcome === "expired") return { arrival: { mark: r.mark, outcome: "expired", words: r.words ?? null, at: iso(r.settled_at),
+    note: `the entry into ${r.mark} you asked for on your walk was never made, and the office has stopped trying. Enter by hand if you are there` } };
   return {};
 }
 

@@ -986,7 +986,8 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //
   // ⚠ AND RE-CAPTURED A THIRTEENTH TIME, 2026-10-14 (lane plumb-arrival, WLD-5),
   // because the PR moved the world pin, 17b64ef1 -> 01f7c83e (the head of
-  // postmark-world#206, over main 9988b669), as the tenth note says a pin move
+  // postmark-world#206, over main 9988b669; then to its merge bdbf1061, which
+  // moved nothing here: F7c5 green on a CI-shaped clone), as the tenth note says a pin move
   // must. The code was cleared first: at this PR's head with a CI-shaped clone at
   // the OLD pin (suite-clones.sh's fetch), F7c5 is green. Then the diff, leaf by
   // leaf at the new pin BEFORE the capture: 1063 paths before and after, NONE

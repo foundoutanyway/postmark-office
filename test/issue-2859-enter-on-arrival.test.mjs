@@ -21,10 +21,14 @@ test("#2859: the arrival entry never re-stops the walk that carried you there", 
   assert.ok(record > spread, "and its pen writes nothing");
 
   const tick = source.slice(source.indexOf("export async function arrivalTick("));
-  const arrivedGate = tick.indexOf("if (!a.arrived) { out.walking.push(walk); continue; }");
+  const arrivedGate = tick.indexOf("if (!a.arrived) {");
   const entering = tick.indexOf("await enter(row, a)");
   assert.notEqual(arrivedGate, -1, "the tick asks the walk record whether the walker has arrived");
   assert.ok(entering > arrivedGate, "before it enters anyone");
+
+  // and the tick's enter is handed no live walk at all: an arrived walk stops nobody, by construction (review of #541)
+  const atArrival = source.slice(source.indexOf("export async function enterAtArrival("));
+  assert.ok(atArrival.indexOf("walking: async () => null,") > atArrival.indexOf("...base,"), "the tick's deps override walking after spreading the office's own");
 });
 
 // ── THE SAME RULING, READ AS BEHAVIOUR ──────────────────────────────────────

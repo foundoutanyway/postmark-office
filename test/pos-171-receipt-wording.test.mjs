@@ -302,7 +302,7 @@ test("leg 5 — the real door, 6,865 m out with enter_on_arrival: a refusing pre
   assert.equal(walk.entry.stop, FAR);
   const arrivesCrossing = (Date.parse(walk.arrives_at) - Date.UTC(2026, 5, 12)) / (12 * 3600 * 1000);
   assert.ok(Math.abs(walk.entry.eta - arrivesCrossing) < 3e-5,
-    "the eta is the arrival crossing from the unrounded remainder: the instant arrives_at names, to the second");
+    "the eta is the arrival crossing from the whole-metre remainder: the instant arrives_at names, to the second");
   assert.equal("arrived_note" in walk, false);
   assert.equal("entered" in walk.entry, false);
   assert.doesNotMatch(JSON.stringify(walk), /stepped inside/);

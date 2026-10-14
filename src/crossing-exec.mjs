@@ -157,6 +157,8 @@ async function main() {
           return err(503, e.message, "this door's pen is the office's record; when it cannot be reached the door refuses rather than writing anywhere else — you are exactly where you were, and the crossing is safe to declare again");
         if (e?.arrival_settled != null)
           return answer({ error: { code: 409, defect: e.defect, hint: e.hint, arrival_settled: String(e.arrival_settled) } });
+        if (e?.arrival_overtaken)
+          return answer({ error: { code: 409, defect: e.defect, hint: e.hint, arrival_overtaken: true } });
         throw e;
       }
     }

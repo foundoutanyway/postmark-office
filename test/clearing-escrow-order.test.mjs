@@ -78,7 +78,8 @@ async function seed({ refuseTheMove = false } = {}) {
     await mark(IDS.stone, "sable/the-stone", "sited", "sable", "hh:rabbit", { x: 9000, y: 9000 }, { w: 1, h: 1 });
     await c.query(
       `INSERT INTO escrow_projection (town_sha, mark, holder, household, own_household, n, weight_k)
-       VALUES ($1, 'sable/the-stone', 'rei', 'hh:starforge', 'hh:rabbit', 1, 0)`, [TOWN_SHA]);
+       VALUES ($1, 'sable/the-stone', 'rei', 'hh:starforge', 'hh:rabbit', 1, 0),
+              ($1, 'rei/the-staked-bench', 'sable', 'hh:rabbit', 'hh:starforge', 1, 0)`, [TOWN_SHA]);
     const claim = async (slug, kind, at, ext, supersedes = null) => (await c.query(
       `INSERT INTO claims (window_id, class, claimant, household, status, body, geometry, bbox, stake, data, slug, supersedes)
        VALUES ($1, $2, 'rei', 'hh:starforge', 'pending', $3, $4, $5::box, 0, '{"date":"2026-10-08"}', $6, $7)
@@ -89,6 +90,8 @@ async function seed({ refuseTheMove = false } = {}) {
       oldShed: await claim("rei/the-old-shed", "sited", OLD, { w: 4, h: 4 }),
       newShed: await claim("rei/the-new-shed", "sited", NEW, { w: 4, h: 4 }),
       bench: await claim("rei/the-far-bench", "sited", FAR, { w: 1, h: 1 }),
+      // a non-mover on open ground with a stamp behind it: the gate is presence, and it holds
+      stakedBench: await claim("rei/the-staked-bench", "sited", { x: 6000, y: 6000 }, { w: 1, h: 1 }),
     };
     // A rider with its own claim waiting refuses the move (5.7, ALL OR NOTHING).
     if (refuseTheMove) ids.house = await claim("rei/the-house", "sited", OLD, { w: 10, h: 10 }, IDS.house);
@@ -103,6 +106,15 @@ function clear() {
   });
   return { code: r.status, out: `${r.stdout}\n${r.stderr}` };
 }
+// What the store says STANDS after the window: the ghost this gate must never leave.
+async function standing(slugs) {
+  const c = await store.connect("world2_owner");
+  try {
+    const { rows } = await c.query("SELECT slug FROM marks WHERE status = 'standing' AND slug = ANY($1) ORDER BY slug", [slugs]);
+    return rows.map((r) => r.slug);
+  } finally { await c.end(); }
+}
+const SHEDS = ["rei/the-far-bench", "rei/the-new-shed", "rei/the-old-shed", "rei/the-staked-bench"];
 async function statusOf(id) {
   const c = await store.connect("world2_owner");
   try {
@@ -119,6 +131,8 @@ test("THE MOVE LOCKS: a ✦0 shed at the parcel's NEW place locks home; one at t
   assert.equal(await statusOf(ids.newShed), "locked");
   assert.match(await statusOf(ids.oldShed), /^refused: escrow-absent/, "the parcel left that ground in this window");
   assert.match(await statusOf(ids.bench), /^refused: escrow-absent/, "the control: open ground, nothing staked");
+  assert.equal(await statusOf(ids.stakedBench), "locked", "a non-mover's verdict is unchanged: a stamp behind it, it locks");
+  assert.deepEqual(await standing(SHEDS), ["rei/the-new-shed", "rei/the-staked-bench"], "no ghost: no ✦0 mark stands where the parcel left");
 });
 
 test("THE MOVE IS REFUSED (5.7): the shed at the parcel's OLD place locks home; the one at the place it never reached is refused", { skip }, async () => {
@@ -129,4 +143,6 @@ test("THE MOVE IS REFUSED (5.7): the shed at the parcel's OLD place locks home; 
   assert.equal(await statusOf(ids.oldShed), "locked", "the parcel stayed, so its old ground still holds the shed");
   assert.match(await statusOf(ids.newShed), /^refused: escrow-absent/, "a move 5.7 refused lends no ground");
   assert.match(await statusOf(ids.bench), /^refused: escrow-absent/);
+  assert.equal(await statusOf(ids.stakedBench), "locked");
+  assert.deepEqual(await standing(SHEDS), ["rei/the-old-shed", "rei/the-staked-bench"], "no ghost: no ✦0 mark stands where a refused move never went");
 });

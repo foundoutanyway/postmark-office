@@ -316,18 +316,31 @@ test("...and the `since:` shelf CARRIES the hold event — driven through happen
       [holdAct(21, new Date().toISOString(), now, "wright", "give", NEAR, "ethan-thorne")],
       async () => {
         const { happenedFor } = await import("../src/world-apex.mjs");
-        const oriented = { standpoint: { x: 0, y: 0, handle: "wright" }, crossing: { n: now } };
-        const block = await happenedFor(oriented, { since: now }, { handles: new Set(["wright"]) });
+        // ⚑ THE STANDPOINT ORIENT REALLY ANSWERS (world.mjs § worldOrient):
+        // `{ ...at, stance }`, and NO `handle`. This probe built one with
+        // `handle: "wright"` until 2026-10-14, which is the one shape the door
+        // never hands it — so it stayed green while the live shelf read
+        // `{ complete: true, count: 0 }` for every resident. The resident is the
+        // one the read names, else the key's only one (`standingHandle`), and
+        // both of those are legs here: a one-resident key with no handle, and a
+        // two-resident key naming wright.
+        const oriented = { standpoint: { x: 0, y: 0, from: "where your walk arrived", stance: "embodied" }, crossing: { n: now } };
+        for (const [args, key] of [
+          [{ since: now }, { handles: new Set(["wright"]) }],
+          [{ since: now, handle: "wright" }, { handles: new Set(["ethan-thorne", "wright"]) }],
+        ]) {
+          const block = await happenedFor(oriented, args, key);
 
-        assert.ok(block, "the happened path answered nothing — the cursor read is off");
-        assert.ok(!block.unavailable, `the delta could not be read: ${block.detail ?? block.unavailable}`);
-        const kinds = (block.to_you?.events ?? []).map((e) => e.kind);
-        assert.ok(kinds.includes("hold-give"),
-          `a give of a thing of mine did not reach happened.to_you (${JSON.stringify(kinds)}) — walk #11's certified zero, back`);
-        const ev = block.to_you.events.find((e) => e.kind === "hold-give");
-        assert.equal(ev.thing, NEAR);
-        assert.equal(ev.from_you, true, "it left wright's hands, and the shelf must say which way");
-        assert.equal(block.to_you.complete, true, "every source answered, so the promise is kept");
+          assert.ok(block, "the happened path answered nothing — the cursor read is off");
+          assert.ok(!block.unavailable, `the delta could not be read: ${block.detail ?? block.unavailable}`);
+          const kinds = (block.to_you?.events ?? []).map((e) => e.kind);
+          assert.ok(kinds.includes("hold-give"),
+            `a give of a thing of mine did not reach happened.to_you (${JSON.stringify(kinds)}, key ${[...key.handles]}) — walk #11's certified zero, back`);
+          const ev = block.to_you.events.find((e) => e.kind === "hold-give");
+          assert.equal(ev.thing, NEAR);
+          assert.equal(ev.from_you, true, "it left wright's hands, and the shelf must say which way");
+          assert.equal(block.to_you.complete, true, "every source answered, so the promise is kept");
+        }
       });
   } finally {
     claims.__setPoolForTest(null);

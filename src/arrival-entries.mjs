@@ -52,6 +52,10 @@ export const ARRIVAL_EXPIRE_MS = 24 * 3600 * 1000;
 // A held or unreadable row stands aside this long in this process, and the due
 // probe skips it, so twenty stuck rows cannot starve the rows behind them.
 export const ARRIVAL_DEFER_MS = 60_000;
+// A row due by the clock but not yet arrived by its own record is normally a
+// second or two early (the eta is from a whole-metre remainder). Once it is this
+// late it stands aside like an undecidable row, so it cannot starve the queue.
+export const ARRIVAL_LATE_MS = 5 * 60_000;
 const WORDS_MAX = 600;
 
 const QUEUE_SQL = `
@@ -255,7 +259,7 @@ export async function arrivalTick({ now = Date.now(), query = actsQuery, prior, 
           if (stale) settle = { outcome: "expired", words: a.why
             ? "the office could not read this walk back, so the entry was never made"
             : "this walk had not arrived by its own record a day after it was due, so the entry was never made" };
-          else { out.walking.push(walk); if (a.why) defer(walk); continue; }   // still walking: next tick
+          else { out.walking.push(walk); if (a.why || now - Date.parse(iso(row.due_at)) >= ARRIVAL_LATE_MS) defer(walk); continue; }   // still walking: next tick, or aside if late
         } else {
           let r;
           try { r = arrivalOutcome(await enter(row, a)); }

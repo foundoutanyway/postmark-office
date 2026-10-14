@@ -450,17 +450,45 @@ test("THE PRE-CHECK NAMES ITS REFUSAL · reach ('the walk will not end within th
   assert.match(law.why, /refuses you as its law stands now/);
 });
 
-test("THE QUEUED RECEIPT says nothing in the present tense: aboard, exited, landed, a portal's next portals and its ground are withheld from the pre-check's answer", async () => {
+test("THE QUEUED RECEIPT says nothing in the present tense: aboard, exited, landed and a portal's next portals are withheld from the pre-check's answer", async () => {
   const { walkEntryReceipt } = await import("../src/world.mjs");
   const dry = { entered: ["the-town/the-post-office"], within: [], aboard: true, exited: ["a/b"], landed: { x: 1, y: 2 }, portals: [{ id: "spire/hall-door" }],
     ground: { mark: "x" }, walk_ended: {}, ledger: null, log: { seq: 1 }, terms: [{ edge: "aboard" }], chain: ["the-town/the-post-office"], into: "spire/vestibule" };
   for (const queued of [true, false]) {
     const { entry } = walkEntryReceipt(dry, { arrived: false, stop: "x", eta: 250, queued, why: "w" });
-    for (const k of ["entered", "within", "aboard", "exited", "landed", "portals", "ground", "walk_ended", "ledger", "log"])
+    for (const k of ["entered", "within", "aboard", "exited", "landed", "portals", "walk_ended", "ledger", "log"])
       assert.equal(k in entry, false, `${k} withheld (queued ${queued})`);
     assert.deepEqual(entry.terms, [{ edge: "aboard" }], "the terms are a fact at departure, and stay");
     assert.equal(entry.into, "spire/vestibule");
   }
+});
+
+test("THE POST OFFICE'S RULES STAY ON A QUEUED WALK — a terms answer's ground block (ruling 10) rides the receipt, queued or not (review of #541, R1)", async () => {
+  const { walkEntryReceipt } = await import("../src/world.mjs");
+  const terms = { edge: "aboard", body: "Mind the gap.", consequence: "you ride where she sails" };
+  const ground = { mark: "the-town/the-post-office", class: "vehicle", rules: ["ride is yours to declare aboard"], lends: ["ride"] };
+  const answer = { handle: "ann", entered: [], within: [], awaiting: { terms }, terms, ground, note: "nothing was recorded" };
+  for (const queued of [true, false]) {
+    const { entry } = walkEntryReceipt(answer, { arrived: false, stop: "the-town/the-post-office", eta: 250, queued, why: "this mark asks for your word" });
+    assert.deepEqual(entry.ground, ground, `her rules are shown with her terms (queued ${queued})`);
+    assert.deepEqual(entry.awaiting, { terms });
+  }
+});
+
+test("A LATE ARRIVAL STANDS ASIDE — a row due five minutes ago and still not arrived by its own record is skipped, so it cannot starve the queue (review of #541, R2)", async () => {
+  const late = Array.from({ length: 20 }, (_, i) => row(300 + i, { handle: `l${i}`, due_at: "2026-10-14T11:50:00.000Z" }));
+  const q = queue([...late, row(400, { handle: "zed", due_at: "2026-10-14T11:59:00.000Z" })]);
+  const deferredIds = new Map();
+  const deps = { deferredIds, query: q.query, current: async (h) => (h === "zed" ? "400" : String(300 + Number(h.slice(1)))),
+    arrival: async (r) => ({ arrived: r.walk === "400" }), enter: async (r) => ({ answer: { entered: [r.mark] }, seq: "88" }) };
+  await arrivalTick({ ...deps, now: NOW });
+  assert.equal(deferredIds.size, 20, "the twenty late rows stand aside");
+  await arrivalTick({ ...deps, now: NOW + 10_000 });
+  assert.deepEqual(q.settled.map((s) => s.walk), ["400"]);
+  const early = queue([row(500, { due_at: "2026-10-14T12:00:04.000Z" })]);
+  const ids = new Map();
+  await arrivalTick({ deferredIds: ids, now: NOW, query: early.query, current: async () => "500", arrival: async () => ({ arrived: false }), enter: async () => { throw new Error("no"); } });
+  assert.equal(ids.size, 0, "a row a second early is simply asked again next tick");
 });
 
 test("AN EXPIRY READS ON THE STANDPOINT like a refusal, until the walker's next act", () => {

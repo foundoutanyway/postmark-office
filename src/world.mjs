@@ -4967,10 +4967,12 @@ export async function occupiedNowBy(who, thresholds, deps) {
 //
 // THE DOOR'S OWN WORDS RIDE EITHER SHAPE. The keys that assert a present fact
 // are withheld: `entered` and `within`, and since WLD-5's pre-check also
-// `aboard`, `exited`, `landed`, `walk_ended`, `ground` and a portal's next
-// `portals` (a dungeon room's ways out are hidden until it is entered), plus
-// the pen's `ledger`/`log`, which a pre-check never wrote. A refusal and a
-// counter-edge door's terms are facts at departure whatever the tense, and the
+// `aboard`, `exited`, `landed`, `walk_ended` and a portal's next `portals` (a
+// dungeon room's ways out are hidden until it is entered), plus the pen's
+// `ledger`/`log`, which a pre-check never wrote. A refusal, a counter-edge
+// door's terms and the GROUND BLOCK that rides them (ruling 10: the rules you
+// are being asked to accept, the Post Office's among them) are facts at
+// departure whatever the tense, and the
 // walk tool's own description promises the resident both of them by name
 // (test/walk-grammar.test.mjs, ruling 3). A queued receipt that dropped them
 // would trade an early sentence for a missing one.
@@ -4992,7 +4994,7 @@ export function walkEntryReceipt(entry, { arrived, stop, eta, queued = true, why
       ? `arrived; entry refused: ${entry.refused}`
       : "arrived, and stepped inside — the entry was adjudicated at the arrival instant, by its own door",
   };
-  const { entered, within, aboard, exited, landed, walk_ended, ground, portals, ledger, log, ...doorsWords } = entry;
+  const { entered, within, aboard, exited, landed, walk_ended, portals, ledger, log, ...doorsWords } = entry;
   if (queued === false) return { entry: { queued_for_arrival: false, stop, eta, ...doorsWords,
     note: `nothing is queued: ${why ?? "the mark would not let you in as its law stands now"}. Nothing has been entered` } };
   return { entry: { queued_for_arrival: true, stop, eta, ...doorsWords,

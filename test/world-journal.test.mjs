@@ -1455,6 +1455,18 @@ test("postmark#3528 — preview, write, publish note and the candle agree about 
     `own ground, put forward: no commons heads_up rides the receipt (quarter 2): ${JSON.stringify(own.real.publishing)}`);
   assert.equal(own.seen.publishing, undefined, "nor the preview's");
 
+  // A lamp INSIDE the home that stands on that parcel: its parent is the
+  // manor, not the parcel, so a note that read the parent field for "own
+  // ground" (w41.5's rule) would call it commons. The note must read the act.
+  const IN_HOME = { x: -199, y: -199 };
+  const home = await door("bug3528-lamp-in-home", IN_HOME);
+  assert.equal(home.real.parent, "alpha/the-manor", "it nests in the home");
+  assert.equal(home.seen.parent, home.real.parent);
+  assert.equal(home.real.on_your_ground, PARCEL, "and stands on the household's ground all the same");
+  assert.equal(home.real.put_forward, true);
+  assert.equal(home.real.publishing, undefined,
+    `a parent that is not the parcel is still own ground: no commons heads_up (quarter 2): ${JSON.stringify(home.real.publishing)}`);
+
   const away = await door("bug3528-lamp-away", OFF);
   assert.equal(away.real.on_your_ground, undefined, "the control: off the parcel, no ground of yours");
   assert.equal(away.real.put_forward, false, "✦0 off your ground is a private draft");
@@ -1469,10 +1481,11 @@ test("postmark#3528 — preview, write, publish note and the candle agree about 
   const row = (slug, owner, household, kind, at, extent) =>
     ({ id: `id-${slug}`, slug, kind, owner, household, geometry: { at, extent }, parent: null, data: {} });
   const parcelRow = row(PARCEL, "alphamate", "hh:alpha-house", "parcel", { x: -200, y: -200 }, { w: 25, h: 25 });
+  const manorRow = row("alpha/the-manor", "alpha", "hh:alpha-house", "sited", { x: -200, y: -200 }, { w: 8, h: 8 });
   const candle = (at) => {
     const claim = row("alpha/bug3528-lamp", "alpha", "solo:alpha-login", "sited", at, lamp.extent);
     const only = new Set([claim.slug]);
-    const tiers = computeStanding([parcelRow, claim], { only, houseOf });
+    const tiers = computeStanding([parcelRow, manorRow, claim], { only, houseOf });
     const verdict = escrowAbsentAmong([{ id: claim.id, slug: claim.slug }],
       { tiers, escrowByMark: new Map(), townSha: "8250aed8" });
     return { tier: tiers.get(claim.slug), refused: verdict.refused.map((r) => r.check) };
@@ -1483,6 +1496,10 @@ test("postmark#3528 — preview, write, publish note and the candle agree about 
   assert.deepEqual(lockedOn.refused, [],
     "THE PARITY: an act the door put forward at ✦0 is not refused escrow-absent at the candle (quarter 3)");
   assert.equal(own.real.put_forward, lockedOn.refused.length === 0, "the door's prediction is the candle's disposal");
+
+  const lockedInHome = candle(IN_HOME);
+  assert.equal(lockedInHome.tier, "home", "through the home to the parcel");
+  assert.equal(home.real.put_forward, lockedInHome.refused.length === 0, "inside the home, too, prediction = disposal");
 
   const lockedOff = candle(OFF);
   assert.equal(lockedOff.tier, "market");

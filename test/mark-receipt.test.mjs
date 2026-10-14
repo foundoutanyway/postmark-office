@@ -460,6 +460,74 @@ test("C · a mark whose FILE MOVED names the settlement that carried the MARK, n
   assert.equal(c.sha, shaOfS(7));
 });
 
+// ── TWO MORE LIVES: THE LOOK-ALIKE, AND THE MOVE THAT ALSO EDITS (postmark#3548) ─
+//
+// `git log --follow` does not only follow renames. It runs copy detection too
+// (tree-diff's follow sets find_copies_harder), so a NEW mark whose file is
+// mostly the same as an OLDER mark's file reads as a copy of it, and the walk
+// continues down the older file's history. On the live record that is
+// little-bird/a-second-cold-cup-on-the-long-bench: its file first lands in the
+// S97 commit, its body is the first cup's body, and its receipt named S42, the
+// settlement that added the FIRST cup.
+//
+//   a look-alike of an older mark   truth S10 · answered S9   WRONG
+//
+// The second life here is the guard on the repair. Following exact matches only
+// (`-M100%`) would fix the look-alike and break the real moves: the household
+// un-nesting commit in the world repo (857dc401) renamed 255 mark files and 99
+// of those renames also edited the file. So a move that edits must stay one life.
+
+const TWIN_OLD = "WORLD/marks/wright/the-first-cup/mark.md";
+const TWIN_NEW = "WORLD/marks/wright/the-second-cup/mark.md";
+const EDITED_FROM = "WORLD/marks/let-there-be-light/the-garden/the-re-homed-thing/mark.md";
+const EDITED_TO = "WORLD/marks/wright/the-re-homed-thing/mark.md";
+const cupFile = (date, extra = "") =>
+  `---\nkind: sited\nby: wright\ndate: ${date}\nat: { x: 176, y: 426.5 }\nextent: { w: 1, h: 1 }\n${extra}---\n\n` +
+  "A lidded cup waits cold on the long bench, crooked caramel horn, blue at the rim, gold in the low band, for whoever waits.\n";
+
+lput(TWIN_OLD, cupFile("2026-08-17T01:25:14.888Z"));
+lsettle(9, "sweep 1 published — the first cup arrives");
+
+lput(TWIN_NEW, cupFile("2026-10-07T02:45:23.176Z", "class: thing\n"));
+lsettle(10, "sweep 1 published — a second cup, same words");           // ← truth for D
+
+lput(EDITED_FROM, "---\nkind: sited\nby: wright\ndate: 2026-09-01T00:00:00.000Z\nat: { x: 4, y: 5 }\nextent: { w: 2, h: 2 }\n---\n\nA thing filed by geometry, before the households were un-nested.\n");
+lsettle(11, "sweep 1 published — the re-homed thing arrives");          // ← truth for E
+
+mkdirSync(dirname(join(lives, EDITED_TO)), { recursive: true });
+lgit("mv", EDITED_FROM, EDITED_TO);
+lput(EDITED_TO, "---\nkind: sited\nby: wright\ndate: 2026-09-01T00:00:00.000Z\nat: { x: 4, y: 5 }\nextent: { w: 2, h: 2 }\nparent: wright/the-garden\n---\n\nA thing filed by geometry, before the households were un-nested.\n");
+lsettle(12, "operator repair: un-nest, and write the parent down");
+
+test("RED CONTROL: the look-alike and the edited move are what they say they are", () => {
+  const at = (n, p) => { try { lgit("cat-file", "-e", `settlement/S${n}:${p}`); return true; } catch { return false; } };
+  assert.equal(at(9, TWIN_OLD), true, "the first cup arrives at S9");
+  assert.equal(at(9, TWIN_NEW), false, "the second cup is NOT in S9");
+  assert.equal(at(10, TWIN_NEW), true, "it arrives at S10");
+  assert.equal(at(10, TWIN_OLD), true, "and the first cup is still standing — nothing was moved");
+  // git itself calls the second cup a COPY of the first: that is the whole defect.
+  const followed = lgit("log", "--follow", "--name-status", "--format=", "refs/heads/main", "--", TWIN_NEW);
+  assert.match(followed, /^C\d+\s+\S*the-first-cup\/mark\.md\s+\S*the-second-cup\/mark\.md$/m, "the fixture must really trip copy detection, or D proves nothing");
+  assert.equal(at(11, EDITED_FROM), true, "E arrives at its original path at S11");
+  assert.equal(at(12, EDITED_TO), true, "and stands at the new path at S12");
+  assert.equal(at(12, EDITED_FROM), false, "the old path is gone at S12");
+  assert.notEqual(lgit("rev-parse", `settlement/S11:${EDITED_FROM}`).trim(), lgit("rev-parse", `settlement/S12:${EDITED_TO}`).trim(), "and the move EDITED the file, so an exact-match follow would lose it");
+});
+
+test("D · a LOOK-ALIKE of an older mark names its OWN settlement, not the older mark's", () => {
+  const c = settlementThatCarried(lives, TWIN_NEW, { ref: "refs/heads/main" });
+  assert.equal(c.s, 10, "--follow read the second cup as a copy of the first and answered S9, with a real sha");
+  assert.equal(c.sha, shaOfS(10));
+  const first = settlementThatCarried(lives, TWIN_OLD, { ref: "refs/heads/main" });
+  assert.equal(first.s, 9, "and the older mark still names its own");
+});
+
+test("E · a mark MOVED AND EDITED in one commit is still one life", () => {
+  const c = settlementThatCarried(lives, EDITED_TO, { ref: "refs/heads/main" });
+  assert.equal(c.s, 11, "an exact-match-only follow answers S12 here — the un-nesting, not the arrival");
+  assert.equal(c.sha, shaOfS(11));
+});
+
 // ── the canon-absent FINDING answers `unpublished`, by ruling (postmark#2594) ─
 //
 // For one lap this answered null by the guess-nothing rule; Keemin then named

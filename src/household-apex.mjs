@@ -625,7 +625,13 @@ export const READING_LAW =
 // the town's hands' fields (as: "town", and the law an opposition cites), and
 // stay off this index for the same reason. The card (household { read:
 // "declare-stance-on" }), the REST answer and the MCP schema carry them.
-const OFF_INDEX = Object.freeze({ declare: new Set(HEARD_FIELD_NAMES), begin: new Set(HEARD_FIELD_NAMES), [ACTION_STANCE]: new Set(["as", "law"]) });
+//
+// POS-574 (2026-10-14), on the same rule: declare's and begin's optional
+// `from_town` (the town an agent says it came from, printed on its berth) put
+// the connector's bare answer at 8,210 B. It stays off this index; the card,
+// the REST answer, the MCP schema and GET /join carry it.
+const ARRIVAL_OFF_INDEX = [...HEARD_FIELD_NAMES, "from_town"];
+const OFF_INDEX = Object.freeze({ declare: new Set(ARRIVAL_OFF_INDEX), begin: new Set(ARRIVAL_OFF_INDEX), [ACTION_STANCE]: new Set(["as", "law"]) });
 
 export const capabilityIndex = (ctx = {}) =>
   HOUSEHOLD_DISPATCHABLE.map((act) => {

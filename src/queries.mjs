@@ -2683,6 +2683,15 @@ const PAPERS_WITHOUT_A_DATE = Object.freeze(["write-your-card", "tend-your-home"
  * grammar is not this lane's to touch. So the row is honestly undated and says
  * so in its own words — and the day stays a named question for the town, not a
  * number this office invents beside it.
+ *
+ * ⚑ NOW IT IS DATED, FROM THE STORE (POS-495, #2898). The ingest reads the
+ * store's own welcome lines (stamp_lines, the line's leading day) beside the key
+ * base, and the standing row carries `welcomed_since` (quest-standing.mjs §
+ * welcomeDatesFrom). Who counts as welcomed is still the town's fold; the store
+ * only dates it. A welcomed house the store has no line for, or a store that
+ * did not answer, or the hydrate, reads welcomed and undated with the old note.
+ * It still never borrows a mail row's day: `since` here reads `welcomed_since`
+ * and nothing else.
  */
 const WELCOME_ROW = "welcome-to-postmark";
 
@@ -2709,6 +2718,8 @@ export const STANDING_NOTES = Object.freeze({
   no_index: "the town knows this one; this page has not caught up yet. It fills itself in within the hour.",
   no_date: "you have done this. The town does not keep the day you did it, so there is no date to show.",
   welcome_paid: "the town has paid your household's welcome bundle — 5 stamps for joining, once for the whole house. The day it was paid is written in the town's stamp ledger; this page does not carry it.",
+  // POS-495: the same row once the store dates it. The day itself rides in `since`.
+  welcome_paid_dated: "the town paid your household's welcome bundle on the day shown — 5 stamps for joining, once for the whole house.",
   ladder_unsealed: "the town has not sealed the friendship ladder yet — this is a rule that has not started, not a milestone you have missed",
   world_elsewhere: "your ground in the World is kept somewhere this page cannot see. Your own doorstep can tell you whether your home mark is standing — ask it there.",
   no_tank: "the Think Tank could not be read just now, so nobody looked. This is not a no.",
@@ -2744,7 +2755,8 @@ export function standingJoin(q, standing, { idea = null, worldSited = null } = {
     // The welcome row leaves the mail fallback BEFORE it is reached. It is not
     // in the paper list because it does not wear the papers' note — the papers
     // say "you have done this", and the whole of this row is that the town did.
-    const since = (isPaper || isWelcome) ? null
+    const since = isPaper ? null
+      : isWelcome ? (complete ? standing.welcomed_since ?? null : null)
       : (fact === "sent" ? standing.sent_since : standing.received_since) ?? null;
     // ⚑ THE NOTE IS ATTACHED BY ROW ID, NOT BY SHAPE. It used to fire on any
     // complete-and-undated row, which meant a mail row could wear "the town
@@ -2754,7 +2766,7 @@ export function standingJoin(q, standing, { idea = null, worldSited = null } = {
     // self-mail, because the town's own fact does not.) A shape can be worn by
     // a row it was never written for; an id cannot.
     const note = isPaper && complete ? STANDING_NOTES.no_date
-      : isWelcome && complete ? STANDING_NOTES.welcome_paid
+      : isWelcome && complete ? (since ? STANDING_NOTES.welcome_paid_dated : STANDING_NOTES.welcome_paid)
       : (!isPaper && !isWelcome && complete && since === null) ? STANDING_NOTES.self_mail_only
       : null;
     return { progress: complete ? 1 : 0, complete, since, ...(note ? { note } : {}) };

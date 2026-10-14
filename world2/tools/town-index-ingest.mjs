@@ -57,7 +57,7 @@ import {
 } from "../../src/town-index.mjs";
 import { isResidentHandle } from "../../src/residency.mjs";
 import { writeMintInputs, keyBaseVia, takesKeyBase } from "../../src/mint-inputs.mjs";
-import { stampLinesOn } from "../../src/stamp-lines.mjs";
+import { stampLinesOn, welcomeLinesVia } from "../../src/stamp-lines.mjs";
 import { CROSSING_SEAL_SUBJECT } from "../../src/crossings.mjs";
 
 export const HEAD_KEY = "town-index";                     // projection_heads.repo
@@ -234,6 +234,26 @@ async function questKeyBase(client, townRepo) {
   return keyBaseVia(client, engine);
 }
 
+/**
+ * The store's welcome rows, which date the welcome quest row (POS-495). Read on
+ * EVERY ingest, behind no switch: the date is the store's line whatever
+ * STAMP_LINES says, and who counts as welcomed stays the town's fold. The read
+ * sits in a savepoint because the ingest is one transaction: a failed read must
+ * leave the rows undated, never abort the ingest. Null on any failure.
+ */
+async function questWelcomeLines(client, log) {
+  await client.query("SAVEPOINT welcome_lines");
+  try {
+    const lines = await welcomeLinesVia(client);
+    await client.query("RELEASE SAVEPOINT welcome_lines");
+    return lines;
+  } catch (e) {
+    await client.query("ROLLBACK TO SAVEPOINT welcome_lines");
+    log.warn(`  quests: the store's welcome lines could not be read (${e?.message ?? e}); the welcome row stays undated`);
+    return null;
+  }
+}
+
 // ── the seed ─────────────────────────────────────────────────────────────────
 
 /** The whole derivation, every table replaced, the seed snapshot. The one history walk. */
@@ -245,7 +265,8 @@ export async function seed(client, { townRepo, sha, log = quiet }) {
   // the store's key base too (POS-341 part 4), which reads this sha's rooms.
   await mintInputs(client, townRepo, tally, { whole: true });
   const base = await questKeyBase(client, townRepo);
-  const { tables } = await deriveTownIndex(townRepo, { log, base });
+  const welcomeLines = await questWelcomeLines(client, log);
+  const { tables } = await deriveTownIndex(townRepo, { log, base, welcomeLines });
   ms.derive = Date.now() - t0; t0 = Date.now();
   for (const name of Object.keys(TOWN_TABLES)) {
     const r = await client.query(`DELETE FROM ${tableOf(name)}`);
@@ -425,7 +446,8 @@ export async function applyDelta(client, { townRepo, head, sha, log = quiet }) {
   await mintInputs(client, townRepo, tally);
   lap("mint inputs");
   const base = await questKeyBase(client, townRepo);
-  const q = await questRows(townRepo, town, { log, base });
+  const welcomeLines = await questWelcomeLines(client, log);
+  const q = await questRows(townRepo, town, { log, base, welcomeLines });
   if (q) {
     await diffTable(client, "quest_progress", q.progress, tally);
     if (q.standing) await diffTable(client, "quest_standing", q.standing, tally);

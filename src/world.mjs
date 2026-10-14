@@ -3243,6 +3243,17 @@ async function foldConstants() {
   try { return await engineImport("marks-fold.mjs"); } catch { return {}; }
 }
 
+// THE SWEEP'S UNPUBLISH RULE, from the engine at the blessed ref (postmark#3757):
+// world `tools/unpublish-verdict.mjs`, the one definition the settlement's own
+// unpublish loop reads. The stakes warning asks this, never a copy of it. `null`
+// when the engine predates the file — the caller discloses that and judges nothing.
+export async function engineUnpublishVerdict() {
+  try {
+    const mod = await engineImport("unpublish-verdict.mjs");
+    return typeof mod.unpublishVerdict === "function" ? mod.unpublishVerdict : null;
+  } catch { return null; }
+}
+
 // The town's parcel dial as a box, for the door's ring rule (POS-322).
 export async function parcelDial() {
   const side = (await foldConstants()).PARCEL_EXTENT_M ?? 25;

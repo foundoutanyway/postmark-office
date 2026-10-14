@@ -21,14 +21,24 @@
 //     (`(escrow.get(id) ?? 0) > 0` keeps it);
 //   · its registered path is on main.
 //
-// So a row here is at risk when its registry class is `commons` and its escrow
-// is zero. The class is read off the registry AT WORLD MAIN, the same file the
+// THE RULE IS THE SWEEP'S OWN FUNCTION, NOT A COPY OF IT (postmark#3757). This
+// file asked the first two of those three and not the third, so kinofire's
+// fireplace and firepit, re-filed under spin-ghar-manor by hand with their
+// registry rows left at the old root paths, read "the next settlement sweeps it
+// first" at every doorstep while the sweep skipped them every crossing. The
+// verdict is now world `tools/unpublish-verdict.mjs § unpublishVerdict`, read
+// from the engine at the blessed ref (`world.mjs § engineUnpublishVerdict`), the
+// function the sweep's loop calls; this file only measures its inputs. A rule
+// the engine does not carry judges nothing, and says so.
+//
+// The class is read off the registry AT THE WORLD'S BLESSED REF, the same file the
 // sweep writes; the escrow is read off `escrow_projection` at the ingested town
 // head — `world2-serve.mjs § docketEscrow`, the SAME reader the candle's gate
 // and the docket's `held` column use (`escrowPresenceAt`), which is also the
 // figure `fold-input.mjs § stakesFromStore` hands the sweep as its stakes.
-// Nothing here is a second judgment: the class is the sweep's file, the number
-// is the sweep's number, and the rule is quoted.
+// The registered path is asked of the tree at that same ref. Nothing here is a
+// second judgment: the class is the sweep's file, the number is the sweep's
+// number, and the rule is the sweep's function.
 //
 // ── THE TWO ABSENCES, KEPT APART (the-town/the-disclosure) ─────────────────
 //
@@ -70,6 +80,13 @@ const defaultRegistry = async (ref) => {
   const [{ readJsonAtRef }, { WORLD_CLONE }] = await Promise.all([import("./world-branches.mjs"), import("./world.mjs")]);
   return readJsonAtRef(WORLD_CLONE, ref, REGISTRY_PATH)?.published ?? {};
 };
+// The rule: the engine's own function, or null (disclosed) when it predates it.
+const defaultRule = async () => (await import("./world.mjs")).engineUnpublishVerdict();
+// The registered path, asked of the tree at the ref the registry was read at.
+const defaultPathAt = async (ref) => {
+  const [{ pathAtRef }, { WORLD_CLONE }] = await Promise.all([import("./world-branches.mjs"), import("./world.mjs")]);
+  return (path) => pathAtRef(WORLD_CLONE, ref, path);
+};
 const defaultEscrow = async () => {
   const { world2ServeEnabled, escrowAtTownHead } = await import("./world2-serve.mjs");
   if (!world2ServeEnabled())
@@ -78,7 +95,9 @@ const defaultEscrow = async () => {
 };
 
 export const REGISTRY_PATH = "WORLD/settlement-publications.json";
-const SWEEP_RULE = 'the settlement unpublishes a registry-class "commons" mark holding no open stamps at the crossing (world tools/settlement-sweep.mjs: "commons needs escrow > 0"); home and constitution rows, and marks the registry does not hold, are never swept';
+// The rule in words: world unpublish-verdict.mjs § UNPUBLISH_RULE, verbatim, and
+// test/doorstep-stakes.test.mjs holds the two equal at the pinned world.
+export const SWEEP_RULE = 'the settlement unpublishes a mark its registry holds as class "commons" when no open stamps stand behind it at the crossing and its registered path is on main ("commons needs escrow > 0"); home and constitution rows, and marks the registry does not hold, are never swept';
 
 /**
  * A STAKE MADE SINCE THE COPY IS NOT HERE YET, AND THE READ SAYS SO (POS-412).
@@ -100,14 +119,17 @@ export const stakeEnvelope = (mark) => `world { do: "stake", args: { mark: "${ma
 
 /**
  * The rows, pure. `marks` is world main's mark list, `registry` the sweep's
- * `published` map, `byMark` the escrow Map (or null = the projection refused).
+ * `published` map, `byMark` the escrow Map (or null = the projection refused),
+ * `rule` the sweep's `unpublishVerdict` (or null = the engine has none), and
+ * `pathOnMain(path)` whether a registered path is in the tree (true / false /
+ * null = unread). An input not measured makes `at_risk` null, never false.
  *
  * At-risk rows first (by id), then the rest (by id) — the one order a morning
  * reader needs. Each row: the id, its kind, the sweep's class (null = not in
  * the registry, founding estate), the escrow, the verdict, and — on an at-risk
  * row — the act.
  */
-export function stakesRowsFrom({ handles = [], marks = [], registry = {}, byMark = null } = {}) {
+export function stakesRowsFrom({ handles = [], marks = [], registry = {}, byMark = null, rule = null, pathOnMain = () => null } = {}) {
   const mine = new Set(handles.filter(Boolean));
   const rows = [];
   for (const m of marks ?? []) {
@@ -115,7 +137,11 @@ export function stakesRowsFrom({ handles = [], marks = [], registry = {}, byMark
     const entry = registry?.[m.id] ?? null;
     const cls = entry?.class ?? null;
     const escrow = byMark instanceof Map ? (byMark.get(m.id) ?? 0) : null;
-    const atRisk = escrow === null ? null : (cls === "commons" && escrow === 0);
+    // Founding estate (no row) is never swept; a row is the rule's to judge.
+    const atRisk = escrow === null ? null
+      : !entry ? false
+      : typeof rule !== "function" ? null
+      : rule(entry, { escrow, pathOnMain: () => pathOnMain(entry.path) }).unpublish;
     rows.push({
       mark: m.id, kind: m.kind ?? null, class: cls, escrow, at_risk: atRisk,
       ...(atRisk ? { act: stakeEnvelope(m.id) } : {}),
@@ -129,12 +155,16 @@ export function stakesRowsFrom({ handles = [], marks = [], registry = {}, byMark
  * The segment's domain for a set of handles. Every input is a reader the
  * caller may replace: `world` answers `{ state, ref }` for world main, `registry`
  * the sweep's file at that ref, `escrow` the `{ townSha, byMark, reason }`
- * triple. Never throws — an unreadable input is a disclosed absence.
+ * triple, `rule` the sweep's `unpublishVerdict` (null = the engine has none),
+ * `pathAt(ref)` a `(path) => true | false | null` over the tree at that ref.
+ * Never throws — an unreadable input is a disclosed absence.
  */
 export async function stakesFor(handles, {
   world = defaultWorld,
   registry = defaultRegistry,
   escrow = defaultEscrow,
+  rule = defaultRule,
+  pathAt = defaultPathAt,
   now = new Date(),
 } = {}) {
   const scope = [...new Set((handles ?? []).filter(Boolean))];
@@ -156,12 +186,22 @@ export async function stakesFor(handles, {
   try { esc = await escrow(); }
   catch (e) { esc = { townSha: null, byMark: null, reason: `the escrow projection could not be read (${String(e?.message ?? e).slice(0, 120)}) — unknown, not zero` }; }
 
-  const rows = stakesRowsFrom({ handles: scope, marks: state?.marks ?? [], registry: published, byMark: esc?.byMark ?? null });
-  const measured = esc?.byMark instanceof Map;
+  let verdict = null;
+  try { verdict = await rule(); } catch { verdict = null; }
+  const ruleNote = typeof verdict === "function" ? null
+    : "the sweep's unpublish rule could not be read from the world engine (tools/unpublish-verdict.mjs at the blessed ref) — no row below is judged, and an unjudged row is never called safe";
+  let pathOnMain = () => null;
+  try { pathOnMain = (await pathAt(ref)) ?? pathOnMain; } catch { /* every registered path reads unread: null, disclosed by the rows */ }
+
+  const rows = stakesRowsFrom({ handles: scope, marks: state?.marks ?? [], registry: published, byMark: esc?.byMark ?? null, rule: verdict, pathOnMain });
+  const escrowRead = esc?.byMark instanceof Map;
+  const measured = escrowRead && !ruleNote;
   const atRisk = measured ? rows.filter((r) => r.at_risk === true).length : null;
+  const unjudged = rows.filter((r) => r.at_risk === null).length;
   return {
     ...base,
-    ...(measured ? {} : { unavailable: esc?.reason ?? "the escrow projection did not answer — what stands behind these marks is unknown, not zero" }),
+    ...(escrowRead ? {} : { unavailable: esc?.reason ?? "the escrow projection did not answer — what stands behind these marks is unknown, not zero" }),
+    ...(escrowRead && ruleNote ? { unavailable: ruleNote } : {}),
     ...(registryNote ? { registry_unavailable: registryNote } : {}),
     escrow_at_town_sha: esc?.townSha ?? null,
     // POS-412: when that copy was taken, when the next is due, and what a
@@ -172,7 +212,7 @@ export async function stakesFor(handles, {
     later_stakes: LATER_STAKES,
     count: rows.length,
     at_risk: atRisk,
-    ...(measured && atRisk === 0 && rows.length
+    ...(measured && atRisk === 0 && unjudged === 0 && rows.length
       ? { note: "nothing of yours is at risk at the next settlement — every commons mark you hold has stamps behind it, as of the town head named above" } : {}),
     ...(rows.length === 0 ? { note: "no published mark of yours stands on world main — drafts and the docket are at world { read: \"leave-mark\" }" } : {}),
     read_the_rest: 'world { read: "leave-mark" } is the whole portfolio — drafts, the docket, what you have backed; world { read: "stake", args: { mark: "<by>/<slug>" } } is one mark\'s escrow with its holders',

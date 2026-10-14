@@ -984,6 +984,19 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //   full  21924 -> 21974 (+50, +0.23%) = stances +50
   //   slim  19417 -> 19467 (+50, +0.26%) = stances +50
   //
+  // ⚠ AND RE-CAPTURED A THIRTEENTH TIME, 2026-10-14 (lane plumb-bugs-a,
+  // postmark#3757), for the stakes segment's rule sentence, which now quotes
+  // the sweep's whole rule (world unpublish-verdict.mjs § UNPUBLISH_RULE: "…
+  // and its registered path is on main"). Diffed leaf by leaf BEFORE the
+  // capture, in two steps. At the OLD pin (17b64ef1) with this branch's code:
+  // 1063 paths before, 1063 after, none removed or added, ONE changed,
+  // `full.stakes.rule`. Then at the NEW pin (24f8b505, the head of
+  // postmark-world#208) against that: 0 paths moved. The slim skin drops
+  // `rule`, so it does not move at all.
+  //
+  //   full  21974 -> 22001 (+27, +0.12%) = stakes.rule +27
+  //   slim  19467 -> 19467 (0)
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,

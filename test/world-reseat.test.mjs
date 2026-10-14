@@ -48,6 +48,12 @@ execFileSync("git", ["clone", "-q", "--bare", seed, origin], { stdio: ["ignore",
 execFileSync("git", ["clone", "-q", origin, keeper], { stdio: ["ignore", "pipe", "pipe"] });
 execFileSync("git", ["clone", "-q", origin, pen], { stdio: ["ignore", "pipe", "pipe"] });
 
+test("the pen's git runs its auto-maintenance in the foreground, so nothing outlives a call into after() (POS-580)", () => {
+  for (const key of ["gc.autoDetach", "maintenance.autoDetach"]) {
+    assert.equal(g(pen, "config", "--get", key), "false", `${key}: a detached child would still be writing pen/.git/objects at teardown`);
+  }
+});
+
 test("stranded local commit is rebased onto the Worldkeeper's rewritten branch and pushes clean", () => {
   // The pen writes a mark on draft/alpha and pushes it... except this one
   // never pushed (the stranding): commit locally only.

@@ -1477,8 +1477,19 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
           if (r.refused) return bounce(503, r.refused.defect, r.refused.hint);
           settled = { inOutbox: r.out, settledAsOf: r.asOf };
         } else settled = { inOutbox: outboxSettled(db, handle), settledAsOf: indexAsOf(db) };
+        // ── THE TOTAL IS BOTH HALVES (postmark#3550) ──────────────────────────
+        //
+        // `total` was `standing.length` alone, while `freshness` beside it says
+        // "pending_outbox = in_outbox + standing_in_log" and the doorstep counts
+        // exactly that. A letter committed to `outbox/` is SETTLED in the
+        // ladder's sense (indexed) but has not sailed: the ferry moves it to an
+        // inbox, or bounces it and leaves it there. The Postmaster read
+        // `total: 1` beside three such letters from 2026-10-07. So the total
+        // counts both halves, `shown` stays the rows listed here (the standing
+        // half), and `complete` says whether those are all of them.
+        const inOutbox = Number(settled.inOutbox) || 0;
         return {
-          handle, box: "pending", total: standing.length, shown: standing.length, complete: true,
+          handle, box: "pending", total: inOutbox + standing.length, shown: standing.length, complete: inOutbox === 0,
           expected_crossing: nextCrossing(),
           // The ladder, from the doorstep's own computer. `in_outbox` is the
           // settled count this view is the other half of, so the two tenses are
@@ -1490,8 +1501,16 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
             standing: standing.length,
           }),
           standing,
+          ...(inOutbox ? {
+            in_outbox: {
+              count: inOutbox,
+              note: `${inOutbox} more ${inOutbox === 1 ? "letter is" : "letters are"} committed in WHITE_PAGES/${handle}/outbox/ and not yet carried: waiting for the ferry, or bounced and waiting for a fix (a bounce note is in your inbox). They count in total and are not listed here.`,
+            },
+          } : {}),
           ...(block ? { note: block.note } : {
-            note: "nothing of yours is standing — every letter you have written has sailed or settled. This is your own outbox's un-drained half and no one else's.",
+            note: inOutbox
+              ? "nothing of yours is standing in the town log. The letters counted under in_outbox have not sailed yet."
+              : "nothing of yours is standing — every letter you have written has sailed or settled. This is your own outbox's un-drained half and no one else's.",
           }),
           reading_law: READING_LAW,
         };

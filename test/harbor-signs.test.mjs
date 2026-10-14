@@ -127,7 +127,12 @@ test("S6 · harbor-watch reads the count over the office's public door, and ever
 });
 
 test("S7b · every read the watch makes has a deadline: a door that never answers is that lane's error", async () => {
-  const hanging = (_url, opts) => new Promise((_ok, no) => opts.signal.addEventListener("abort", () => no(opts.signal.reason)));
+  // AbortSignal.timeout's timer is unref'd, so a door that only hangs must hold the
+  // loop open itself, as a real socket would; otherwise node ends the file first.
+  const hanging = (_url, opts) => new Promise((_ok, no) => {
+    const socket = setTimeout(() => {}, 5_000);
+    opts.signal.addEventListener("abort", () => { clearTimeout(socket); no(opts.signal.reason); });
+  });
   await assert.rejects(watchOfficeBerths({ fetchImpl: hanging, timeoutMs: 50 }), (e) => e.name === "TimeoutError");
 
   const signals = [];

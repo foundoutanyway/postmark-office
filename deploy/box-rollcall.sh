@@ -1,8 +1,10 @@
 #!/bin/sh
 # box-rollcall.sh — run the roll-call ON THE BOX and print one line per unit.
 #
-# Reads /etc/systemd/system and the state files under /srv. Writes nothing,
-# enables nothing, restarts nothing. Exit 0 = every row OK or PARKED; exit 1 =
+# Reads /etc/systemd/system and the state files under /srv, and the KEY NAMES
+# (never a value) in each unit's env files through `sudo -n grep` (§3f, POS-581;
+# a refused sudo reads ALARM-env UNCHECKED). Writes nothing, enables nothing,
+# restarts nothing. Exit 0 = every row OK or PARKED; exit 1 =
 # at least one ALARM; exit 2 = the roll-call itself could not run.
 #
 # ════════════════════════════════════════════════════════════════════════════

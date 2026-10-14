@@ -67,6 +67,13 @@ import {
   ALARM_CUSTODY,
   ALARM_TREE,
   ALARM_UNBLESSED,
+  ALARM_ENV,
+  classifyEnv,
+  collectEnv,
+  readEnvFileKeys,
+  parseEnvironmentFiles,
+  envKeyNames,
+  storeSwitchOf,
   HOUR,
   classifyBlessing,
   readBlessing,
@@ -100,6 +107,9 @@ const DEPLOYED_SHA = "b01b3bad946dfb14f5479e9b677e17dad59ebbbe";
 // The retired second checkout, and the commit it was stuck at.
 const LAB_TREE = "/srv/world2-lab/office";
 const LAB_SHA = "7926461a0000000000000000000000000000feed";
+// The unit and file POS-581 is about.
+const USDC_SVC = "postmark-usdc-watch.service";
+const USDC_ENV = "/etc/postmark-usdc-watch.env";
 
 function manifest() {
   return loadManifest(MANIFEST_PATH);
@@ -318,7 +328,20 @@ function healthy(m = manifest()) {
     }
   }
 
-  return { schema: 1, collected_at: new Date(T0).toISOString(), host: "meepo-ec2", discovered, units, services, files, custody, clones, blessings, tree_sources, tree_realpath, releases, file_copies };
+  // §3f: every live unit read, by construction. Most hold neither store key.
+  // The usdc watcher holds both in its own file, the shape the w42 ship's
+  // repair left on the box (POS-581), so the control exercises the
+  // both-or-neither rule rather than passing it vacuously.
+  const env_sources = {};
+  for (const row of m.units) {
+    if (row.stage === "parked") continue;
+    env_sources[serviceOf(row.unit)] = { env_keys: [], env_switch_on: null, files: [], unchecked: null };
+  }
+  if (env_sources[USDC_SVC]) {
+    env_sources[USDC_SVC].files = [{ path: USDC_ENV, optional: false, exists: true, readable: true, keys: ["WORLD2_PG_URL", "WORLD2_PG"], switch_lines: 1, switch_on_lines: 1 }];
+  }
+
+  return { schema: 1, collected_at: new Date(T0).toISOString(), host: "meepo-ec2", discovered, units, services, files, custody, clones, blessings, tree_sources, tree_realpath, releases, file_copies, env_sources };
 }
 
 // Deep-equality guard. A mutation that changes nothing is a falsifier that never
@@ -356,7 +379,10 @@ test("THE CONTROL: the planted healthy state is entirely green and exits 0", () 
   // a verdict rather than an omission. Whether the SHIPPED manifest carries a
   // parked row today is a fact about the town, not about this checker, so the
   // PARKED path itself is proven below over a row this file plants.
-  assert.equal(result.rows.length, m.units.length + (m.custody ?? []).length + (m.clones ?? []).length + (m.blessings ?? []).length + (m.trees?.rows ?? []).length);
+  // +1 is §5f's one row, env:store-switch, which reads OK when no unit's environment alarms.
+  assert.equal(result.rows.length, m.units.length + (m.custody ?? []).length + (m.clones ?? []).length + (m.blessings ?? []).length + (m.trees?.rows ?? []).length + 1);
+  assert.equal(rowFor(result, "env:store-switch").verdict, OK);
+  assert.match(rowFor(result, "env:store-switch").reason, /; 1 hold the store with its switch on/);
   assert.ok((m.custody ?? []).length > 0, "the manifest declares no custody row — §2b is not being run at all");
   assert.ok((m.clones ?? []).length > 0, "the manifest declares no clone row — §2d is not being run at all");
   assert.ok((m.blessings ?? []).length > 0, "the manifest declares no blessing row — §2e is not being run at all");
@@ -2362,4 +2388,184 @@ test("household keys: a line that says the check did not run alarms, and an empt
   assert.match(said ?? "", /checked/);
   assert.match(said ?? "", /older than d95e81c1c/);
   assert.match(judgeOutcome(HK_ROW, { files: {} }) ?? "", /empty or unreadable/);
+});
+
+// ── §5f THE STORE'S URL AND SWITCH, BOTH OR NEITHER (POS-581) ───────────────
+//
+// The w42 ship (2026-10-11): usdc-watch's env file held WORLD2_PG_URL and no
+// WORLD2_PG=1, and src/world2-acts.mjs § world2Enabled needs both, so every
+// store read refused. Each case below starts from the healthy fixture, in
+// which the usdc watcher holds both keys, and breaks exactly one thing.
+
+const envRows = (result) => result.rows.filter((r) => r.unit.startsWith("env:"));
+const usdcFile = (s) => s.env_sources[USDC_SVC].files[0];
+
+test("FALSIFIER (p1): a unit holding the store's URL WITHOUT the switch is ALARM-env, names the file, and exits nonzero (the w42 ship)", () => {
+  const m = manifest();
+  const after = mutate(healthy(m), (s) => {
+    const f = usdcFile(s);
+    f.keys = ["WORLD2_PG_URL"];
+    delete f.switch_lines;
+    delete f.switch_on_lines;
+  });
+  const result = rollcall(m, after, T0);
+  const row = rowFor(result, `env:${USDC_SVC}`);
+  assert.equal(row.verdict, ALARM_ENV);
+  assert.match(row.reason, /holds WORLD2_PG_URL \(in \/etc\/postmark-usdc-watch\.env\) but WORLD2_PG is set nowhere/);
+  assert.match(row.reason, /world2Enabled/);
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(envRows(result).map((r) => r.unit), [`env:${USDC_SVC}`], "the summary row gives way to the alarm, and no other unit alarms");
+});
+
+test("FALSIFIER (p1b): WORLD2_PG set to anything but 1 is the switch OFF, and two lines that disagree are not on", () => {
+  const m = manifest();
+  const off = mutate(healthy(m), (s) => { usdcFile(s).switch_on_lines = 0; });
+  assert.match(rowFor(rollcall(m, off, T0), `env:${USDC_SVC}`).reason, /WORLD2_PG is not 1 \(set in \/etc\/postmark-usdc-watch\.env\)/);
+  // Names and counts cannot say which of two lines is last, so not on.
+  const mixed = mutate(healthy(m), (s) => { usdcFile(s).switch_lines = 2; });
+  assert.equal(rowFor(rollcall(m, mixed, T0), `env:${USDC_SVC}`).verdict, ALARM_ENV);
+});
+
+test("FALSIFIER (p2): the switch WITHOUT the URL is ALARM-env too: switched on and pointed at nothing", () => {
+  const m = manifest();
+  const after = mutate(healthy(m), (s) => { usdcFile(s).keys = ["WORLD2_PG"]; });
+  const row = rowFor(rollcall(m, after, T0), `env:${USDC_SVC}`);
+  assert.equal(row.verdict, ALARM_ENV);
+  assert.match(row.reason, /sets WORLD2_PG=1 \(in \/etc\/postmark-usdc-watch\.env\) and holds no WORLD2_PG_URL/);
+});
+
+test("(p3) judged per UNIT over the merge: paypal's own file holds neither key, office.env holds both, and that is green", () => {
+  const m = manifest();
+  const PAYPAL = "postmark-paypal-watch.service";
+  const after = mutate(healthy(m), (s) => {
+    s.env_sources[PAYPAL].files = [
+      { path: "/etc/postmark-office.env", optional: false, exists: true, readable: true, keys: ["TOWN_CLONE", "WORLD2_PG", "WORLD2_PG_URL"], switch_lines: 1, switch_on_lines: 1 },
+      { path: "/etc/postmark-paypal-watch.env", optional: false, exists: true, readable: true, keys: ["PAYPAL_CLIENT_ID", "PAYPAL_SECRET", "PAYPAL_ENV"] },
+    ];
+  });
+  const result = rollcall(m, after, T0);
+  assert.deepEqual(envRows(result).map((r) => `${r.verdict} ${r.unit}`), ["OK env:store-switch"]);
+  assert.match(rowFor(result, "env:store-switch").reason, /; 2 hold the store with its switch on/);
+});
+
+test("(p4) systemd's precedence: a later env file overrides Environment= and an earlier file", () => {
+  // The switch in the unit's Environment= and the URL in its file: on.
+  const viaUnit = { env_keys: ["WORLD2_PG"], env_switch_on: true, files: [{ path: "/etc/a.env", keys: ["WORLD2_PG_URL"] }] };
+  assert.equal(storeSwitchOf(viaUnit).switch_on, true);
+  // A later file that says WORLD2_PG=0 wins over the unit's 1 and over an earlier file's 1.
+  const overridden = { env_keys: ["WORLD2_PG"], env_switch_on: true, files: [
+    { path: "/etc/a.env", keys: ["WORLD2_PG", "WORLD2_PG_URL"], switch_lines: 1, switch_on_lines: 1 },
+    { path: "/etc/b.env", keys: ["WORLD2_PG"], switch_lines: 1, switch_on_lines: 0 },
+  ] };
+  const s = storeSwitchOf(overridden);
+  assert.equal(s.switch_on, false);
+  assert.deepEqual(s.switch_in, ["the unit's Environment=", "/etc/a.env", "/etc/b.env"]);
+  // A file that names neither key changes nothing.
+  assert.equal(storeSwitchOf({ ...viaUnit, files: [...viaUnit.files, { path: "/etc/c.env", keys: ["STRIPE_KEY"] }] }).switch_on, true);
+});
+
+test("FALSIFIER (p5): an UNREAD environment is never clean: a refused sudo, a unit with no reading, a snapshot with none", () => {
+  const m = manifest();
+  const refused = mutate(healthy(m), (s) => { s.env_sources[USDC_SVC].unchecked = "sudo -n refused (a password is required)"; });
+  const row = rowFor(rollcall(m, refused, T0), `env:${USDC_SVC}`);
+  assert.equal(row.verdict, ALARM_ENV);
+  assert.match(row.reason, /UNCHECKED: sudo -n refused/);
+
+  const noReading = mutate(healthy(m), (s) => { delete s.env_sources[USDC_SVC]; });
+  assert.match(rowFor(rollcall(m, noReading, T0), `env:${USDC_SVC}`).reason, /no env reading for this unit/);
+
+  const old = mutate(healthy(m), (s) => { delete s.env_sources; });
+  const oldRow = rowFor(rollcall(m, old, T0), "env:store-switch");
+  assert.equal(oldRow.verdict, ALARM_ENV);
+  assert.match(oldRow.reason, /carries no env reading/);
+});
+
+test("FALSIFIER (p6): a REQUIRED env file that is not on the box is ALARM-env; an optional (\"-\") one is not", () => {
+  const m = manifest();
+  const gone = mutate(healthy(m), (s) => { s.env_sources[USDC_SVC].files = [{ path: USDC_ENV, optional: false, exists: false }]; });
+  const row = rowFor(rollcall(m, gone, T0), `env:${USDC_SVC}`);
+  assert.equal(row.verdict, ALARM_ENV);
+  assert.match(row.reason, /EnvironmentFile=\/etc\/postmark-usdc-watch\.env is not on the box/);
+
+  const optional = mutate(healthy(m), (s) => {
+    s.env_sources[USDC_SVC].files.push({ path: "/etc/postmark-world2-clearing.env", optional: true, exists: false });
+  });
+  assert.deepEqual(envRows(rollcall(m, optional, T0)).map((r) => `${r.verdict} ${r.unit}`), ["OK env:store-switch"]);
+});
+
+test("(p7) a parked unit's environment is not judged, as a parked unit's tree is not", () => {
+  const m = parkedManifest();
+  const s = healthy(m);
+  assert.ok(!(serviceOf(PLANTED_PARKED_UNIT) in s.env_sources));
+  assert.deepEqual(envRows(rollcall(m, s, T0)).map((r) => `${r.verdict} ${r.unit}`), ["OK env:store-switch"]);
+});
+
+// ── §3f the collector: KEY NAMES, never a value ─────────────────────────────
+
+test("(p8) parseEnvironmentFiles reads systemd's one-line-per-file shape, in order, with the \"-\" prefix as optional", () => {
+  // As `systemctl show postmark-settlement.service -p EnvironmentFiles` printed it on the box, 2026-10-14.
+  const text = "EnvironmentFiles=/etc/postmark-office.env (ignore_errors=no)\nEnvironmentFiles=/etc/postmark-world2-clearing.env (ignore_errors=yes)\n";
+  assert.deepEqual(parseEnvironmentFiles(text), [
+    { path: "/etc/postmark-office.env", optional: false },
+    { path: "/etc/postmark-world2-clearing.env", optional: true },
+  ]);
+  assert.deepEqual(parseEnvironmentFiles(""), []);
+  assert.deepEqual(envKeyNames('TOWN_CLONE=/srv/x "BOT_NAME=Postmark Pen" WORLD2_PG=1'), ["TOWN_CLONE", "BOT_NAME", "WORLD2_PG"]);
+});
+
+test("(p9) the collector stores no VALUE: a secret in Environment= and in a file never reaches the snapshot", () => {
+  const SECRET = "hunter2-postgres-password";
+  const m = { units: [{ unit: "postmark-x.timer", stage: "live" }, { unit: "postmark-y.timer", stage: "parked" }] };
+  const asked = [];
+  const out = collectEnv(m, {
+    show: (svc) => { asked.push(svc); return `EnvironmentFiles=/etc/x.env (ignore_errors=no)\nEnvironment=WORLD2_STANCE_URL=postgres://u:${SECRET}@h/db WORLD2_PG=1\n`; },
+    // grep as the box answers it: -o prints only "KEY=", -c prints a count.
+    grep: (args) => (args[0] === "-oE" ? { code: 0, out: "WORLD2_PG_URL=\nWORLD2_PG=\n" } : { code: 0, out: "1\n" }),
+    sudo: () => ({ ok: true }),
+    exists: () => true,
+  });
+  assert.deepEqual(asked, ["postmark-x.service"], "the parked unit is not read");
+  const src = out.env_sources["postmark-x.service"];
+  assert.deepEqual(src.env_keys, ["WORLD2_STANCE_URL", "WORLD2_PG"]);
+  assert.equal(src.env_switch_on, true);
+  assert.deepEqual(src.files, [{ path: "/etc/x.env", optional: false, exists: true, readable: true, keys: ["WORLD2_PG_URL", "WORLD2_PG"], switch_lines: 1, switch_on_lines: 1 }]);
+  assert.ok(!JSON.stringify(out).includes(SECRET), "a value reached the snapshot");
+  assert.ok(!JSON.stringify(out).includes("postgres://"), "a value reached the snapshot");
+});
+
+test("(p9b) a refused sudo is UNCHECKED by name, and asked once, not per file", () => {
+  let probes = 0;
+  const m = { units: [{ unit: "postmark-x.timer", stage: "live" }, { unit: "postmark-z.service", stage: "live" }] };
+  const out = collectEnv(m, {
+    show: () => "EnvironmentFiles=/etc/x.env (ignore_errors=no)\nEnvironment=\n",
+    grep: () => { throw new Error("grep must not run once sudo refused"); },
+    sudo: () => { probes += 1; return { ok: false, error: "sudo: a password is required" }; },
+    exists: () => true,
+  });
+  assert.equal(probes, 1);
+  for (const svc of ["postmark-x.service", "postmark-z.service"]) {
+    assert.match(out.env_sources[svc].unchecked, /sudo -n refused \(sudo: a password is required\)/);
+  }
+});
+
+test("(p10) readEnvFileKeys over a real file with real grep: names, the quoted switch, a quoted BOT_NAME, and no value", () => {
+  const dir = tempDir("rollcall-env-");
+  const path = join(dir, "office.env");
+  writeFileSync(path, [
+    "TOWN_CLONE=/srv/postmark-office/town-clone",
+    'BOT_NAME="Postmark Pen"',
+    'WORLD2_PG="1"',
+    "WORLD2_PG_URL=postgres://office_api:s3cret@127.0.0.1/world2_dev",
+    "# a comment line is not a key",
+    "",
+  ].join("\n"));
+  const realGrep = (args) => { const r = spawnSync("grep", args, { encoding: "utf8" }); return { code: r.status ?? 2, out: r.stdout ?? "" }; };
+  const read = readEnvFileKeys(path, { grep: realGrep });
+  assert.deepEqual(read, { readable: true, keys: ["TOWN_CLONE", "BOT_NAME", "WORLD2_PG", "WORLD2_PG_URL"], switch_lines: 1, switch_on_lines: 1 });
+  assert.ok(!JSON.stringify(read).includes("s3cret"));
+  // grep's 2 (could not read) is unreadable, never "no keys".
+  assert.deepEqual(readEnvFileKeys(join(dir, "absent.env"), { grep: realGrep }), { readable: false });
+  // grep's 1 on the names (an empty file) is "no keys", read cleanly.
+  writeFileSync(join(dir, "empty.env"), "");
+  assert.deepEqual(readEnvFileKeys(join(dir, "empty.env"), { grep: realGrep }), { readable: true, keys: [] });
 });

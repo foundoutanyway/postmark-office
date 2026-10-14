@@ -330,10 +330,22 @@ git clone https://github.com/postmark-town/postmark-office.git /srv/postmark-off
 git clone https://github.com/postmark-town/postmark.git /srv/postmark-office/town-clone
 
 # 2. secrets — NEVER in either repo
+#    QUOTE ANY VALUE THAT HOLDS A SPACE OR A SHELL CHARACTER (; & | # $ ` ( ) < >),
+#    in double quotes: BOT_NAME="Postmark Pen". systemd reads either form, but
+#    the steps in this file that load an env into a shell (`set -a; . <file>`)
+#    run an unquoted value's second word as a command ("line 5: Pen: command not
+#    found"), and an unquoted `;` silently cuts the value at it, with no error at
+#    all (POS-590). Double quotes, not single: the scripts that read these files
+#    with sed (cron-postmark-activity-report.sh) strip double quotes only. A
+#    value holding `"`, `$`, a backtick or `\` needs more than quotes; read the
+#    file's consumers first.
+#    A store URL and its switch go together: WORLD2_PG=1 with WORLD2_PG_URL, or
+#    neither (src/world2-acts.mjs § world2Enabled). The roll-call's ALARM-env
+#    row checks that pair for every unit (POS-581).
 sudo tee /etc/postmark-office.env >/dev/null <<'EOF'
 TOWN_CLONE=/srv/postmark-office/town-clone
 TOWN_PUSH=1
-BOT_NAME=postmark-office[bot]
+BOT_NAME="postmark-office[bot]"
 BOT_EMAIL=<bot-account-noreply-email>
 EOF
 sudo chmod 600 /etc/postmark-office.env

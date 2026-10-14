@@ -33,6 +33,7 @@ import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN } from "./cerem
 import { planHouseKey, appendHouseKey, registryWith } from "./house-key.mjs";
 import { heardAnswer, recordHeard, heardReceipt } from "./arrival-heard.mjs";
 import { recordAshore } from "./ashore.mjs";
+import { faultLogged, isHttpStatus } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -179,6 +180,10 @@ async function main() {
       // everything landed; this says which half did.
       registryOutcome = joined.registry;
     } catch (e) {
+      // a refusal (an HTTP status, or none) speaks its own words; a foreign code
+      // (pg's SQLSTATE) is the office's own fault, and its message goes to this
+      // child's stderr, the office's log (POS-578)
+      if (e?.code != null && !isHttpStatus(e.code)) return refusal(500, null, "the declaration pass tripped", faultLogged("the declaration pass tripped", e));
       return refusal(e.code ?? 500, e.field ?? null, e.defect ?? String(e?.message ?? e), e.hint ?? null);
     }
     paths.push(...drainedPaths);

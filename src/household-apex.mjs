@@ -50,6 +50,7 @@ import { actionFields, declareStanceAtOffice, openStore, residueOf, parseEnvelop
 // it), so naming it here costs nothing and buys the one-grammar guarantee.
 import { ACTION_STANCE, STANCE_TOOLS } from "./world-stance.mjs";
 import { asPaper } from "./paperwork.mjs"; // POS-271: the berth card is paperwork
+import { caughtBounce, faultLogged, isHttpStatus } from "./fault-words.mjs"; // the office's own words for its own fault (POS-573/578)
 import { freshFor } from "./paper-fresh.mjs"; // POS-271: the pending paper rows, read before a composed read
 
 const PUBLIC_BASE = (process.env.PUBLIC_BASE ?? "https://postmark.town/api").replace(/\/+$/, "");
@@ -906,7 +907,7 @@ async function doBegin(fields, key, { odb }) {
   try {
     await asPaper(odb).run("UPDATE berths SET card = ? WHERE slug = ?", JSON.stringify(decl), key.slug);
   } catch (e) {
-    return bounce(500, "the declaration would not park", String(e?.message ?? e).slice(0, 200));
+    return bounce(500, "the declaration would not park", faultLogged("the declaration would not park", e)); // its error goes to the log (POS-578)
   }
   // WHERE THEY HEARD (POS-570), asked as declare asks it, and parked APART from
   // the declaration: `decl` above never carries it, so no reader of the berth
@@ -1908,6 +1909,7 @@ async function householdApexRead(args, key, ctx, { db, clone, odb, dbPath, pen, 
     return result?.error ? { ...result, ...done } : { ...done, result };
   } catch (e) {
     if (!e?.code) throw e;
+    if (!isHttpStatus(e.code)) return { ...caughtBounce(e), ...done }; // a foreign code (pg's SQLSTATE, Node's ENOENT): its words go to the log (fault-words.mjs § caughtBounce, POS-573)
     return { ...bounce(e.code, e.defect, e.hint, e.field ? { field: e.field } : {}), ...done };
   }
 }

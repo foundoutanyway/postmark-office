@@ -95,6 +95,7 @@ export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
 import { arrivesAt, CROSSING_DERIVATION, crossingSailsAt, currentCrossing } from "./crossings.mjs";
 import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
 import { ringOf, ringBox, ringAgrees, ringMovedTo, RING_SHAPE_SENTENCE, RING_CLAIM_SENTENCE } from "./ring-box.mjs"; // POS-322: a mark's box is derived from its ring
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 // ── engine + world cache ─────────────────────────────────────────────────────
 let _mods = null;         // { verbs, build }
@@ -1567,7 +1568,7 @@ export async function worldSay(args = {}, key = null) {
       withNoticeBoard(r);
       return r;
     } catch (e) {
-      return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+      return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
     }
   }
   const choice = chooseStandpoint({ handle: args.handle }, key);
@@ -1594,7 +1595,7 @@ export async function worldSay(args = {}, key = null) {
     withNoticeBoard(r);
     return r;
   } catch (e) {
-    return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+    return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
   }
 }
 
@@ -1697,7 +1698,7 @@ export async function worldSayHuman(args = {}, key = null) {
     withNoticeBoard(r);
     return r;
   } catch (e) {
-    return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+    return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
   }
 }
 
@@ -4307,13 +4308,13 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     const dropGuard = dropUnit != null && payload.dropped === `act:${dropUnit.actId}`
       ? (await import("./drop-recovery.mjs")).dropLiveGuard({ actId: dropUnit.actId }) : null;
     try { result = await journalLeaveMark(clean, dropGuard ? { guard: dropGuard } : {}); }
-    catch (e) { if (e?.code) throw e; throw bounce(500, "the mark pass tripped", String(e?.message ?? e).slice(0, 300)); }
+    catch (e) { if (e?.code) throw e; throw bounce(500, "the mark pass tripped", faultLogged("the mark pass tripped", e)); } // its error goes to the log (POS-578)
   } else {
     try {
       result = await draftWrite(worldClone, exec, JSON.stringify(clean), household, `${by}/${slug}`);
     } catch (e) {
       if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-      throw bounce(500, "the mark pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+      throw bounce(500, "the mark pass tripped", faultLogged("the mark pass tripped", e)); // its stderr goes to the log (POS-578)
     }
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
   }
@@ -4462,7 +4463,7 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, {
       if (viaUnit) return viaUnit;
       return await journalWithdraw({ by, slug, household, guard });
     }
-    catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", String(e?.message ?? e).slice(0, 300)); }
+    catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", faultLogged("the withdrawal tripped", e)); } // its error goes to the log (POS-578)
   }
   // THE GIT LANE TAKES NO SET-DOWN UNIT (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
   // on Bevel's first review of #503, R3): a dropped unit's mark is withdrawn only
@@ -4480,7 +4481,7 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, {
     result = await draftWrite(worldClone, exec, JSON.stringify({ op: "withdraw", by, slug, household }), household, mark);
   } catch (e) {
     if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-    throw bounce(500, "the withdrawal tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+    throw bounce(500, "the withdrawal tripped", faultLogged("the withdrawal tripped", e)); // its stderr goes to the log (POS-578)
   }
   // the exec's named reason rides through (the git lane's set-down refusal, R3)
   if (result.error) throw Object.assign(bounce(result.error.code ?? 500, result.error.defect, result.error.hint), result.error.reason ? { reason: result.error.reason } : {});
@@ -4804,7 +4805,7 @@ export async function worldNoteViaOffice(worldClone, payload = {}, key = null) {
   } catch (e) {
     if (e?.name === "NoRecordError")
       throw bounce(503, "this office keeps no notes: it is not pointed at a record", "notes live only in the office's record; ask the town's office, which keeps one");
-    throw bounce(503, "the note could not be kept: the office's record did not answer", `nothing was written anywhere — try again shortly (${String(e?.message ?? e).slice(0, 160)})`);
+    throw bounce(503, "the note could not be kept: the office's record did not answer", `nothing was written anywhere — try again shortly; ${faultLogged("the note could not be kept", e)}`);
   }
   // The receipt echoes the note itself — "did it say what I meant" must not
   // cost a second call (Keemin's clunk, 2026-08-15).
@@ -5536,7 +5537,7 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
       out = await execUnderTownLock(exec, JSON.stringify(clean), env);
     } catch (e) {
       if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-      throw bounce(500, "the walk pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+      throw bounce(500, "the walk pass tripped", faultLogged("the walk pass tripped", e)); // its stderr goes to the log (POS-578)
     }
     result = JSON.parse(out.trim().split("\n").at(-1));
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);

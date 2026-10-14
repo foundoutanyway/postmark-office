@@ -18,6 +18,7 @@
 //   world-apex.mjs § worldApex, votes.mjs § voteList   throw the synthetic error
 //   votes.mjs § votesAvailable          says yes, so read_votes reaches its catch
 //   world.mjs § worldSay (a berth)      throws inside the say's own try
+//   world.mjs § callWorldTool           throws (a read domain's tool call)
 //
 // The hook refuses to load a module whose anchor is not there exactly once, so a
 // moved function fails this file loudly. Nothing in src/ knows about it.
@@ -64,7 +65,8 @@ const EDITS = {
   "/src/votes.mjs": [["export function votesAvailable(clone) {", "if (process.env.SYNTH_THROW) return true;"],
     ["export async function voteList(clone, { env = process.env } = {}) {", "if (process.env.SYNTH_THROW) ${THROW}"]],
   "/src/world.mjs": [["const rulesFirst = await visitorRulesGate(key, args, { speaking: Boolean(text.trim()) });",
-    "if (process.env.SYNTH_THROW) ${THROW}", "before"]],
+    "if (process.env.SYNTH_THROW) ${THROW}", "before"],
+    ["export async function callWorldTool(name, args = {}, key = null, ctx = {}) {", "if (process.env.SYNTH_WORLD_TOOL) ${THROW.replace("SYNTH_THROW", "SYNTH_WORLD_TOOL")}"]],
 };
 export async function load(url, context, nextLoad) {
   const r = await nextLoad(url, context);
@@ -273,4 +275,18 @@ test("POS-578 world2-serve.mjs: an act that matches no known era is the office's
   assert.equal(value.body.defect, "a passage act matches no known era");
   assert.equal(value.body.hint, FAULT_LOGGED);
   assert.match(log, /match no known era/, "the register's own sentence, with the act, is in the log");
+});
+
+// ── world-apex.mjs § readDomainFor: a read's domain answered inside a 200 ───
+// A tool's foreign error is nested in the read, where no door classifies it,
+// so the rebuild itself must keep pg's words out. THE FLIP: the catch back to
+// `return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint }`.
+test("POS-573 world-apex.mjs § readDomainFor: a tool's foreign error in a read's domain keeps only its code", async () => {
+  const { readDomainFor } = await load("src/world-apex.mjs");
+  const s = SYNTHETIC["pg-hint"];
+  const { value, log } = await logged(() => withEnv({ SYNTH_WORLD_TOOL: JSON.stringify(s) },
+    () => readDomainFor("give", {}, { household: "h", handles: new Set(["x"]) }, {})));
+  assert.deepEqual(value.holdings, { error: "bounce", code: "42P01" });
+  keepsOut(value, secretsOf(s), "readDomainFor");
+  logSays(log, secretsOf(s), "readDomainFor");
 });

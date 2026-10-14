@@ -45,12 +45,13 @@ function ticks(count, stepsFor = () => ({})) {
 const judge = (text, opt = {}) => judgeKeep(text, { steps: ["mint", "push", "settlements"], n: 3, staleMinutes: 45, now: T0 + MIN, ...opt });
 const alarmsFor = (alarms, step) => alarms.filter((a) => a.startsWith(`${step} `));
 
-// 24 since POS-612: settlements-backfill's carried and amends steps are recorded
-// apart from it (review-612's re-check), between settlements and positions.
-test("the step list is the script's: 24 steps, 5 fatal and 19 soft, no step twice", () => {
-  assert.equal(STEPS.length, 24);
-  assert.equal(new Set(STEPS).size, 24);
-  assert.deepEqual(STEPS.slice(STEPS.indexOf("settlements"), STEPS.indexOf("settlements") + 4), ["settlements", "carried", "amends", "positions"]);
+// 26 since POS-627: settlements-backfill's four soft steps (carried and amends
+// from POS-612, chests and drops from POS-627) are recorded apart from it, in the
+// order it runs them, between settlements and positions (review-612).
+test("the step list is the script's: 26 steps, 5 fatal and 21 soft, no step twice", () => {
+  assert.equal(STEPS.length, 26);
+  assert.equal(new Set(STEPS).size, 26);
+  assert.deepEqual(STEPS.slice(STEPS.indexOf("settlements"), STEPS.indexOf("settlements") + 6), ["settlements", "carried", "chests", "amends", "drops", "positions"]);
   assert.deepEqual([...STEPS].sort(), [...FATAL_STEPS, ...SOFT_STEPS].sort());
   assert.deepEqual(STEPS.slice(0, 3), ["lock", "pull", "fetch"]);
   assert.equal(STEPS[16], "snapshot");
@@ -300,7 +301,7 @@ test("the manifest validates the keep outcome on its own fields, with no dummy u
   assert.throws(loads({ ...KEEP_ROW, outcome: { history_path: "/fixture/x.jsonl" } }), /no unsettled_runs/);
 });
 
-test("the shipped manifest's keep row loads, judges the 17 soft steps at N=3 and 45 minutes, beside unchanged crossing rows", () => {
+test("the shipped manifest's keep row loads, judges the 21 soft steps at N=3 and 45 minutes, beside unchanged crossing rows", () => {
   const m = loadManifest(DEFAULT_MANIFEST);
   const keep = m.units.find((r) => r.unit === "postmark-office-keep.timer");
   assert.equal(keep.outcome.kind, "keep_steps");

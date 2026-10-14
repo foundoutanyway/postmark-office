@@ -604,7 +604,60 @@ test("once accepted, a later 'opposed' is refused — the amend is filed in the 
   const r = await speak("opposed", "keith", KEITH);
   assert.equal(r.refused, true, JSON.stringify(r));
   assert.equal(r.code, 409);
+  assert.match(r.hint, /accepting filed the amend/, "the record found the amend, so the refusal may say it was filed");
   assert.equal(p.rows().length, before, "nothing written");
+});
+
+// ── AN UNFILED WELCOME CAN STILL BE OPPOSED (postmark#3549, the second effect) ─
+//
+// A welcome whose amend the door refused moved nothing. The opposed arm used to
+// refuse every later word after a welcome, saying "accepting filed the amend",
+// which is false here: the author's house could neither move the thing nor take
+// the welcome back. It now asks the record whether an amend answering THIS drop
+// was filed, and refuses only when one was.
+//
+// THE FLIP: drop the record check in `answerSetDown` and this reds on "the
+// refusal was refused".
+
+test("AN UNFILED WELCOME CAN STILL BE OPPOSED: no amend answers the drop, so opposed is recorded and the read answers canon", async () => {
+  const p = await fresh();
+  const drop = await anaDrops(p);
+  const refusingDoor = async () => { const e = new Error("3 marks stand on it"); Object.assign(e, { code: 409, defect: "3 marks stand on it" }); throw e; };
+  const ok = await speak("welcomed", "keith", KEITH, { leave: refusingDoor });
+  assert.equal(ok.amend?.filed, false, `the control: the welcome's amend was refused: ${JSON.stringify(ok)}`);
+  const before = p.rows().length;
+
+  const r = await speak("opposed", "keith", KEITH);
+  assert.ok(!r.refused, `the refusal was refused: ${JSON.stringify(r)}`);
+  assert.equal(r.superseded?.stance, "welcomed", "it supersedes the welcome");
+  assert.equal(p.rows().length, before + 1, "one row: the stance itself");
+  assert.equal(p.rows().filter((a) => a.action === "amend").length, 0, "no amend");
+  assert.equal(p.claims().length, 0, "no claim");
+
+  const s = await readStool(drop);
+  assert.equal(s.source, "fold", "the read answers canon");
+  assert.deepEqual(s.where, GARAGE_AT);
+  assert.equal(s.refused_by, "keith");
+});
+
+test("A WELCOME THE DOOR CANNOT CHECK: opposed is still refused, and the refusal does not claim the amend was filed", async () => {
+  const p = await fresh();
+  await anaDrops(p);
+  const refusingDoor = async () => { const e = new Error("3 marks stand on it"); Object.assign(e, { code: 409, defect: "3 marks stand on it" }); throw e; };
+  const ok = await speak("welcomed", "keith", KEITH, { leave: refusingDoor });
+  assert.equal(ok.amend?.filed, false, JSON.stringify(ok));
+  const before = p.rows().length;
+  // The mark lane off the register: an amend would not be in `acts`, so "none
+  // found" there is "could not tell", never "none was filed".
+  process.env.W2_PEN = "hold";
+  try {
+    const r = await speak("opposed", "keith", KEITH);
+    assert.equal(r.refused, true, JSON.stringify(r));
+    assert.equal(r.code, 409);
+    assert.doesNotMatch(r.hint, /accepting filed the amend/, `the refusal claims a filing it did not see: ${r.hint}`);
+    assert.match(r.hint, /could not tell whether/);
+    assert.equal(p.rows().length, before, "nothing written");
+  } finally { process.env.W2_PEN = "mark,hold"; }
 });
 
 test("an answer belongs to ONE drop: a welcome of Ana's first set-down does not accept a later one", () => {

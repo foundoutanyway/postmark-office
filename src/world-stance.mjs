@@ -1237,6 +1237,23 @@ async function setDownsGroup(key, inbox, deps = {}) {
 }
 
 /**
+ * Was an amend filed that answers this drop? `true`, `false`, or `null` when
+ * the record cannot say. An amend lands in `acts` only when the single log is on
+ * and the mark lane writes there; anywhere else, finding none is not knowing none.
+ */
+async function setDownAmendFiled(on, dropSeq) {
+  if (dropSeq == null || !singleLogEnabled() || !laneFlipped("mark")) return null;
+  try {
+    const [{ actsQuery }, { ACTION_AMEND, CLASS_MARK }] = await Promise.all([import("./world2-acts.mjs"), import("./world-journal.mjs")]);
+    const rows = await actsQuery("SELECT id, payload FROM acts WHERE class = $1 AND action = $2 AND object = ANY($3) ORDER BY id",
+      [CLASS_MARK, ACTION_AMEND, [String(on)]]);
+    if (!Array.isArray(rows)) return null;
+    const payloadOf = (p) => (typeof p === "string" ? JSON.parse(p) : p) ?? {};
+    return rows.some((r) => String(payloadOf(r.payload)._set_down?.act_id) === String(dropSeq));
+  } catch { return null; }
+}
+
+/**
  * The author's house answers a stranger's set-down: one stance row, and on
  * `welcomed` the author's amend. Everything that can refuse refuses BEFORE the
  * row is written, so a refusal leaves nothing behind.
@@ -1251,9 +1268,16 @@ async function answerSetDown({ repo, on, stance, by, key, target, sd, dbPath, wi
 
   const prior = hold.setDownAnswer({
     stances: await stanceRows({ dbPath, worldClone: repo }), thing: on, dropSeq: drop.seq, madeBy, householdOf });
-  if (prior?.stance === "welcomed" && stance === "opposed")
-    throw bounce(409, `your house has already accepted ${setter}'s set-down of ${on}`,
-      `accepting filed the amend that re-sites it in ${madeBy}'s name, so there is no set-down left to refuse — to move it back, amend the mark with world { do: "leave-mark", args: { slug, amend: true, at } }. Nothing was written.`);
+  // A welcome whose amend the door refused moved nothing, so it does not close
+  // the set-down (postmark#3549). Only an amend that answers THIS drop does, and
+  // the record is asked for one; a record that cannot say keeps the refusal.
+  if (prior?.stance === "welcomed" && stance === "opposed") {
+    const filed = await setDownAmendFiled(on, drop.seq);
+    if (filed !== false)
+      throw bounce(409, `your house has already accepted ${setter}'s set-down of ${on}`, filed
+        ? `accepting filed the amend that re-sites it in ${madeBy}'s name, so there is no set-down left to refuse — to move it back, amend the mark with world { do: "leave-mark", args: { slug, amend: true, at } }. Nothing was written.`
+        : `this door could not tell whether the amend that accepting files in ${madeBy}'s name was filed, so it will not record a refusal over one that may stand — try again, or to move it back, amend the mark with world { do: "leave-mark", args: { slug, amend: true, at } }. Nothing was written.`);
+  }
 
   let amendDeps = deps;
   if (stance === "welcomed") {

@@ -306,6 +306,30 @@ export async function watch1f916({ fetchImpl = fetch, state = {} } = {}) {
   };
 }
 
+// ---------- our own shore's count (POS-574) ----------
+//
+// Who has berthed in Postmark from each chartered town: the office's count of
+// keyless berths by the town each one claimed (ever, live now, co-signed into a
+// house). It is the town's own record, so it is read the way this watch reads
+// everything, over a public door with no key (GET /berth's `arrivals`), and
+// never from the store: this unit carries no store credentials, by design.
+// Each foreign town in the snapshot gets it as `berths_from_here`; a town no
+// berth has claimed reads zeros, which is true.
+export const OFFICE_BASE = "https://postmark.town/api";
+
+export async function watchOfficeBerths({ fetchImpl = fetch, base = OFFICE_BASE } = {}) {
+  const body = await getJson(`${base}/berth`, fetchImpl);
+  const by = body?.arrivals?.by_from_town;
+  if (!by || typeof by !== "object") throw new Error(`${base}/berth -> no arrivals count`);
+  return by;
+}
+
+export const berthsFromHere = (by, slug) => ({
+  ever: by?.[slug]?.ever ?? 0,
+  live: by?.[slug]?.live ?? 0,
+  cosigned: by?.[slug]?.cosigned ?? 0,
+});
+
 // ---------- main ----------
 
 const argOf = (name) => {
@@ -352,6 +376,19 @@ async function main() {
     }
   }
 
+  // Counted before the office's read below: "both shores dark" is about the shores.
+  const shoreErrors = snapshot.errors.length;
+
+  try {
+    const by = await watchOfficeBerths({ base: process.env.HARBOR_OFFICE_URL ?? OFFICE_BASE });
+    for (const slug of Object.keys(CONFIG.towns)) {
+      if (slug === "postmark" || !snapshot.towns[slug]) continue;
+      snapshot.towns[slug].berths_from_here = berthsFromHere(by, slug);
+    }
+  } catch (err) {
+    snapshot.errors.push(`postmark berths: ${err?.message ?? err}`);
+  }
+
   const cargo = Object.values(snapshot.towns).flatMap((t) => t.cargo_waiting || []);
   snapshot.cargo_alarm = cargo.filter((c) => c.status === "alarm").length;
   snapshot.cargo_warn = cargo.filter((c) => c.status === "warn").length;
@@ -362,7 +399,7 @@ async function main() {
   if (statePath) writeFileSync(statePath, JSON.stringify(nextState, null, 2));
 
   const laneCount = lanes.length;
-  const failed = snapshot.errors.length;
+  const failed = shoreErrors;
   console.log(
     `harbor-watch: ${laneCount - failed}/${laneCount} shores read, ` +
       `${cargo.length} cargo waiting (${snapshot.cargo_alarm} alarm), ` +

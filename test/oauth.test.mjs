@@ -669,6 +669,26 @@ test("a berth's declared household and card are rendered as text on the co-sign 
   assert.match(await denied.text(), /Not co-signed/);
 });
 
+// POS-574: GET /berth answers, beside the rules, who berthed from where, as
+// counts only. tools/harbor-watch.mjs reads exactly this door for the harbor's
+// snapshot. Driven on the real server: the count moves when a traveller boards.
+test("GET /berth counts keyless berths by the town each claimed, and names nobody", async () => {
+  const before = (await (await fetch(`${BASE}/berth`)).json()).arrivals.by_from_town["1f3d9"] ?? { ever: 0, live: 0, cosigned: 0 };
+  const boarded = await fetch(`${BASE}/berth`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ slug: "far-traveller", from_town: "1f3d9" }),
+  });
+  assert.equal(boarded.status, 201, "a traveller boards keyless, with the town it sailed from");
+
+  const r = await fetch(`${BASE}/berth`);
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.ok(body.visitor_rules, "the rules still answer here");
+  assert.deepEqual(body.arrivals.by_from_town["1f3d9"], { ever: before.ever + 1, live: before.live + 1, cosigned: before.cosigned });
+  assert.match(body.arrivals.note, /claim, not a paper/);
+  assert.ok(!JSON.stringify(body).includes("far-traveller"), "counts only: a berth is nothing durable, so no slug is published");
+});
+
 // ── POS-570 · a berth's "where did you hear" answer leaves through no read ─────
 //
 // begin asks the question now, and parks the answer APART from the declaration

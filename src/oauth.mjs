@@ -406,6 +406,24 @@ export async function mintBerth(odb, slug, fromTown = null) {
 // Deliberately loose — the registry, not this regex, decides what a town is.
 export const FROM_TOWN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
+// ── who berthed from where (POS-574) ────────────────────────────────────────
+// The harbor's count of keyless arrivals by the town each one CLAIMED to sail
+// from: `ever` minted, `live` (unexpired) and `cosigned` into a house. Counts
+// only, never a slug: a berth is "nothing durable", and a public list of names
+// would make it something. A berth row is never deleted (031), so `ever` is the
+// whole history. Read at GET /berth; tools/harbor-watch.mjs prints it into the
+// snapshot as each town's `berths_from_here`.
+export async function berthArrivals(odb, t = now()) {
+  const rows = await asPaper(odb).all(
+    `SELECT from_town, COUNT(*) AS ever,
+            COUNT(CASE WHEN expires >= ? THEN 1 END) AS live,
+            COUNT(cosigned_at) AS cosigned
+       FROM berths WHERE from_town IS NOT NULL GROUP BY from_town ORDER BY from_town`, t);
+  const by = {};
+  for (const r of rows) by[r.from_town] = { ever: Number(r.ever), live: Number(r.live), cosigned: Number(r.cosigned) };
+  return by;
+}
+
 /** A live berth holds its slug against re-mint; an expired one frees it. */
 export async function berthTaken(odb, slug) {
   return Boolean(await asPaper(odb).get("SELECT slug FROM berths WHERE slug = ? AND expires >= ?", slug, now()));

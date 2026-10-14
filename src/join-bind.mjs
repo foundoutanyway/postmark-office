@@ -30,7 +30,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRegistryRows } from "./registry-store.mjs";
 import { registryFromRows, pinsFromRows } from "./registry-rows.mjs";
-import { validateResidencyRequest, planRegistryJoin, buildJoinFiles } from "./residency.mjs";
+import { validateResidencyRequest, planRegistryJoin, buildJoinFiles, berthAshore } from "./residency.mjs";
 import { handleTaken } from "./declare.mjs";
 import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN, REFUSALS } from "./ceremony.mjs";
 import { penCommit, landOrRefuse } from "./write.mjs";
@@ -115,6 +115,13 @@ export async function bindUnderLock({ args, key, clone, db, env = process.env, d
   const gline = /^github:[ \t]*(\S+)[ \t]*$/m.exec(card);
   if (!gline || gline[1].toLowerCase() !== String(key.ghLogin).toLowerCase())
     throw bounce(BIND_REFUSALS.CARD, `github: ${gline?.[1] ?? "(none)"}`);
+
+  // Every settling road marks a berth ashore through the one helper (POS-574).
+  // Here it finds none today: a handle on the ship's manifest is taken
+  // (declare.mjs § handleTaken), so the bind refuses it above. The call keeps
+  // the bind honest the day that changes.
+  const berth = berthAshore(handle, { clone, date });
+  if (berth) files.push(berth);
 
   const paths = [];
   for (const f of files) {

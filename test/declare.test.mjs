@@ -25,7 +25,7 @@ import {
   PINS_PATH, LANDING_GROUND,
   DECLARE_SCHEMA, DECLARE_BOUNCES, SETTLING_ASHORE, SETTLING_WHAT, SETTLEMENT_LAW,
 } from "../src/declare.mjs";
-import { REGISTRY_PATH, serializeRegistry, serializePins, buildJoinFiles, buildBoardingFiles, planRegistryJoin } from "../src/residency.mjs";
+import { REGISTRY_PATH, serializeRegistry, serializePins, buildJoinFiles, buildBoardingFiles, planRegistryJoin, stampAshore } from "../src/residency.mjs";
 import { arrivalPage } from "../src/arrival.mjs";
 import { withRecordFrom } from "./registry-pool-stub.mjs";
 import { indexStore } from "./helpers/office-under-test.mjs";
@@ -420,6 +420,40 @@ test("the gangway is the breaker and it binds this door — frozen settles nobod
     "the gangway MUST change what this door writes now — if these are equal the breaker is back on the old pipe");
 });
 
+// POS-574: "the berth row is marked ashore rather than deleted" (HARBOR/README.md).
+// From 09-21 the door settled and kept the berth but never marked it, and the
+// manifest read 55 settled households as aboard. Driven through the door's own
+// commit, both gangway states.
+test("the door marks the berth it settles ashore in the same commit; a raised gangway's berth stays aboard", async () => {
+  const db = fixtureDb();
+  const berthOf = {};
+  for (const frozen of [true, false]) {
+    const clone = declClone({ frozen });
+    await declare(GOOD(), STRANGER, { clone, db, mintKey: () => "pmk_x" });
+    berthOf[frozen] = execFileSync("git", ["-C", clone, "show", "HEAD:HARBOR/berths/wren-of-the-ordinary-hours.md"], { encoding: "utf8" });
+  }
+  assert.match(berthOf.false, /^boarded: (\d{4}-\d{2}-\d{2})\nashore: \1$/m,
+    "settled at the door: the berth says so, dated the act, right under boarded");
+  assert.doesNotMatch(berthOf.true, /^ashore:/m, "a raised gangway settles nobody, so its berth is not marked ashore");
+});
+
+test("from_town: the household's own claim, printed on its berth; a bad one bounces by name; none prints nothing", async () => {
+  const db = fixtureDb();
+  bouncesOn({ ...GOOD(), from_town: "not a town!" }, { db, registry: REGISTRY(), key: STRANGER }, "from_town", 422);
+  const decl = conformance({ ...GOOD(), from_town: " 1F3D9 " }, { db, registry: REGISTRY(), key: STRANGER });
+  assert.equal(decl.fromTown, "1f3d9", "the berth desk's grammar: trimmed and lowercased");
+
+  const clone = declClone();
+  const out = await declare({ ...GOOD(), from_town: "1f3d9" }, STRANGER, { clone, db, mintKey: () => "pmk_x" });
+  const berth = readFileSync(join(clone, "HARBOR", "berths", "wren-of-the-ordinary-hours.md"), "utf8");
+  assert.match(berth, /^from_town: 1f3d9$/m);
+  assert.equal(out.from_town.claimed, "1f3d9", "the receipt says what was recorded, and that it is a claim");
+  assert.match(out.from_town.note, /claim/);
+
+  const plain = planDeclaration(REGISTRY(), {}, conformance(GOOD(), { db, registry: REGISTRY(), key: STRANGER }), { date: "2026-08-14" });
+  assert.doesNotMatch(plain.files.find((f) => f.path.startsWith("HARBOR/")).content, /^from_town:/m, "no claim, no line");
+});
+
 test("berth, registry entry and pin are ATOMIC — one commit, both or neither", async () => {
   const db = fixtureDb();
   const clone = declClone();
@@ -565,10 +599,15 @@ test("the response tells an arrival what it can do now and what settling adds", 
 // not the join PR: both land a berth, so a boarding PR merged by hand and a
 // declaration accepted at the door leave the same town. (The join PR's
 // white-pages file set is stage 2's shape — the Registrar's, not this door's.)
+//
+// A BOARDING is the twin, so the twin is the door with the gangway raised: both
+// berth and neither settles. The door that SETTLES writes that same berth marked
+// ashore, and nothing else different (POS-574).
 test("the declaration lane and the boarding-PR lane write the same berth", () => {
   const db = fixtureDb();
   const decl = conformance(GOOD(), { db, registry: REGISTRY(), key: STRANGER });
-  const plan = planDeclaration(REGISTRY(), {}, decl, { date: "2026-08-14" });
+  const boarded = planDeclaration(REGISTRY(), {}, decl, { date: "2026-08-14", gangway: "frozen" });
+  const settled = planDeclaration(REGISTRY(), {}, decl, { date: "2026-08-14" });
 
   const prFiles = buildBoardingFiles({
     handle: decl.handle, card: decl.card, agent: decl.agent,
@@ -576,10 +615,14 @@ test("the declaration lane and the boarding-PR lane write the same berth", () =>
     since: decl.since, note: decl.note, ghLogin: decl.ghLogin,
   });
 
-  const mine = new Map(plan.files.map((f) => [f.path, f.content]));
-  for (const f of prFiles)
+  const mine = new Map(boarded.files.map((f) => [f.path, f.content]));
+  const ashore = new Map(settled.files.map((f) => [f.path, f.content]));
+  for (const f of prFiles) {
     assert.equal(mine.get(f.path), f.content,
       `${f.path} differs between the two transports — a boarding PR and a declaration must leave the same town`);
+    assert.equal(ashore.get(f.path), stampAshore(f.content, "2026-08-14"),
+      `${f.path}: the door that settles writes the same berth, marked ashore on its own date`);
+  }
 });
 
 // THE ONE THAT MATTERS: the door did not learn to write an address card, it

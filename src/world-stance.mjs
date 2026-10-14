@@ -83,6 +83,7 @@
 import { singleLogEnabled } from "./dynamic-store.mjs";
 import { WORLD_CLONE } from "./world-store.mjs"; // the standing-scoped inbox door defaults to the office's own world checkout
 import { worldFreezeBounce } from "./freeze.mjs";
+import { ringMovedTo, ringOf } from "./ring-box.mjs";
 import { appendActFlipped, appendJournal, laneFlipped } from "./world-journal.mjs";
 // `stanceQuery` is the stance read's OWN credential (`stance_reader`), and the
 // only place in `src/` that is not `office_api`. It lives beside `actsQuery` so
@@ -1268,6 +1269,14 @@ async function answerSetDown({ repo, on, stance, by, key, target, sd, dbPath, wi
       : (await (await import("./world.mjs")).worldMarkById(on)).mark;
     const built = hold.setDownAmend({ thing: on, mark, stood, actor: setter });
     if (built.refused) throw bounce(409, `${on} cannot be re-sited by an amend at this door`, `${built.refused} — nothing was written`);
+    // The same door refuses a point outside the parent the mark's filing
+    // declares (`world.mjs § declaredParentGuard`, postmark#3020), so that is
+    // asked here too, of the amend as the door will see it: its ring, if it
+    // has one, moved onto the standpoint first (postmark#3549).
+    const next = ringOf(built.payload.points)
+      ? { ...built.payload, points: ringMovedTo(built.payload.points, built.payload.at) } : built.payload;
+    const outside = await (await import("./world.mjs")).declaredParentGuard(on, next);
+    if (outside) throw bounce(outside.code, outside.defect, `${outside.hint} — nothing was written`);
     amendDeps = { ...deps, mark };
   }
 

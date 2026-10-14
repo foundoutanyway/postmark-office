@@ -64,7 +64,8 @@ test("THE TICK ON THE STORE · arrived → entered; overtaken by a later walk; s
     const query = async (t, p) => (await api.query(t, p)).rows;
     const walkMod = await import(pathToFileURL(join(CLONE, "tools", "walk.mjs")).href);
     const { arrivalOf } = await import("../src/arrival-entries.mjs");
-    const T0 = Date.parse("2026-10-14T18:00:00.000Z");
+    // an hour ago on the real clock: the refusal half below reads "their next act" off acts.at, which is real time
+    const T0 = Date.now() - 3600_000;
     // ann walks 300 m east to a 20 m box; at 60 km per crossing that is 3.6 minutes to its rim
     const annWalk = await walkAct(api, { handle: "ann", from: { x: 0, y: 0 }, toward: { x: 310, y: 0 }, within: { w: 20, h: 20 }, to: "a/room", ms: T0 });
     const annDue = new Date(T0 + 3.6 * 60_000).toISOString();
@@ -84,28 +85,28 @@ test("THE TICK ON THE STORE · arrived → entered; overtaken by a later walk; s
     // a minute in, nothing is due
     const entered = [];
     const enter = async (r) => { entered.push(r.walk); return { answer: { entered: [r.mark] }, seq: "5001" }; };
-    const early = await arrivalTick({ now: T0 + 60_000, query, enter, arrival: (r) => arrivalOf(r, { query, now: T0 + 60_000, walkMod }) });
+    const early = await arrivalTick({ deferredIds: new Map(), now: T0 + 60_000, query, enter, arrival: (r) => arrivalOf(r, { query, now: T0 + 60_000, walkMod }) });
     assert.equal(early.due, 0);
 
     // due by the clock a second early, but the walk record has not arrived: left
-    const edge = await arrivalTick({ now: Date.parse(annDue), query, enter, arrival: (r) => arrivalOf(r, { query, now: Date.parse(annDue) - 2000, walkMod }) });
+    const edge = await arrivalTick({ deferredIds: new Map(), now: Date.parse(annDue), query, enter, arrival: (r) => arrivalOf(r, { query, now: Date.parse(annDue) - 2000, walkMod }) });
     assert.deepEqual(edge.walking, [annWalk]);
     assert.deepEqual(edge.overtaken, [beaWalk], "bea's later walk overtakes hers, read off the store");
 
     // arrived: ann is entered, once
     const at = Date.parse(annDue) + 5000;
-    const r = await arrivalTick({ now: at, query, enter, arrival: (row) => arrivalOf(row, { query, now: at, walkMod }) });
+    const r = await arrivalTick({ deferredIds: new Map(), now: at, query, enter, arrival: (row) => arrivalOf(row, { query, now: at, walkMod }) });
     assert.deepEqual(r.entered, [annWalk]);
     assert.deepEqual(entered, [annWalk]);
     const rows = (await api.query("SELECT walk_act_id::text AS walk, outcome, enter_act_id::text AS act FROM arrival_entries ORDER BY walk_act_id")).rows;
     assert.deepEqual(rows, [{ walk: annWalk, outcome: "entered", act: "5001" }, { walk: beaWalk, outcome: "overtaken", act: null }]);
-    assert.equal((await arrivalTick({ now: at + 60_000, query, enter })).due, 0, "a settled row is never asked again");
+    assert.equal((await arrivalTick({ deferredIds: new Map(), now: at + 60_000, query, enter })).due, 0, "a settled row is never asked again");
 
     // a refusal at arrival is on the walker's standpoint until their next act
     // (on the real clock: "their next act" is an act written after the settle's now())
     const cyWalk = await walkAct(api, { handle: "cy", from: { x: 0, y: 90 }, toward: { x: 5, y: 90 }, ms: Date.now() - 60_000 });
     await queueArrival({ walkActId: cyWalk, handle: "cy", mark: "c/room", dueAt: new Date(Date.now() - 30_000).toISOString() }, { query });
-    await arrivalTick({ now: at, query, arrival: async () => ({ arrived: true }),
+    await arrivalTick({ deferredIds: new Map(), now: Date.now(), query, arrival: async () => ({ arrived: true }),
       enter: async () => { throw Object.assign(new Error("c/room is opposed to you"), { code: 422, defect: "c/room is opposed to you" }); } });
     resetArrivalLines();
     const refused = await arrivalLineFor("cy", { now: Date.now(), query });

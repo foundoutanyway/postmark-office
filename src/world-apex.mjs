@@ -2409,6 +2409,24 @@ async function apexRead(args, key, ctx = {}) {
 
 // ── the act ─────────────────────────────────────────────────────────────────
 
+// THE ACT BRANCH'S CATCH (apexDo), a function so a test drives its rebuild
+// directly (the review of #525: a flip of the foreign-code line stayed green,
+// because the MCP door's answer classifies the code too).
+export function actCaught(e, done = {}) {
+  if (!isHttpStatus(e.code)) return { ...caughtBounce(e), ...done }; // a foreign code (pg's SQLSTATE, Node's ENOENT): its words go to the log (fault-words.mjs § caughtBounce, POS-573)
+  // THE EXTRAS A CALLER READS ARE CARRIED, BY NAME, and this list is the
+  // whole reason to read it twice: this line REBUILDS the bounce, so a
+  // field the door underneath added and this list does not name is dropped
+  // here and reaches nobody. `choices` (which resident?) has ridden since
+  // the multi-resident bounce; `walk` joined 2026-09-11 with the enter
+  // door's reach refusal, because the world page's "walk there and enter"
+  // button reads `walk.mark` off THIS body — the apex is the door it calls.
+  // A value nothing can read is the quiet failure this office has a museum
+  // of; adding a field below without adding it here builds one.
+  return { ...bounce(e.code, e.defect, e.hint,
+    { ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) }), ...done };
+}
+
 async function apexDo(args, key, ctx = {}) {
   const action = String(args.do ?? "").trim();
 
@@ -2800,18 +2818,7 @@ async function apexDo(args, key, ctx = {}) {
       }
     } catch (e) {
       if (!e?.code) throw e;
-      if (!isHttpStatus(e.code)) return { ...caughtBounce(e), ...done }; // a foreign code (pg's SQLSTATE, Node's ENOENT): its words go to the log (fault-words.mjs § caughtBounce, POS-573)
-      // THE EXTRAS A CALLER READS ARE CARRIED, BY NAME, and this list is the
-      // whole reason to read it twice: this line REBUILDS the bounce, so a
-      // field the door underneath added and this list does not name is dropped
-      // here and reaches nobody. `choices` (which resident?) has ridden since
-      // the multi-resident bounce; `walk` joined 2026-09-11 with the enter
-      // door's reach refusal, because the world page's "walk there and enter"
-      // button reads `walk.mark` off THIS body — the apex is the door it calls.
-      // A value nothing can read is the quiet failure this office has a museum
-      // of; adding a field below without adding it here builds one.
-      return { ...bounce(e.code, e.defect, e.hint,
-        { ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) }), ...done };
+      return actCaught(e, done);
     }
     // ── THE GROUND SETS ITS ENTRANT DOWN (LOGOS § The portal ground) ────────
     // AFTER the enter and only when it succeeded. The receipt keeps the shape

@@ -42,6 +42,16 @@ const answer = (obj) => { console.log(JSON.stringify(obj)); process.exit(0); };
 const refusal = (code, field, defect, hint) => ({ error: { code, field, defect, hint } });
 const err = (code, field, defect, hint) => answer(refusal(code, field, defect, hint));
 
+// THE MINT'S CATCH (POS-578; the review of #525). A refusal (an HTTP status)
+// speaks its own words. Anything else is the office's own fault, whatever it
+// carries: pg's SQLSTATE, or no code at all (a TypeError, pg's "Connection
+// terminated unexpectedly"). Its message goes to this child's stderr, which
+// is the office's log, and never to the defect.
+function mintRefusal(e) {
+  if (!isHttpStatus(e?.code)) return refusal(500, null, "the declaration pass tripped", faultLogged("the declaration pass tripped", e));
+  return refusal(e.code, e.field ?? null, e.defect ?? String(e?.message ?? e), e.hint ?? null);
+}
+
 async function main() {
   const { args, key, dbPath, heardFrom = null } = JSON.parse(process.argv[2] ?? "{}");
 
@@ -180,11 +190,7 @@ async function main() {
       // everything landed; this says which half did.
       registryOutcome = joined.registry;
     } catch (e) {
-      // a refusal (an HTTP status, or none) speaks its own words; a foreign code
-      // (pg's SQLSTATE) is the office's own fault, and its message goes to this
-      // child's stderr, the office's log (POS-578)
-      if (e?.code != null && !isHttpStatus(e.code)) return refusal(500, null, "the declaration pass tripped", faultLogged("the declaration pass tripped", e));
-      return refusal(e.code ?? 500, e.field ?? null, e.defect ?? String(e?.message ?? e), e.hint ?? null);
+      return mintRefusal(e);
     }
     paths.push(...drainedPaths);
     const ledger = appendHouseKey(CLONE, keyed?.signed);

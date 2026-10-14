@@ -43,7 +43,7 @@ const ALLOWED = {
   "ceremony.mjs": [1, `${OWN}: a log variable`],
   "claim-effects.mjs": [2, DISCLOSURE],
   "crossing-exec.mjs": [2, `${OWN}: PenUnreachableError's ruled sentence; the push error a receipt discloses`],
-  "declare-exec.mjs": [1, `${OWN}: a refusal (an HTTP status) relayed by its own defect; a foreign code is FAULT_LOGGED above it`],
+  "declare-exec.mjs": [1, `${OWN}: mintRefusal relays a refusal (an HTTP status) by its own defect; any other error, codeless or foreign, is FAULT_LOGGED above it`],
   "doorstep-bundle.mjs": [6, DISCLOSURE],
   "doorstep-stakes.mjs": [3, DISCLOSURE],
   "drop-recovery.mjs": [2, DISCLOSURE],

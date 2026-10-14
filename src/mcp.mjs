@@ -39,9 +39,9 @@ import { HOME_TITLE_MAX, PROFILE_FIELD_DOC, updateAddressBody, updateAddressFiel
 import { uploadMedia } from "./media.mjs";
 import { WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // a window starts with its human (POS-248) — one telling, shared with the window read
 import { harborGated, HARBOR_BOUNCE } from "./harbor-gate.mjs";
-import { validateArgs } from "./validate-args.mjs";
-import { ACT_RETRY, READ_RETRY, STORE_LOST, caughtBounce, faultLogged, foreignAnswer, isHttpStatus } from "./fault-words.mjs"; // the office's own words for its own fault (POS-573)
-import { isStoreUnreachable } from "./store-pool.mjs"; // one owner for "does this door take that field" — re-exported below
+import { validateArgs } from "./validate-args.mjs"; // one owner for "does this door take that field" — re-exported below
+import { ACT_RETRY, READ_RETRY, STORE_LOST, STORE_RETRY_AFTER_S, caughtBounce, faultLogged, foreignAnswer, isHttpStatus } from "./fault-words.mjs"; // the office's own words for its own fault (POS-573)
+import { isStoreUnreachable } from "./store-pool.mjs"; // a lost store, said as an outage (POS-573)
 import { standingBounce } from "./standing.mjs";
 import { roleGate, ROLE_SUBSCRIBER } from "./roles.mjs";
 import { WORLD_TOOLS, callWorldTool, townPost, worldBlockForHandle } from "./world.mjs";
@@ -1149,8 +1149,10 @@ async function handleMessage(msg, ctx) {
         // office's own fault, in its own words.
         if (isBounce && result.code != null && !isHttpStatus(result.code)) {
           const { status, body } = foreignAnswer(result.code, result, { read: !writeShaped(name, args) });
-          console.error(`[office] mcp ${name}: a bounce carried code ${JSON.stringify(result.code)}, not an HTTP status: answered as ${status}`);
-          result = { ...body, code: status };
+          const foreignHint = result.hint ? ` (its hint: ${String(result.hint).slice(0, 300)})` : "";
+          console.error(`[office] mcp ${name}: a bounce carried code ${JSON.stringify(result.code)}, not an HTTP status: answered as ${status}${foreignHint}`);
+          // a JSON-RPC answer has no Retry-After header, so the outage says it in the body
+          result = { ...body, code: status, ...(status === 503 ? { retry_after: STORE_RETRY_AFTER_S } : {}) };
         }
         return rpcResult(msg.id, {
           content: contentFor(isBounce ? markRefused(result) : result),
@@ -1163,7 +1165,7 @@ async function handleMessage(msg, ctx) {
         // words; anything else is "the office tripped" and FAULT_LOGGED.
         if (isStoreUnreachable(e)) {
           faultLogged(`mcp ${name}: the store went away`, e);
-          return refusal(msg.id, { error: "bounce", code: 503, defect: STORE_LOST, hint: writeShaped(name, args) ? ACT_RETRY : READ_RETRY }, { compact: true });
+          return refusal(msg.id, { error: "bounce", code: 503, defect: STORE_LOST, hint: writeShaped(name, args) ? ACT_RETRY : READ_RETRY, retry_after: STORE_RETRY_AFTER_S }, { compact: true });
         }
         return refusal(msg.id, { error: "bounce", defect: "the office tripped", hint: faultLogged(`mcp ${name}: the office tripped`, e) }, { compact: true });
       }

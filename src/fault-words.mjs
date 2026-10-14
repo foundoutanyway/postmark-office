@@ -17,6 +17,10 @@ export const ACT_RETRY = "the office lost its connection to the town's store whi
 // What tripped is the defect, and this is the hint. The error itself is in the office's log.
 export const FAULT_LOGGED = "nothing in your request caused it. What failed is in the office's log, not in this answer; try again shortly, and if it keeps happening, tell the town.";
 
+// How long a lost store asks a caller to wait: REST's Retry-After header, and
+// the MCP body's `retry_after` (a JSON-RPC answer carries no header).
+export const STORE_RETRY_AFTER_S = 30;
+
 export const isHttpStatus = (code) => Number.isInteger(code) && code >= 100 && code <= 599;
 
 // What an error said, for the LOG only: a child's stderr when it printed one

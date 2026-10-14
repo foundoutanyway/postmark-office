@@ -19,6 +19,9 @@
 //   votes.mjs § votesAvailable          says yes, so read_votes reaches its catch
 //   world.mjs § worldSay (a berth)      throws inside the say's own try
 //   world.mjs § callWorldTool           throws (a read domain's tool call)
+//   world.mjs § worldSay / worldSayHuman throw inside the say's own try (a resident, a human)
+//   world-apex.mjs § worldApex          returns a foreign bounce that still carries pg's hint
+//   declare-exec.mjs                    exports mintRefusal, and its main() is commented out
 //   fund-exec / gift-exec               export classifyFatal, and their main() is commented out
 //
 // The hook refuses to load a module whose anchor is not there exactly once, so a
@@ -62,7 +65,9 @@ const EDITS = {
   "/src/gangway-door.mjs": [[null, "export { runUnderTownLock as __runUnderTownLock };"]],
   "/src/settle-join.mjs": [[null, "export { runUnderTownLock as __runUnderTownLock };"]],
   "/src/standing-door.mjs": [[null, "export { runUnderTownLock as __runUnderTownLock };"]],
-  "/src/world-apex.mjs": [["export async function worldApex(args = {}, key = null, ctx = {}) {", "if (process.env.SYNTH_THROW) ${THROW}"]],
+  "/src/world-apex.mjs": [["export async function worldApex(args = {}, key = null, ctx = {}) {",
+    "if (process.env.SYNTH_THROW) ${THROW} if (process.env.SYNTH_RETURN) return JSON.parse(process.env.SYNTH_RETURN);"]],
+  "/src/declare-exec.mjs": [["main().catch((e) => { console.error(String(e?.stack ?? e)); process.exit(1); });", "export { mintRefusal }; //", "replace"]],
   "/src/votes.mjs": [["export function votesAvailable(clone) {", "if (process.env.SYNTH_THROW) return true;"],
     ["export async function voteList(clone, { env = process.env } = {}) {", "if (process.env.SYNTH_THROW) ${THROW}"]],
   // the two children whose last word is classifyFatal's: loaded as modules, not run
@@ -70,7 +75,9 @@ const EDITS = {
   "/src/gift-exec.mjs": [["main().catch((e) => { console.error(String(e?.stack ?? e)); process.exit(1); });", "export { classifyFatal }; //", "replace"]],
   "/src/world.mjs": [["const rulesFirst = await visitorRulesGate(key, args, { speaking: Boolean(text.trim()) });",
     "if (process.env.SYNTH_THROW) ${THROW}", "before"],
-    ["export async function callWorldTool(name, args = {}, key = null, ctx = {}) {", "if (process.env.SYNTH_WORLD_TOOL) ${THROW.replace("SYNTH_THROW", "SYNTH_WORLD_TOOL")}"]],
+    ["export async function callWorldTool(name, args = {}, key = null, ctx = {}) {", "if (process.env.SYNTH_WORLD_TOOL) ${THROW.replace("SYNTH_THROW", "SYNTH_WORLD_TOOL")}"],
+    ["const r = text.trim() ? await voices.say(choice.handle, text,", "if (process.env.SYNTH_SAY) ${THROW.replace("SYNTH_THROW", "SYNTH_SAY")}", "before"],
+    ["const r = text.trim() ? await voices.say(speaker, text, { standAs,", "if (process.env.SYNTH_SAY) ${THROW.replace("SYNTH_THROW", "SYNTH_SAY")}", "before"]],
 };
 export async function load(url, context, nextLoad) {
   const r = await nextLoad(url, context);
@@ -174,7 +181,8 @@ async function mcpCall(name, args) {
 for (const [name, expect] of Object.entries({
   "pg-hint": (a) => { assert.equal(a.code, 500); assert.match(a.hint, /"42P01", which is not an HTTP status/); assert.match(a.hint, /What failed is in the office's log/); },
   "codeless": (a) => { assert.equal(a.defect, "the office tripped"); assert.equal(a.hint, FAULT_LOGGED); },
-  "lost-session": (a) => { assert.equal(a.code, 503); assert.equal(a.defect, STORE_LOST); assert.equal(a.hint, READ_RETRY, "a read is told it is safe to repeat"); },
+  "lost-session": (a) => { assert.equal(a.code, 503); assert.equal(a.defect, STORE_LOST); assert.equal(a.hint, READ_RETRY, "a read is told it is safe to repeat");
+    assert.equal(a.retry_after, 30, "a JSON-RPC answer has no Retry-After header, so the body says it"); },
 })) {
   test(`POS-573 MCP world (read): a ${name} error stays out of the answer, and in the log`, async () => {
     const { value: r, log } = await logged(() => withEnv({ SYNTH_THROW: JSON.stringify(SYNTHETIC[name]) }, () => mcpCall("world", {})));
@@ -307,3 +315,61 @@ for (const [child, defect] of [["src/fund-exec.mjs", "the receipt refused"], ["s
     assert.equal(classifyFatal("FATAL: the ledger is behind the mail").code, 409, "a classified fatal still answers in its own words");
   });
 }
+
+// ── the review of #525 ──────────────────────────────────────────────────────
+
+// THE FLIP: drop the hint from the answer's log line.
+test("POS-573 MCP: a foreign bounce's own hint stays out of the answer and goes to the log, as REST's notAStatus does", async () => {
+  const s = SYNTHETIC["pg-hint"];
+  const { value: r, log } = await logged(() => withEnv({ SYNTH_RETURN: JSON.stringify({ error: "bounce", code: s.code, hint: s.hint }) }, () => mcpCall("world", {})));
+  assert.equal(r.answer.code, 500);
+  keepsOut(r.answer, [s.hint], "a returned foreign bounce");
+  logSays(log, [s.hint], "a returned foreign bounce");
+});
+
+// THE FLIP: say's resident and human bounces back to no code (REST answered them 422).
+for (const [who, run] of [
+  ["worldSay (a resident)", async () => (await load("src/world.mjs")).worldSay({ text: "hello", handle: "hintleaks" }, { household: "hh:hint-leaks", handles: new Set(["hintleaks"]) })],
+  ["worldSayHuman", async () => (await load("src/world.mjs")).worldSayHuman({ text: "hello", human: true }, { household: "hh:hint-leaks", handles: new Set(["hintleaks"]), human: "hint-leaks" })],
+]) {
+  test(`POS-578 world.mjs § ${who}: a tripped say is the office's 500, its error in the log`, async () => {
+    const s = SYNTHETIC["codeless"];
+    const { value, log } = await logged(() => withEnv({ SYNTH_SAY: JSON.stringify(s) }, run));
+    assert.equal(value.error, "bounce", JSON.stringify(value).slice(0, 300));
+    assert.equal(value.defect, "the world door tripped", JSON.stringify(value).slice(0, 300));
+    assert.equal(value.code, 500, "not the request's 422");
+    assert.equal(value.hint, FAULT_LOGGED);
+    keepsOut(value, secretsOf(s), who);
+    logSays(log, secretsOf(s), who);
+  });
+}
+
+// THE FLIPS: each rebuild's foreign-code line out.
+for (const [where, mod, fn] of [["world-apex.mjs § actCaught", "src/world-apex.mjs", "actCaught"], ["household-apex.mjs § householdActCaught", "src/household-apex.mjs", "householdActCaught"]]) {
+  test(`POS-573 ${where}: an act's foreign error keeps only its code; a refusal keeps its words`, async () => {
+    const caught = (await load(mod))[fn];
+    const s = SYNTHETIC["pg-hint"];
+    const { value, log } = await logged(() => caught(Object.assign(new Error(s.message), s), { did: "an act" }));
+    assert.deepEqual(value, { error: "bounce", code: "42P01", did: "an act" });
+    logSays(log, secretsOf(s), where);
+    const refusal = SYNTHETIC["refusal-409"];
+    const kept = caught(Object.assign(new Error(refusal.message), refusal), {});
+    assert.equal(kept.defect, "a synthetic refusal");
+    assert.equal(kept.hint, "the fixture's own hint");
+  });
+}
+
+// THE FLIP: mintRefusal back to rebuilding any error that is not a foreign code.
+test("POS-578 declare-exec.mjs § mintRefusal: a codeless throw in the mint path is the office's 500, never its message", async () => {
+  const { mintRefusal } = await load("src/declare-exec.mjs");
+  for (const e of [new TypeError("Cannot read properties of undefined (reading 'slug') at /srv/postmark-office/src/ceremony.mjs:88 (synthetic)"),
+    new Error("Connection terminated unexpectedly (synthetic)")]) {
+    const { value, log } = await logged(() => mintRefusal(e));
+    assert.deepEqual(value, { error: { code: 500, field: null, defect: "the declaration pass tripped", hint: FAULT_LOGGED } });
+    keepsOut(value, [e.message], "mintRefusal");
+    logSays(log, [e.message], "mintRefusal");
+  }
+  const refusal = SYNTHETIC["refusal-409"];
+  assert.deepEqual(mintRefusal(Object.assign(new Error(refusal.message), refusal)),
+    { error: { code: 409, field: null, defect: "a synthetic refusal", hint: "the fixture's own hint" } });
+});

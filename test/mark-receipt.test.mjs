@@ -78,6 +78,39 @@ test("locked: the candle ruled for it, and the receipt does not pretend it is on
   assert.match(r.says, /it reaches the world at the settlement that carries that candle/);
 });
 
+// ── A CANDLE A SETTLEMENT HAS CLOSED (Wright, on office #539) ───────────────
+//
+// A swept mark keeps a locked claim as its newest row. Once a settlement has
+// closed that candle, "it reaches the world at the settlement that carries that
+// candle" is about the past. THE FLIP: drop the `closed` branch and the first
+// two of these red.
+
+test("locked at a candle a settlement has closed, and carried: past tense, names the settlement, says it is gone", () => {
+  const r = receiptFrom({ id: ID, canon: null, published_at: S59, settlement: S59, settled_window: 180,
+    claims: [claim({ status: "locked", window_id: 174 })] });
+  assert.equal(r.status, "locked");
+  assert.match(r.says, /^locked at candle 174 and carried to the world at S59 \(5c2321ae\), but the world does not hold it now: /);
+  assert.match(r.says, /by a withdrawal or by the sweep/);
+  assert.doesNotMatch(r.says, /it reaches the world/, "no promise about a settlement that already ran");
+  assert.equal(r.settlement_sha, S59.sha);
+});
+
+test("locked at a candle a settlement has closed, with no carried row: says so, and invents no S-number", () => {
+  const r = receiptFrom({ id: ID, canon: null, settlement: S59, settled_window: 174,
+    claims: [claim({ status: "locked", window_id: 174 })] });
+  assert.match(r.says, /^locked at candle 174, and a settlement has closed that candle since, but the world does not hold this mark now: /);
+  assert.doesNotMatch(r.says, /carried to the world at S/);
+  assert.doesNotMatch(r.says, /it reaches the world/);
+});
+
+test("locked at a candle no settlement has closed yet, or with no settled window to read: the sentence is unchanged", () => {
+  for (const settled_window of [173, null, undefined]) {
+    const r = receiptFrom({ id: ID, canon: null, settlement: S59, settled_window,
+      claims: [claim({ status: "locked", window_id: 174 })] });
+    assert.match(r.says, /it reaches the world at the settlement that carries that candle/, String(settled_window));
+  }
+});
+
 // ── the three absences, three sentences (walk #7 item 4) ────────────────────
 
 test("PUBLISHED names the settlement that carried it, by number AND sha", () => {

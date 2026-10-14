@@ -320,7 +320,7 @@ export function receiptFrom(records = {}) {
   const {
     id = null, canon = null, published_at = null, claims = null,
     sketchbook = null, withdrawn = false, settlement = null, site_pin = null,
-    terrain = false,
+    terrain = false, settled_window = null,
   } = records;
 
   // ── 0 · TERRAIN IS NOT A MARK (repaired 2026-09-07, reviewer-found) ───────
@@ -417,6 +417,26 @@ export function receiptFrom(records = {}) {
     };
   }
   if (row?.status === "locked") {
+    // A CANDLE A SETTLEMENT HAS ALREADY CLOSED (Wright, on office #539). Canon
+    // does not hold the mark, but the record says a settlement has closed its
+    // candle, so "it reaches the world at the settlement that carries that
+    // candle" is a promise about the past: a swept mark (little-bird's box of
+    // nine, swept at S86) still has a locked claim as its newest row.
+    // `settled_window` is the newest candle a settlement closed; only a door that
+    // can read it passes it, and without it the sentence stays as it was.
+    const closed = settled_window != null && Number.isFinite(Number(settled_window))
+      && row.window_id != null && Number(row.window_id) <= Number(settled_window);
+    if (closed) {
+      return {
+        ...base, status: "locked",
+        crossing: published_at ?? settlement ?? null,
+        settlement_sha: published_at?.sha ?? settlement?.sha ?? null,
+        says: (published_at
+          ? `locked at candle ${row.window_id} and carried to the world at S${published_at.s} (${String(published_at.sha).slice(0, 8)}), but the world does not hold it now`
+          : `locked at candle ${row.window_id}, and a settlement has closed that candle since, but the world does not hold this mark now`)
+          + ": it left after it was ruled, by a withdrawal or by the sweep (a commons mark with no escrow behind it is unpublished at a settlement)",
+      };
+    }
     return {
       ...base, status: "locked",
       crossing: settlement ?? null,

@@ -214,7 +214,9 @@ export async function carriedOnTick(client, repo) {
  *                    `no \`…\` table yet` (absent)     refused prereq:migration
  *   chests           `stocked N …`                     ok
  *                    `not stocked — the law at S<n>
- *                     declares no chest class`         ok: nothing to stock
+ *                     declares no chest class`         ok prereq:chest_class: nothing to stock
+ *                                                      yet; the reason keeps it visible, so the
+ *                                                      step reads `stocked N` once the class lands
  *                    `not stocked — the store holds
  *                     no settlement whose law is
  *                     ingested`                        refused prereq:law
@@ -236,7 +238,7 @@ export const SOFT_STEP_RULES = Object.freeze({
   amends: ROWS_STEP,
   chests: [
     [/^stocked \d+/, "ok"],
-    [/^not stocked — the law at S\d+ declares no chest class/, "ok"],
+    [/^not stocked — the law at S\d+ declares no chest class/, "ok prereq:chest_class"],
     [/^not stocked — the store holds no settlement whose law is ingested/, "refused prereq:law"],
     [/^not stocked this tick — the carried step did not settle/, "refused prereq:carried"],
   ],

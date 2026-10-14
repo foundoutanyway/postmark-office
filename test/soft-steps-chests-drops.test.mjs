@@ -18,7 +18,9 @@
 // ONE MAPPING WAS A DECISION, not a reading (Wright 10-14): public world main
 // declares no chest class (the candy heist is the private spire fork), so on
 // prod the chests step answers "not stocked — the law at S<n> declares no chest
-// class" on every tick. That is the honest empty, like "stocked 0": ok. A store
+// class" on every tick. That is the honest empty, like "stocked 0": ok, with the
+// reason prereq:chest_class kept on the receipt so the dress rehearsal can watch it
+// turn into "stocked N" once the class lands. A store
 // with no ingested law at all is a broken prerequisite: refused prereq:law.
 //
 // THE CAN-FAIL FLIPS: drop `keep_step chests` or `keep_step drops` from
@@ -51,7 +53,12 @@ test("chests: the step's own lines, from its own functions, read as ruled", asyn
   // ok: the law declares no chest class (prod's public world, every tick)
   const noClass = await stockChests(lawClient([LAW_ROW]));
   assert.equal(noClass.line, "chests: not stocked — the law at S108 declares no chest class — nothing to stock");
-  assert.equal(softStepStatus(noClass.line, "chests"), "ok", "the honest empty: nothing to stock is not a failure");
+  assert.equal(softStepStatus(noClass.line, "chests"), "ok prereq:chest_class",
+    "the honest empty: ok, and the reason keeps it visible until the class lands (Wright 10-14)");
+  const r = buildReceipt({ stepsText: "chests\tok\tprereq:chest_class", source: "scheduled", run: "t", started: "2026-10-14T19:07:00Z", at: "2026-10-14T19:08:00Z", exit: 0 });
+  assert.deepEqual(r.steps.chests, { s: "ok", r: "prereq:chest_class" }, "the receipt keeps the reason on an ok step");
+  assert.deepEqual(judgeKeep(appendReceipt("", r), { steps: ["chests"], n: 1, staleMinutes: 45, now: Date.parse("2026-10-14T19:09:00Z") }), [],
+    "and the roll-call reads it as ok: no alarm");
   // refused prereq:law: no ingested law at all
   const noLaw = await stockChests(lawClient([]));
   assert.match(noLaw.line, /^chests: not stocked — the store holds no settlement whose law is ingested/);

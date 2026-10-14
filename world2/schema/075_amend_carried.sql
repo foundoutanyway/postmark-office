@@ -20,8 +20,9 @@
 -- ── WHICH SETTLEMENT CARRIED IT (G2, G8) ────────────────────────────────────
 --
 -- The lowest `settlements.number` whose `window_id` is at or after the amend's
--- window, and ONLY when git proves it: the mark's file changed between S(n-1)
--- and S(n). The writer is `world2/tools/amend-carried.mjs`, run on the keep tick
+-- window, and ONLY when git proves that settlement carried THIS amend: the mark's
+-- file changed between S(n-1) and S(n), and S(n)'s file holds the amend's own
+-- content (its `date`, or for an undated amend its body). The writer is `world2/tools/amend-carried.mjs`, run on the keep tick
 -- beside `mark_carried`'s (settlements-backfill.mjs --apply), and once with
 -- --apply --prod for history. An unproven candidate gets NO row and a named line.
 --
@@ -58,6 +59,12 @@
 -- (the writer and its verify), world2/tools/settlements-backfill.mjs (the tick).
 
 BEGIN;
+
+-- The FK onto claims(id) and settlements(number) takes SHARE ROW EXCLUSIVE on
+-- both until COMMIT: door writes on claims queue behind it, and it queues behind
+-- a clearing. Give up in 5 s rather than stall the doors (072's guard); apply
+-- away from the 06:00/18:00Z clearing.
+SET LOCAL lock_timeout = '5s';
 
 CREATE TABLE IF NOT EXISTS amend_carried (
   claim       uuid PRIMARY KEY REFERENCES claims(id),

@@ -10,28 +10,40 @@
 // and the sentence "published at S65, last amended at S104".
 //
 // THE RIG, mark-carried.test.mjs's: a tagged world repo built here (one ANNOTATED
-// settlement/S<n> per crossing) and a real Postgres with the whole schema.
+// settlement/S<n> per crossing) and a real Postgres with the whole schema. Every
+// mark file carries a frontmatter `date`, and every door amend restamps it, as the
+// door does (mark-render.mjs: "Every door amend restamps `date`").
 //
-//   S1  window 101  keith/the-stool, lupi/the-step and wright/the-lamp added
-//   S2  window 102  wright/the-gate added; nothing touches the stool or the step
-//   S3  window 104  the stool's file amended (window 103 had no settlement)
-//   S4  window 105  the step's file changed by a hand commit (POS-446's class)
-//   S5  window 106  the lamp's file changed (a marks-ingest amend follows it)
+//   S1  window 101  keith/the-stool, lupi/the-step, wright/the-lamp added (date D0)
+//   S2  window 102  wright/the-gate added; the step's file REWRITTEN BY A MIGRATION
+//                   (key order, as a0c779a0 did at S64 and the un-nesting 857dc401
+//                   at S99): its bytes change, nobody's amend lands
+//   S3  window 104  the stool's first amend lands (window 103 had no settlement)
+//   S4  window 105  the step's amend lands, by a hand commit (POS-446's class)
+//   S5  window 106  the lamp's file changed by hand (a marks-ingest amend follows)
+//   S6  window 107  the stool's second amend lands
 //
 // THE DOCKET (door amends are locked claims with `supersedes` set):
-//   stool-a  candle 103 → S3, which changed the stool's file: PROVEN, written
-//   step-a   candle 102 → S2, which did not change the step's file: UNPROVEN, no row
+//   stool-a  candle 103 → S3, whose file holds its date: PROVEN, written
+//   step-a   candle 102 → S2, which changed the file but holds D0, not its date:
+//            UNPROVEN, no row (review-612 F1: the false-positive class)
+//   stool-b  candle 107 → S6: PROVEN; the stool's LAST amend
 //   lamp-i   candle 106, `data._ingested_from`: a file-side change, never planned
 //   lamp-b   candle 108, past every settled window: UNSETTLED
 //   stool-p  pending at candle 107: not a version
 //
-// THE CAN-FAIL FLIP: in amend-carried.mjs § planAmendsCarried, drop the proof
-// (`const ok = prev != null`). "APPLY writes the proven amend and nothing else"
-// goes red: step-a is written at S2, a settlement that never carried it.
+// THE CAN-FAIL FLIPS:
+//   · amend-carried.mjs § proofFrom: return true once the blob changed (the old
+//     proof). APPLY reds: step-a is written at S2, which carried no amend.
+//   · world2-claims.mjs § lastAmendedRow: ORDER BY a.settlement ASC. THE TWO
+//     DOORS reds: both name S3, the first amend, not the last.
+//   · settlements-backfill.mjs § amendsOnTick: rethrow in the catch. The
+//     throwing-record case and the CLI exit-code case red.
+//   · recordAmendsCarried: cap on every door amend with no row. THE CAP reds.
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,7 +51,8 @@ import { fileURLToPath } from "node:url";
 
 import { startStore } from "./helpers/embedded-store.mjs";
 import {
-  planAmendsCarried, proofFrom, recordAmendsCarried, verifyAmendsCarried, amendsLine, isDoorAmend, HAND_CARRIED, TICK_CAP,
+  planAmendsCarried, proofFrom, holdsAmend, markFileParts, recordAmendsCarried, verifyAmendsCarried, amendsLine, isDoorAmend,
+  HAND_CARRIED, TICK_CAP,
 } from "../world2/tools/amend-carried.mjs";
 import { amendsOnTick } from "../world2/tools/settlements-backfill.mjs";
 import { readMarkReceipt } from "../src/mark-receipt.mjs";
@@ -47,7 +60,8 @@ import { twinReceipt } from "../src/world2-serve.mjs";
 import { __setPoolForTest } from "../src/world2-claims.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const MIGRATION = join(HERE, "..", "world2", "schema", "075_amend_carried.sql");
+const OFFICE = join(HERE, "..");
+const MIGRATION = join(OFFICE, "world2", "schema", "075_amend_carried.sql");
 
 // ── the world ────────────────────────────────────────────────────────────────
 
@@ -60,28 +74,37 @@ const git = (...a) => execFileSync("git", ["-C", world, ...a], {
 });
 const put = (p, t) => { const f = join(world, p); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, t); };
 const markPath = (id) => `WORLD/marks/${id}/mark.md`;
-const body = (id, note) => `---\nby: ${id.split("/")[0]}\n---\n${id}: ${note}\n`
+// Each body unlike every other (`--follow` pairs look-alikes), and the date line
+// is the amend's own.
+const textOf = (id, note) => `${id}: ${note}\n`
   + [...id].map((ch, i) => `${i} ${ch.charCodeAt(0) * (i + 7)} ${id.split("").reverse().join("")}`).join("\n") + "\n";
+const record = (id, { date, note, dateFirst = false }) => {
+  const front = dateFirst ? `date: ${date}\nby: ${id.split("/")[0]}` : `by: ${id.split("/")[0]}\ndate: ${date}`;
+  return `---\n${front}\n---\n\n${textOf(id, note)}`;
+};
 const ids = new Set();
-const SHA = {};
-function settle(n, { add = [], amend = [] } = {}) {
-  for (const id of add) { put(markPath(id), body(id, "declared")); ids.add(id); }
-  for (const id of amend) put(markPath(id), body(id, `amended at S${n}`));
+const SHA = {}, DATE = {};
+function settle(n, files = {}) {
+  for (const [id, rec] of Object.entries(files)) { put(markPath(id), record(id, rec)); ids.add(id); }
   put("WORLD/world-state.json", JSON.stringify({ marks: [...ids].sort().map((id) => ({ id })) }, null, 1));
   git("add", "-A");
   git("-c", "user.name=crossing", "-c", "user.email=c@t.invalid", "commit", "-q", "--allow-empty", "-m", `settlement: S${n}`);
   git("-c", "user.name=the Worldkeeper", "-c", "user.email=k@t.invalid", "tag", "-a", "-m", `S${n}`, `settlement/S${n}`);
   SHA[n] = git("rev-parse", `settlement/S${n}^{commit}`).trim();
+  DATE[n] = new Date(clock);
   clock += 12 * 3600e3;
 }
-const STOOL = "keith/the-stool", STEP = "lupi/the-step", LAMP = "wright/the-lamp";
+const STOOL = "keith/the-stool", STEP = "lupi/the-step", LAMP = "wright/the-lamp", GATE = "wright/the-gate";
+const D0 = "2026-09-20T05:00:00.000Z";
+const D_STOOL_A = "2026-09-21T01:00:00.000Z", D_STOOL_B = "2026-09-22T17:00:00.000Z", D_STEP = "2026-09-20T15:00:00.000Z";
 git("init", "-q", "-b", "main");
-settle(1, { add: [STOOL, STEP, LAMP] });
-settle(2, { add: ["wright/the-gate"] });
-settle(3, { amend: [STOOL] });
-settle(4, { amend: [STEP] });
-settle(5, { amend: [LAMP] });
-const WINDOW_OF = { 1: 101, 2: 102, 3: 104, 4: 105, 5: 106 };
+settle(1, { [STOOL]: { date: D0, note: "declared" }, [STEP]: { date: D0, note: "declared" }, [LAMP]: { date: D0, note: "declared" } });
+settle(2, { [GATE]: { date: D0, note: "declared" }, [STEP]: { date: D0, note: "declared", dateFirst: true } });
+settle(3, { [STOOL]: { date: D_STOOL_A, note: "amended once" } });
+settle(4, { [STEP]: { date: D_STEP, note: "stepped" } });
+settle(5, { [LAMP]: { date: D0, note: "rewritten by hand" } });
+settle(6, { [STOOL]: { date: D_STOOL_B, note: "amended twice" } });
+const WINDOW_OF = { 1: 101, 2: 102, 3: 104, 4: 105, 5: 106, 6: 107 };
 
 // The store is started before any test is declared: a top-level await between
 // tests lets the root's `after` hooks run early, and the world above would go.
@@ -105,6 +128,12 @@ test("plan: an unproven candidate is named with its settlement and gets no row",
   assert.deepEqual(plan.map((p) => [p.state, p.candidate, p.prev]), [["unproven", 3, 2]]);
 });
 
+test("plan: the proof is handed the amend's own date and body", () => {
+  const seen = [];
+  planAmendsCarried({ amends: [amend({ date: D_STOOL_A, body: "b" })], settlements: SETTLED, proof: (...a) => { seen.push(a); return true; } });
+  assert.deepEqual(seen, [[STOOL, 3, 2, { date: D_STOOL_A, body: "b" }]]);
+});
+
 test("plan: past every settled window is unsettled; a claim with a row is never planned again", () => {
   assert.equal(planAmendsCarried({ amends: [amend({ window_id: 120 })], settlements: SETTLED, proof: proves(true) })[0].state, "unsettled");
   assert.deepEqual(planAmendsCarried({ amends: [amend()], have: new Set(["a"]), settlements: SETTLED, proof: proves(true) }), []);
@@ -124,7 +153,7 @@ test("plan: POS-446's five are 075's to write, never the window rule's", () => {
   }
 });
 
-test("POS-446 · the tool's five and 075's five are the same five, at the same candles", () => {
+test("POS-446 · the tool's five and 075's five are the same five, at the same candles; 075 waits at most 5 s for its locks", () => {
   const sql = readFileSync(MIGRATION, "utf8");
   const inSql = [...sql.matchAll(/ARRAY\['([^']+)', '(\d+)'\]/g)].map((m) => `${m[1]}@${m[2]}`).sort();
   assert.deepEqual(inSql, HAND_CARRIED.map((h) => `${h.mark}@${h.window}`).sort());
@@ -132,16 +161,42 @@ test("POS-446 · the tool's five and 075's five are the same five, at the same c
     "berthillon/cone-peche-de-vigne-2026-08-27", "berthillon/cone-poire-williams-2026-09-15",
     "lupi/the-unworn-step", "vermillion/pagani-huayra", "vermillion/pagani-zonda"]);
   assert.match(sql, /'10e5b194acffedab9c5a6177ba6dc7f4360fcf96'/, "the hand commit, whole");
+  // review-612 F4: the FK takes SHARE ROW EXCLUSIVE on claims and settlements.
+  assert.match(sql, /^BEGIN;\s*(?:--[^\n]*\n\s*)*SET LOCAL lock_timeout = '5s';\s*(?:--[^\n]*\n\s*)*CREATE TABLE IF NOT EXISTS amend_carried/m,
+    "the lock timeout is the transaction's first statement, before the table and its FKs");
 });
 
-test("the proof: a settlement proves an amend only when it changed the mark's file", () => {
+test("holdsAmend: a dated amend is proven by its own date, an undated one by its body; nothing else proves", () => {
+  const text = record(STOOL, { date: D_STOOL_A, note: "amended once" });
+  assert.equal(holdsAmend(text, { date: D_STOOL_A }), true);
+  assert.equal(holdsAmend(text, { date: "2026-09-21T01:00:00Z" }), true, "compared as an instant");
+  assert.equal(holdsAmend(text, { date: D0 }), false, "another version's date");
+  assert.equal(holdsAmend(text, { body: textOf(STOOL, "amended once") }), true);
+  assert.equal(holdsAmend(text, { body: "something else" }), false);
+  assert.equal(holdsAmend(text, {}), false, "an amend with neither proves nothing");
+  assert.equal(holdsAmend("no frontmatter", { body: "no frontmatter" }), false);
+  assert.deepEqual(markFileParts(`---\r\nby: keith\r\ndate: "${D0}"\r\n---\r\n\r\nhi\r\n`), { date: D0, body: "\nhi\n" });
+});
+
+test("the proof: S<n> must change the file AND hold this amend — a migration's rewrite is no proof (review-612 F1)", () => {
   const prove = proofFrom(world);
-  assert.equal(prove(STOOL, 3, 2), true, "S3 changed the stool");
-  assert.equal(prove(STOOL, 2, 1), false, "S2 did not");
-  assert.equal(prove(STEP, 2, 1), false, "the step's candidate S2 did not change it");
-  assert.equal(prove(STEP, 4, 3), true, "S4 did, by hand");
-  assert.equal(prove("nobody/never-was", 3, 2), false, "no file is no proof");
-  assert.equal(prove(STOOL, 99, 3), false, "no tag is no proof");
+  assert.equal(prove(STOOL, 3, 2, { date: D_STOOL_A }), true, "S3 carried stool-a");
+  assert.equal(prove(STOOL, 3, 2, { date: D_STOOL_B }), false, "S3 changed the stool, but not to stool-b");
+  assert.equal(prove(STOOL, 6, 5, { date: D_STOOL_B }), true, "S6 carried stool-b");
+  assert.equal(prove(STEP, 2, 1, { date: D_STEP }), false, "S2 rewrote the step's file (key order) without carrying step-a");
+  assert.equal(prove(STEP, 4, 3, { date: D_STEP }), true, "S4 did carry it, by hand");
+  assert.equal(prove(STOOL, 2, 1, { date: D0 }), false, "a settlement that did not change the file proves nothing, even when the date matches");
+  assert.equal(prove("nobody/never-was", 3, 2, { date: D0 }), false, "no file is no proof");
+  assert.equal(prove(STOOL, 99, 3, { date: D_STOOL_A }), false, "no tag is no proof");
+});
+
+test("THE TICK STEP NEVER THROWS: a failing record is one non-fatal line (review-612 F2)", async () => {
+  const t = await amendsOnTick(null, world, { record: async () => { throw new Error("boom"); } });
+  assert.equal(t.verdict, "error");
+  assert.equal(t.line, "amends: NOT recorded (non-fatal) — boom");
+  const absent = await amendsOnTick(null, world, { record: async () => { throw Object.assign(new Error("no table"), { code: "42P01" }); } });
+  assert.equal(absent.verdict, "absent");
+  assert.match(absent.line, /075 not applied/);
 });
 
 // ── the store ────────────────────────────────────────────────────────────────
@@ -152,33 +207,35 @@ const rowsNow = () => owner(async (c) => (await c.query("SELECT mark, settlement
   .map((r) => `${r.mark}@S${r.settlement}${r.by_hand ? " by hand" : ""}`));
 
 const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const C = { stool0: uuid(1), stoolA: uuid(2), step0: uuid(3), stepA: uuid(4), lamp0: uuid(5), lampI: uuid(6), lampB: uuid(7), stoolP: uuid(8) };
+const C = { stool0: uuid(1), stoolA: uuid(2), step0: uuid(3), stepA: uuid(4), lamp0: uuid(5), lampI: uuid(6), lampB: uuid(7), stoolP: uuid(8), stoolB: uuid(9) };
 
 async function seed() {
   await owner(async (c) => {
     for (let w = 101; w <= 108; w++) {
       const closes = new Date(Date.parse("2026-09-20T06:00:00Z") + (w - 101) * 12 * 3600e3);
       await c.query("INSERT INTO windows (id, opens_at, closes_at, status) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING",
-        [w, new Date(closes - 12 * 3600e3), closes, w <= 106 ? "closed" : "open"]);
+        [w, new Date(closes - 12 * 3600e3), closes, w <= 107 ? "closed" : "open"]);
     }
+    // The tags' own dates, so a settlements-backfill run over this store agrees.
     for (const [n, w] of Object.entries(WINDOW_OF))
-      await c.query("INSERT INTO settlements (number, tag_sha, published_at, window_id) VALUES ($1, $2, $3, $4) ON CONFLICT (number) DO NOTHING",
-        [Number(n), SHA[n], new Date(Date.parse("2026-09-20T06:00:30Z") + (Number(n) - 1) * 12 * 3600e3), w]);
-    const claim = (id, slug, w, status, supersedes = null, data = {}) => c.query(
+      await c.query("INSERT INTO settlements (number, tag_sha, published_at, window_id, blessed_at) VALUES ($1, $2, $3, $4, $3) ON CONFLICT (number) DO NOTHING",
+        [Number(n), SHA[n], DATE[n], w]);
+    const claim = (id, slug, w, status, supersedes = null, data = {}, body = "a thing") => c.query(
       `INSERT INTO claims (id, window_id, class, claimant, household, status, decided_at, body, stake, data, slug, supersedes)
-       VALUES ($1, $2, 'thing', $3, $4, $5, now(), 'a thing', 1, $6, $7, $8) ON CONFLICT (id) DO NOTHING`,
-      [id, w, slug.split("/")[0], `hh:${slug.split("/")[0]}`, status, data, slug, supersedes]);
-    await claim(C.stool0, STOOL, 101, "locked");
-    await claim(C.step0, STEP, 101, "locked");
-    await claim(C.lamp0, LAMP, 101, "locked");
-    await claim(C.stoolA, STOOL, 103, "locked", C.stool0);
-    await claim(C.stepA, STEP, 102, "locked", C.step0);
+       VALUES ($1, $2, 'thing', $3, $4, $5, now(), $9, 1, $6, $7, $8) ON CONFLICT (id) DO NOTHING`,
+      [id, w, slug.split("/")[0], `hh:${slug.split("/")[0]}`, status, data, slug, supersedes, body]);
+    await claim(C.stool0, STOOL, 101, "locked", null, { date: D0 });
+    await claim(C.step0, STEP, 101, "locked", null, { date: D0 });
+    await claim(C.lamp0, LAMP, 101, "locked", null, { date: D0 });
+    await claim(C.stoolA, STOOL, 103, "locked", C.stool0, { date: D_STOOL_A });
+    await claim(C.stepA, STEP, 102, "locked", C.step0, { date: D_STEP });
+    await claim(C.stoolB, STOOL, 107, "locked", C.stoolA, { date: D_STOOL_B });
     // lamp-b first: the twin reads the NEWEST claim to decide whether a mark is
     // carried, and a lamp whose newest claim is locked past the settled window
     // would read as locked, not published.
-    await claim(C.lampB, LAMP, 108, "locked", C.lamp0);
-    await claim(C.lampI, LAMP, 106, "locked", C.lamp0, { _ingested_from: { sha: SHA[5], ref: "settlement/S5" } });
-    await claim(C.stoolP, STOOL, 107, "pending", C.stoolA);
+    await claim(C.lampB, LAMP, 108, "locked", C.lamp0, { date: "2026-09-24T00:00:00.000Z" });
+    await claim(C.lampI, LAMP, 106, "locked", C.lamp0, { date: D0, _ingested_from: { sha: SHA[5], ref: "settlement/S5" } });
+    await claim(C.stoolP, STOOL, 107, "pending", C.stoolB, { date: "2026-09-23T00:00:00.000Z" });
     // the first carriage, as 049 records it
     for (const id of [STOOL, STEP, LAMP])
       await c.query("INSERT INTO mark_carried (mark, settlement, added_sha) VALUES ($1, 1, $2) ON CONFLICT (mark) DO NOTHING", [id, SHA[1]]);
@@ -189,39 +246,40 @@ test("FRESH STORE: 075 applied on empty claims writes no POS-446 row", { skip },
   assert.deepEqual(await rowsNow(), []);
 });
 
-test("APPLY writes the proven amend and nothing else; the line names the unproven one and its candidate", { skip }, async () => {
+test("APPLY writes the proven amends and nothing else; the migration-touched candidate is named unproven", { skip }, async () => {
   await seed();
   const r = await asApi((c) => recordAmendsCarried(c, world, { apply: true }));
   assert.equal(r.verdict, "ok");
-  assert.deepEqual(await rowsNow(), [`${STOOL}@S3`], "step-a's candidate S2 never changed its file, so no row");
-  assert.deepEqual(r.by_settlement, { 3: 1 });
-  assert.deepEqual([r.new, r.unproven, r.unsettled, r.hand], [1, 1, 1, 0]);
+  assert.deepEqual(await rowsNow(), [`${STOOL}@S3`, `${STOOL}@S6`],
+    "step-a's candidate S2 changed its file, but by a migration: it holds D0, not step-a's date, so no row");
+  assert.deepEqual(r.by_settlement, { 3: 1, 6: 1 });
+  assert.deepEqual([r.new, r.unproven, r.unsettled, r.hand], [2, 1, 1, 0]);
   const line = amendsLine(r);
-  assert.match(line, /^amends: wrote 1 \(S3: 1\); the table holds 1/);
+  assert.match(line, /^amends: wrote 2 \(S3: 1, S6: 1\); the table holds 2/);
   assert.match(line, /unproven: lupi\/the-step \(candle 102 → S2\)/);
 });
 
 test("a second apply writes nothing, and the pen holds no UPDATE or DELETE", { skip }, async () => {
   const r = await asApi((c) => recordAmendsCarried(c, world, { apply: true }));
   assert.equal(r.wrote, 0);
-  assert.deepEqual(await rowsNow(), [`${STOOL}@S3`]);
+  assert.deepEqual(await rowsNow(), [`${STOOL}@S3`, `${STOOL}@S6`]);
   await asApi(async (c) => {
     await assert.rejects(c.query("UPDATE amend_carried SET settlement = 4"), (e) => e.code === "42501");
     await assert.rejects(c.query("DELETE FROM amend_carried"), (e) => e.code === "42501");
   });
 });
 
-test("VERIFY re-proves every row, and reds on a row git does not prove", { skip }, async () => {
+test("VERIFY re-proves every row with the same proof, and reds on a row whose settlement only rewrote the file", { skip }, async () => {
   assert.equal((await asApi((c) => verifyAmendsCarried(c, world))).verdict, "ok");
   await owner((c) => c.query("INSERT INTO amend_carried (claim, mark, settlement) VALUES ($1, $2, 2)", [C.stepA, STEP]));
   const v = await asApi((c) => verifyAmendsCarried(c, world));
   assert.equal(v.verdict, "DRIFT");
   assert.deepEqual(v.disagree.map((d) => d.mark), [STEP]);
-  assert.match(v.disagree[0].why[0], /git does not prove S2 changed the file/);
+  assert.match(v.disagree[0].why[0], /git does not prove S2 carried this amend/);
   await owner((c) => c.query("DELETE FROM amend_carried WHERE claim = $1", [C.stepA]));
 });
 
-test("THE TWO DOORS read one row: the twin and 1.0 both say \"published at S1, last amended at S3\"", { skip }, async () => {
+test("THE TWO DOORS read one row, the LAST amend: both say \"published at S1, last amended at S6\" (review-612 F2)", { skip }, async () => {
   const { default: pg } = await import("pg");
   const p = new pg.Pool({ connectionString: store.url("office_api"), max: 2 });
   const env = { WORLD2_PG: process.env.WORLD2_PG, WORLD2_PG_URL: process.env.WORLD2_PG_URL };
@@ -229,12 +287,13 @@ test("THE TWO DOORS read one row: the twin and 1.0 both say \"published at S1, l
     const two = await twinReceipt(p, STOOL, { standing: true });
     assert.equal(two.status, "published");
     assert.equal(two.crossing.s, 1, "crossing stays the first carriage");
-    assert.deepEqual(two.last_amended, { s: 3, sha: SHA[3], at: "2026-09-21T06:00:30Z", window: 103 });
-    assert.equal(two.says, "published at S1, last amended at S3");
+    assert.deepEqual(two.last_amended, { s: 6, sha: SHA[6], at: DATE[6].toISOString().replace(/\.\d{3}Z$/, "Z"), window: 107 },
+      "two amends carried (S3, S6): the field names the later one");
+    assert.equal(two.says, "published at S1, last amended at S6");
 
     process.env.WORLD2_PG = "1"; process.env.WORLD2_PG_URL = store.url("office_api");
     __setPoolForTest(p);
-    const one = await readMarkReceipt(STOOL, { repo: world, canon: { id: STOOL }, publishedSha: SHA[5] });
+    const one = await readMarkReceipt(STOOL, { repo: world, canon: { id: STOOL }, publishedSha: SHA[6] });
     assert.deepEqual(one.last_amended, two.last_amended);
     assert.equal(one.says, two.says);
     assert.equal(one.crossing.s, 1);
@@ -253,11 +312,39 @@ test("THE TICK: settlements-backfill's amends step writes on the keep tick and j
   await owner((c) => c.query("TRUNCATE amend_carried"));
   const t = await asApi((c) => amendsOnTick(c, world));
   assert.equal(t.verdict, "ok");
-  assert.match(t.line, /^amends: wrote 1 \(S3: 1\)/);
-  const capped = await asApi((c) => recordAmendsCarried(c, world, { apply: true, cap: 0 }));
-  assert.equal(capped.verdict, "skipped");
-  assert.match(amendsLine(capped), /amend-carried\.mjs --apply/);
+  assert.match(t.line, /^amends: wrote 2 \(S3: 1, S6: 1\)/);
   assert.equal(TICK_CAP, 200);
+});
+
+test("THE CAP counts the rows a tick would write, not amends that will never get one (review-612 F3)", { skip }, async () => {
+  // Left with no row: step-a (unproven) and lamp-b (unsettled). Nothing to write,
+  // so a cap of 0 is not reached.
+  const quiet = await asApi((c) => recordAmendsCarried(c, world, { apply: true, cap: 0 }));
+  assert.equal(quiet.verdict, "ok", "two amends that can never be written must not hold the tick at SKIPPED");
+  assert.equal(quiet.wrote, 0);
+  // With the stool's two rows gone, two would be written, past a cap of 1.
+  await owner((c) => c.query("TRUNCATE amend_carried"));
+  const capped = await asApi((c) => recordAmendsCarried(c, world, { apply: true, cap: 1 }));
+  assert.equal(capped.verdict, "skipped");
+  assert.match(amendsLine(capped), /^amends: SKIPPED — 2 proven amends have no row, more than one tick carries \(cap 1\).*amend-carried\.mjs --apply/);
+  assert.deepEqual(await rowsNow(), []);
+  await asApi((c) => recordAmendsCarried(c, world, { apply: true }));
+  assert.deepEqual(await rowsNow(), [`${STOOL}@S3`, `${STOOL}@S6`]);
+});
+
+test("THE KEEP TICK'S EXIT CODE: a broken amends step is one line and settlements-backfill --apply still exits 0", { skip }, async () => {
+  await owner((c) => c.query("REVOKE SELECT ON amend_carried FROM office_api"));
+  try {
+    const run = spawnSync(process.execPath, ["world2/tools/settlements-backfill.mjs", "--apply", "--prod", "--quiet", "--world-repo", world, "--pg-url", store.url("office_api")],
+      { cwd: OFFICE, encoding: "utf8", env: { ...process.env, PGUSER: "", WORLD2_PG_URL: "" }, timeout: 120000 });
+    const out = `${run.stdout}\n${run.stderr}`;
+    assert.match(out, /amends: NOT recorded \(non-fatal\) — permission denied/, out);
+    assert.match(out, /carried: /, "the carried step ran before it");
+    assert.equal(run.status, 0, `the amends step never changes the tick's verdict:\n${out}`);
+  } finally {
+    await owner((c) => c.query("GRANT SELECT ON amend_carried TO office_api"));
+  }
+  assert.ok((await owner(async (c) => (await c.query("SELECT mark FROM mark_carried")).rows)).length >= 3, "the carried rows stand");
 });
 
 // ── POS-446's five, written by 075 itself (G5, G9) ───────────────────────────
@@ -333,7 +420,7 @@ test("075 NOT APPLIED: the tick says so in one line, and both doors disclose rat
     // 1.0 discloses the same way: null is never "never amended" when unread.
     process.env.WORLD2_PG = "1"; process.env.WORLD2_PG_URL = store.url("office_api");
     __setPoolForTest(p);
-    const one = await readMarkReceipt(STOOL, { repo: world, canon: { id: STOOL }, publishedSha: SHA[5] });
+    const one = await readMarkReceipt(STOOL, { repo: world, canon: { id: STOOL }, publishedSha: SHA[6] });
     assert.equal(one.last_amended, null);
     assert.equal(one.amends?.readable, false);
     assert.match(one.amends.reason, /075 not applied/);

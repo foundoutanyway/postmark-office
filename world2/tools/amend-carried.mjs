@@ -30,11 +30,15 @@
 // The candidate is the lowest settlement whose `window_id` is at or after the
 // amend's window: the crossing that closed it, or the first one past a window
 // no settlement closed (S104 closed 244; window 229 had none, so S94 is its
-// candidate). The candidate is written only when GIT PROVES IT: the mark's file,
-// at its filed path on each side (world-journal.mjs § filedPathOfAt), differs
-// between the settlement before it and the candidate. Measured on 10-14:
-// keith's stool changed in S103..S104 (a7215b3e), proven; berthillon's cone did
-// not change in S93..S94 (0 commits), so the rule writes no row for it. The
+// candidate). The candidate is written only when GIT PROVES IT CARRIED THIS
+// AMEND: the mark's file, at its filed path on each side (world-journal.mjs §
+// filedPathOfAt), differs between the settlement before it and the candidate,
+// AND the candidate's file holds the amend's own content: its frontmatter `date`
+// is the amend's (every door amend restamps it), or, for an undated amend, its
+// body is the claim's (review-612 F1: a migration that rewrites a file carries
+// nobody's amend). Measured on 10-14: keith's stool at S104 carries `date:
+// 2026-10-12T04:05:28.542Z`, his amend's, proven; berthillon's cone did not
+// change in S93..S94 (0 commits), so the rule writes no row for it. The
 // sweep never carried POS-446's five door amends; a hand commit did, at S100,
 // and 075 writes those five itself. A row is never a guess.
 //
@@ -87,8 +91,8 @@ export const isDoorAmend = (c) => c?.status === "locked" && c.supersedes != null
  *   amends       claim rows `{ id, slug, status, window_id, supersedes, ingested }`
  *   have         claim ids that already have a row
  *   settlements  `{ number, window_id }` rows
- *   proof        (mark, n, prev) → true | false: did S<n> change the mark's file
- *                against S<prev>
+ *   proof        (mark, n, prev, claim) → true | false: does S<n> hold THIS
+ *                amend (proofFrom below)
  */
 export function planAmendsCarried({ amends = [], have = new Set(), settlements = [], proof }) {
   const settled = settlements
@@ -104,7 +108,7 @@ export function planAmendsCarried({ amends = [], have = new Set(), settlements =
     const hit = settled.find((s) => s.w >= base.window);
     if (!hit) { plan.push({ ...base, state: "unsettled" }); continue; }
     const prev = numbers.filter((n) => n < hit.n).pop() ?? null;
-    const ok = prev != null && proof(base.mark, hit.n, prev) === true;
+    const ok = prev != null && proof(base.mark, hit.n, prev, { date: a.date ?? null, body: a.body ?? null }) === true;
     plan.push(ok ? { ...base, state: "new", settlement: hit.n } : { ...base, state: "unproven", candidate: hit.n, prev });
   }
   return plan;
@@ -117,10 +121,50 @@ const git = (repo, args) => execFileSync("git", ["-C", repo, ...args], {
 }).trim();
 
 /**
- * THE PROOF: the blob a mark's file holds at S<n>, against the blob at S<prev>,
- * each at the path the mark is filed at on that side (a move between them is
- * still one mark). True only when S<n> holds the file and it differs. A missing
- * tag or an unreadable path is false, never a pass.
+ * A mark file's frontmatter `date` and its body, or null when the text has no
+ * frontmatter. PURE. Line endings are normalised; quotes around the date go.
+ */
+export function markFileParts(text) {
+  const t = String(text ?? "").replace(/\r\n/g, "\n");
+  if (!t.startsWith("---\n")) return null;
+  const end = t.indexOf("\n---", 4);
+  if (end === -1) return null;
+  const front = t.slice(4, end);
+  const body = t.slice(end + 4).replace(/^[^\n]*\n?/, "");
+  const m = /^date:\s*(.+?)\s*$/m.exec(front);
+  return { date: m ? m[1].replace(/^["']|["']$/g, "") : null, body };
+}
+
+/**
+ * Does a file's text hold THIS amend? PURE. A dated amend (every door amend
+ * restamps `date`, mark-render.mjs) is proven by its own date in the file's
+ * frontmatter, compared as an instant; an undated one by its body, trimmed.
+ * Anything else is no proof.
+ */
+export function holdsAmend(text, { date = null, body = null } = {}) {
+  const parts = markFileParts(text);
+  if (!parts) return false;
+  if (date != null && date !== "") {
+    const a = Date.parse(String(date)), b = Date.parse(String(parts.date ?? ""));
+    return Number.isFinite(a) && Number.isFinite(b) ? a === b : String(date) === String(parts.date);
+  }
+  return body != null && String(body).trim() === parts.body.trim();
+}
+
+/**
+ * THE PROOF that S<n> carried THIS amend, not merely that it changed the file
+ * (review-612 F1). Two things must hold:
+ *
+ *   · the mark's file changed between S<prev> and S<n>, each at the path the
+ *     mark is filed at on that side (a move between them is still one mark);
+ *   · the file at S<n> holds the amend's own content (`holdsAmend`).
+ *
+ * The second is what refuses the false-positive classes measured on 10-14: the
+ * household un-nesting at S99 (857dc401) rewrote ~100 mark files' content, the
+ * canonical key order at S64 (a0c779a0) 36 more, and S100's sweep 45+ parcels
+ * with no door amend. Each changes a file without carrying anybody's amend, and
+ * a row written on such a change would be permanent (the table is insert-only).
+ * A missing tag or an unreadable path or blob is false, never a pass.
  */
 export function proofFrom(repo) {
   const commits = new Map();
@@ -138,16 +182,18 @@ export function proofFrom(repo) {
     if (!path) return null;
     try { return git(repo, ["rev-parse", "--verify", "-q", `${sha}:${path}`]) || null; } catch { return null; }
   };
-  return (mark, n, prev) => {
+  return (mark, n, prev, claim = {}) => {
     const now = blobOf(commitOf(n), mark);
-    if (!now) return false;
-    return now !== blobOf(commitOf(prev), mark);
+    if (!now || now === blobOf(commitOf(prev), mark)) return false;
+    let text;
+    try { text = git(repo, ["cat-file", "blob", now]); } catch { return false; }
+    return holdsAmend(text, claim);
   };
 }
 
 // ── the store half ───────────────────────────────────────────────────────────
 
-const AMENDS_SQL = `SELECT c.id, c.slug, c.status, c.window_id, c.supersedes,
+const AMENDS_SQL = `SELECT c.id, c.slug, c.status, c.window_id, c.supersedes, c.body, c.data->>'date' AS date,
                            (coalesce(c.data, '{}'::jsonb) ? '_ingested_from') AS ingested
                       FROM claims c
                      WHERE c.status = 'locked' AND c.supersedes IS NOT NULL AND c.slug IS NOT NULL
@@ -166,11 +212,14 @@ export async function recordAmendsCarried(client, repo, { apply = false, cap = I
   const { rows: [{ n: rows }] } = await client.query("SELECT count(*)::int AS n FROM amend_carried");
   const doors = amends.filter(isDoorAmend);
   const receipt = { rows, amends: doors.length, wrote: 0, verdict: "ok" };
-  if (doors.length > cap) return { ...receipt, verdict: "skipped", why: `${doors.length} door amends have no row, more than one tick carries (cap ${cap}): the one-time history has not run — world2/tools/amend-carried.mjs --apply` };
   const plan = planAmendsCarried({ amends: doors, settlements, proof: proof ?? proofFrom(repo) });
   const count = (s) => plan.filter((p) => p.state === s).length;
   Object.assign(receipt, { new: count("new"), unproven: count("unproven"), hand: count("hand"), unsettled: count("unsettled"), plan });
   const fresh = plan.filter((p) => p.state === "new");
+  // THE CAP COUNTS THE ROWS A TICK WOULD WRITE (review-612 F3): unproven,
+  // unsettled and POS-446's amends never get a row from here, so counting them
+  // would let a pile that can never shrink hold the tick at SKIPPED for good.
+  if (fresh.length > cap) return { ...receipt, verdict: "skipped", why: `${fresh.length} proven amends have no row, more than one tick carries (cap ${cap}): the one-time history has not run — world2/tools/amend-carried.mjs --apply` };
   if (!apply || !fresh.length) return receipt;
   await client.query("BEGIN");
   try {
@@ -196,7 +245,9 @@ export async function recordAmendsCarried(client, repo, { apply = false, cap = I
 export async function verifyAmendsCarried(client, repo, { proof = null } = {}) {
   if (!isRepoRoot(repo)) throw new Error(`${repo} is not the top of a git work tree — refusing to read another repo's history`);
   const prove = proof ?? proofFrom(repo);
-  const { rows } = await client.query("SELECT claim, mark, settlement, by_hand FROM amend_carried ORDER BY mark, settlement");
+  const { rows } = await client.query(
+    `SELECT a.claim, a.mark, a.settlement, a.by_hand, c.body, c.data->>'date' AS date
+       FROM amend_carried a JOIN claims c ON c.id = a.claim ORDER BY a.mark, a.settlement`);
   const { rows: settlements } = await client.query("SELECT number FROM settlements ORDER BY number");
   const numbers = settlements.map((s) => Number(s.number));
   const disagree = [];
@@ -206,7 +257,7 @@ export async function verifyAmendsCarried(client, repo, { proof = null } = {}) {
     compared++;
     const n = Number(r.settlement);
     const prev = numbers.filter((x) => x < n).pop() ?? null;
-    if (prev == null || prove(r.mark, n, prev) !== true) disagree.push({ mark: r.mark, why: [`row S${n}: git does not prove S${n} changed the file`] });
+    if (prev == null || prove(r.mark, n, prev, { date: r.date, body: r.body }) !== true) disagree.push({ mark: r.mark, why: [`row S${n}: git does not prove S${n} carried this amend`] });
   }
   const { rows: amends } = await client.query(AMENDS_SQL);
   for (const a of amends.filter(isDoorAmend).filter(isHand))

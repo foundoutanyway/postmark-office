@@ -5618,7 +5618,9 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
       who, key, mark: targetMarkId, accept: payload.accept === true,
       into: payload.into == null || payload.into === "" ? null : String(payload.into),
       arrived: result.position.arrived === true,
-      target: { x: toward.x, y: toward.y },
+      // where the walk will stand once it has arrived: the engine's own arrival point
+      // (any instant after arrival names it; the eta above is from a whole-metre remainder)
+      target: (({ x, y }) => ({ x, y }))(positionAt({ from, toward, at, targetExtent, targetMarkId, pace: result.pace }, at + 1e6)),
       arrivalCrossing: arrivedAtCrossing,
       dueAt: crossingSailsAt(arrivedAtCrossing),
       walkActId: result.seq ?? null,

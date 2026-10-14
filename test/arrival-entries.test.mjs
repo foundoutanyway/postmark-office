@@ -326,12 +326,22 @@ test("ORDERING · the arrival's row is stamped at its own write: ferry and iso a
   }
 });
 
-test("THE REACH AT ARRIVAL is measured from the walk's target: a published arrival point a few centimetres outside the mark still enters", { skip: SKIP }, async () => {
-  // the engine rounds an arrival point to 0.1 m, and on a box's edge that can be 0.05 m outside it
-  // (measured on world 17b64ef1: 1,066 of 14,700 rim arrivals). The walk record says arrived; the reach agrees.
-  const o = await officeAt({ published: { x: 836.95, y: 1000 } });
-  const { answer } = await enterAtArrival(ROW, { arrived: true, target: OUTSIDE_FACE }, { base: o.base, enter: enterViaOffice, worldClone: CLONE });
-  assert.deepEqual(answer.entered, [SPIRE, "spire/vestibule"]);
+test("THE REACH AT ARRIVAL is the ordinary one, from where the walker really stands: an arrival at a mark smaller than the grid enters", { skip: SKIP }, async () => {
+  // Before postmark-world#206 the engine published a rim arrival rounded to a
+  // tenth of a metre, up to 0.05 m outside the mark (1,107 of 15,560 simulated
+  // rim walks on world 17b64ef1, every walk to a mark smaller than the grid).
+  // The tick measures the reach from the real position, so this holds only
+  // because the engine's arrival now stands on its target's ground.
+  const walk = await import(pathToFileURL(join(CLONE, "tools", "walk.mjs")).href);
+  const BELL = { id: "spire/bell-register", kind: "sited", by: "spire", at: { x: 838.02, y: 1000.68 }, extent: { w: 0.02, h: 0.02 }, body: "A register entry." };
+  const from = { x: 780, y: 1000 };
+  const p = walk.positionAt({ from, toward: BELL.at, at: 300, targetExtent: { w: 0.02, h: 0.02 }, targetMarkId: BELL.id, pace: 60 }, 301);
+  assert.equal(p.arrived, true);
+  const o = await officeAt({ published: { x: p.x, y: p.y } });
+  const w = await o.base.world();
+  w.marks.push(BELL);
+  const { answer } = await enterAtArrival({ ...ROW, mark: BELL.id }, { arrived: true }, { base: o.base, enter: enterViaOffice, worldClone: CLONE });
+  assert.ok(answer.entered.includes(BELL.id), `entered at ${JSON.stringify({ x: p.x, y: p.y })}: ${JSON.stringify(answer.entered)}`);
 });
 
 test("[pin] the line rides the walker's own standpoint (every read) and their doorstep's world block, and nothing else (G3)", async () => {

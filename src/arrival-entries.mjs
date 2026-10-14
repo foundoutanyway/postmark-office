@@ -139,8 +139,9 @@ export async function entryAtTheWalk({ who, key, mark, accept = false, into = nu
     try { return { entry: await enter(payload, key, crossingDeps()), queued: null }; }
     catch (e) { return { entry: refusalOf(e), queued: null }; }
   }
-  // THE PRE-CHECK: the same enter, judged at the arrival instant from the
-  // walk's target, with a pen that writes nothing and no walk to stop.
+  // THE PRE-CHECK: the same enter, judged at the arrival instant from where
+  // the walk will stand when it arrives, with a pen that writes nothing and no
+  // walk to stop.
   const base = crossingDeps();
   const dry = {
     ...base, walking: null, stop: null,
@@ -252,10 +253,13 @@ export async function arrivalOf(row, { query = actsQuery, now = Date.now(), walk
 }
 
 /**
- * THE ORDINARY ENTER, AT ARRIVAL. The office's real deps (the reach, the
- * portal's landing, the walk's end, one instant for ferry and iso), with two
- * things added: the pen carries `arrival_of` so the walk is entered once, and
- * the reach is measured from the walk's target. The tick has no request key,
+ * THE ORDINARY ENTER, AT ARRIVAL. The office's real deps (the reach from where
+ * the walker really stands, the portal's landing, the walk's end, one instant
+ * for ferry and iso), with one thing added: the pen carries `arrival_of`, so
+ * the walk is entered once. The reach needs no second measurement because an
+ * arrival stands on its target's ground by construction (world walk.mjs §
+ * pointOnGround, postmark-world#206: before it, 1,107 of 15,560 simulated rim
+ * arrivals stood up to 0.05 m outside their mark). The tick has no request key,
  * so it acts with the walker's own handle and the household the walk was
  * declared under.
  */
@@ -266,12 +270,6 @@ export async function enterAtArrival(row, a, { base = null, enter = null, worldC
   let seq = null;
   const deps = {
     ...base,
-    // WHERE THE REACH IS MEASURED FROM: the walk's own target. The walk record
-    // says this walker has arrived (`arrivalOf`); the point the engine
-    // publishes for an arrival is rounded to 0.1 m and can sit up to 0.05 m
-    // outside a box's edge (measured: 1,066 of 14,700 rim arrivals on world
-    // 17b64ef1), which would refuse an arrival the record has already made.
-    standpointOf: async (who) => ({ x: a.target.x, y: a.target.y, name: who }),
     record: async (p) => { const r = await base.record({ ...p, arrival_of: String(row.walk) }); seq = r?.seq ?? seq; return r; },
   };
   const key = { handles: new Set([row.handle]), household: row.household ?? null };

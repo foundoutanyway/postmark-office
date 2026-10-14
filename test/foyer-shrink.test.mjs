@@ -1105,7 +1105,7 @@ test('F8 · Hal: a pending read "returning exact standing IDs, recipient, thread
     const sent = await sendLetterAsRow(letter({ thread: "new" }), KEY, db, clone, odb);
     const r = await householdApex({ read: "mail", view: "pending", handle: "wright" }, KEY, ctx({ odb, clone, slim: true }));
     assert.equal(r.box, "pending");
-    assert.equal(r.total, 1);
+    assert.equal(r.shown, 1);
     const row = r.standing[0];
     assert.equal(row.letter_id, sent.letter_id, "the exact standing ID");
     assert.equal(row.to, "limen", "recipient");
@@ -1114,6 +1114,45 @@ test('F8 · Hal: a pending read "returning exact standing IDs, recipient, thread
     assert.equal(row.seq, sent.logged.seq, "sequence");
     assert.equal(r.expected_crossing, sent.expected_crossing, "expected crossing");
     odb.close();
+  });
+});
+
+test("F8b · postmark#3550: the pending total counts the letters in the outbox too, as the doorstep and the view's own freshness do", async () => {
+  // The Postmaster read `total: 1` beside three letters committed to their
+  // outbox and never carried. A committed outbox letter is settled in the
+  // ladder's sense (indexed) but has not sailed, and `freshness` beside the
+  // total already said pending_outbox = in_outbox + standing_in_log.
+  await flagOn(async () => {
+    const inOutbox = outboxSettled(db, "wright");
+    assert.ok(inOutbox > 0, "the fixture must hold a letter in wright's outbox, or this proves nothing");
+    const odb = logDb();
+    const clone = mailClone();
+
+    // nothing standing yet: the outbox half alone
+    const quiet = await householdApex({ read: "mail", view: "pending", handle: "wright" }, KEY, ctx({ odb, clone, slim: true }));
+    assert.equal(quiet.total, inOutbox, "a letter waiting in the outbox has not sailed, so it is pending");
+    assert.equal(quiet.shown, 0);
+    assert.equal(quiet.complete, false, "it is counted and not listed, and the answer must say so");
+    assert.equal(quiet.in_outbox?.count, inOutbox);
+    assert.doesNotMatch(quiet.note, /every letter you have written has sailed/, "the all-clear may not ride beside a waiting letter");
+
+    // one standing in the log: both halves
+    await sendLetterAsRow(letter(), KEY, db, clone, odb);
+    const r = await householdApex({ read: "mail", view: "pending", handle: "wright" }, KEY, ctx({ odb, clone, slim: true }));
+    assert.equal(r.total, inOutbox + 1, "pending total = in_outbox + standing, the doorstep's own number");
+    assert.equal(r.total, r.freshness.in_outbox + r.freshness.standing_in_log, "the total agrees with the ladder printed beside it");
+    assert.equal(r.shown, 1);
+    assert.equal(r.complete, false);
+    odb.close();
+
+    // an empty outbox: nothing counted that is not listed
+    const lodb = logDb();
+    const empty = await householdApex({ read: "mail", view: "pending", handle: "limen" }, LIMEN, ctx({ odb: lodb, clone, slim: true }));
+    assert.equal(outboxSettled(db, "limen"), 0);
+    assert.equal(empty.total, 0);
+    assert.equal(empty.complete, true);
+    assert.equal(empty.in_outbox, undefined);
+    lodb.close();
   });
 });
 
@@ -1154,7 +1193,9 @@ test("F10b · and a sender with nothing standing is told a true zero, which must
     const odb = logDb();
     const r = await householdApex({ read: "mail", view: "pending", handle: "wright" }, KEY, ctx({ odb, slim: true }));
     assert.equal(r.error, undefined);
-    assert.equal(r.total, 0);
+    // the true zero is the standing half; the outbox half still counts in total (postmark#3550)
+    assert.equal(r.shown, 0);
+    assert.equal(r.total, outboxSettled(db, "wright"));
     assert.match(r.note, /nothing of yours is standing/);
     odb.close();
   });

@@ -103,6 +103,9 @@ export function containmentChain(pos, marks) {
 }
 export function orient() { return { seen: [] }; }
 export function investigate() { return null; }
+export function pointWithinMark(p, m) {
+  return Boolean(m?.at && m?.extent) && Math.abs(p.x - m.at.x) <= m.extent.w / 2 && Math.abs(p.y - m.at.y) <= m.extent.h / 2;
+}
 `);
 put(repo, "tools/marks-fold.mjs", `
 export function loadMarks() { return []; }
@@ -179,6 +182,7 @@ let pen = await install();
 after(() => { unread(); uninstallActsPen(); claimsPen.__setPoolForTest(null); delete process.env.WORLD2_PG; delete process.env.WORLD2_PG_URL; });
 
 const hold = await import("../src/world-hold.mjs");
+const { resetPathIndex } = await import("../src/world-journal.mjs");
 
 const KEITH = { household: "keithhouse", handles: new Set(["keith", "kin"]) };
 const ANA = { household: "anahouse", handles: new Set(["ana"]) };
@@ -723,6 +727,42 @@ test("A WELCOME WHOSE AMEND THE DOOR REFUSES, AT ✦0: the read names no draft t
   assert.equal(s.says, `set down by ana at (4105, -305) — accepted by keith's house, but no amend from this set-down is on the docket, so canon stays at (3978, -398): keith's amend is a private draft or was refused, and ${STOOL} has ✦0 behind it: a draft goes forward with ✦1 behind it, so a stake of ✦1 on ${STOOL} by keith's house puts a draft forward`);
   assert.equal(s.escrow, 0);
   assert.equal(s.stake_needed, 1);
+});
+
+// ── A WELCOME OUTSIDE THE DECLARED PARENT (postmark#3549) ────────────────────
+//
+// The amend door refuses an amend that moves a mark outside the parent its
+// FILING declares (`world.mjs § declaredParentGuard`, postmark#3020). A welcome
+// asks that guard before the stance row, so the refusal leaves nothing behind.
+// Before, the row was written, the amend was refused after it, and the receipt
+// said "speak welcomed again to file it", which meets the same refusal.
+//
+// Here the freeze files the stool inside Keith's garage, and Ana sets it down
+// in Keith's yard, outside the garage. The freeze is put back afterwards.
+//
+// THE FLIP: drop the guard call in `answerSetDown` and this reds on "the
+// welcome was recorded".
+
+test("A WELCOME OUTSIDE THE DECLARED PARENT: refused before the stance row, with nothing written", async () => {
+  const freeze = (marks) => {
+    put(repo, "WORLD/filing-freeze.json", JSON.stringify({ frozen_at: "2026-08-25", marks }));
+    git("commit", "-qam", "freeze");
+    resetPathIndex();
+  };
+  freeze({ "keith/the-garage": "WORLD/marks/let-there-be-light/the-garage",
+    [STOOL]: "WORLD/marks/let-there-be-light/the-garage/waiting-room-stool-2026-09-10" });
+  try {
+    const p = await fresh();
+    await anaDrops(p);
+    const before = p.rows().length;
+    const r = await speak("welcomed", "keith", KEITH);
+    assert.equal(r.refused, true, `the welcome was recorded: ${JSON.stringify(r)}`);
+    assert.equal(r.code, 409);
+    assert.equal(r.defect, `(4105, -305) is outside "keith/the-garage", and "${STOOL}" is filed inside it`);
+    assert.match(r.hint, /nothing was written$/);
+    assert.equal(p.rows().length, before, "no stance row, no amend");
+    assert.equal(p.claims().length, 0, "no claim");
+  } finally { freeze({}); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

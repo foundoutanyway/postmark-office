@@ -56,7 +56,7 @@ before(async () => {
   stampDir = tmp;
   writeFileSync(join(stampDir, "release.json"), JSON.stringify({
     tag: TAG, sha: SHA, deployed_at: "2026-08-26T09:00:00.000Z", target: "prod",
-    run: "https://github.com/keeminlee/postmark-office/actions/runs/42",
+    run: "https://github.com/postmark-town/postmark-office/actions/runs/42",
   }));
 
   const dbPath = join(tmp, "fixture.db");

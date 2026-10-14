@@ -96,7 +96,7 @@ async function readersOf(lawRepo) {
 
 // ── the ONE vendored predicate ───────────────────────────────────────────────
 //
-// VENDOR SHIM. Source: keeminlee/postmark-world `tools/mark-lint.mjs` lines
+// VENDOR SHIM. Source: postmark-town/postmark-world `tools/mark-lint.mjs` lines
 // 114–124 at world commit c701988f9ff937661297a8acc87a48925ba3b37f (blob
 // 68b1e35a67522cb03488cd8d8b940231d769f0c5), where it is `standsInTheWorks` +
 // `isClassDeclaration`. The world does not export it — it is a `const` inside a

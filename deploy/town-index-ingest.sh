@@ -25,8 +25,10 @@
 # A delta derives the letters, the threads and the mail ledger from what changed
 # only; each seal's --snapshot run derives those four whole, writes any row the
 # deltas missed, and prints the count (`· audit {...}`). The state file keeps
-# every seal's count from this run as "audits": [{ "sha", "audit" }]. A count
-# above zero is a delta that missed a row, written back, and worth reading.
+# every seal's count from this run as "audits": [{ "sha", "audit" }], until the
+# next run; the record keeps it in the seal's town_index_snapshots row
+# (digests.audit). A count above zero is a delta that missed a row, written
+# back, and worth reading.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

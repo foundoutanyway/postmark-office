@@ -200,6 +200,46 @@ test("every transition a letter can make: the delta equals hydrate.mjs, and the 
   assert.notEqual(blind.head, null); assert.equal(blind.head, head);
   const seal = await step(t, "the seal's audit", t.commit(SEAL_SUBJECT), { snapshot: true });
   assert.deepEqual(seal.audit, { letters: 0, threads: 1, ledger: 0, mail_lines: 0 }, "the audit wrote the one thread back, and counted it");
+  const kept = (await c.query("SELECT kind, digests FROM town_index_snapshots WHERE sha = $1", [seal.sha])).rows[0];
+  assert.equal(kept?.kind, "crossing");
+  assert.deepEqual(kept.digests.audit, seal.audit, "the record keeps the seal's audit beside its digests, past the state file's next run");
+  assert.equal(typeof kept.digests.letters, "string", "and the table digests are where they were");
+});
+
+// The audit's other half (#527 review): a held line that drifted from the
+// checkout is a changed past, and the seal's whole check REFUSES it, for the
+// parsed ledger and for the mint's raw lines alike. A plain delta whose diff
+// does not name the ledger reads no held line, so only the audit can see it.
+test("the seal's audit refuses a drifted held ledger line and a drifted mail line, and writes nothing", async (tt) => {
+  if (skip) return tt.skip(skip);
+  const t = makeTown("audit-refuses", ["ada", "bex"]);
+  t.put("WHITE_PAGES/ada/inbox/n1.md", letter("n1", "bex", "ada", "2026-09-01"));
+  t.put("WHITE_PAGES/bex/inbox/n2.md", letter("n2", "ada", "bex", "2026-09-02", "n1"));
+  t.deliver("2026-09-01", "n1", "bex", "ada"); t.deliver("2026-09-02", "n2", "ada", "bex", "n1");
+  const seed = t.commit("seed");
+  await ingest(c, { townRepo: t.dir, sha: seed, seed: true, reseed: true });
+
+  for (const [table, refusal] of [
+    ["town_ledger", /the mail ledger's line 2 is not the line the index holds: its past changed, and it is append-only by town law/],
+    ["town_mail_lines", /the mail ledger's line 2 is not the line the store holds: its past changed, and it is append-only by town law/],
+  ]) {
+    const head = await readHead(c);
+    const was = (await owner.query(`SELECT digest FROM ${table} WHERE seq = 2`)).rows[0].digest;
+    await owner.query(`UPDATE ${table} SET digest = 'drifted' WHERE seq = 2`);
+    try {
+      t.put("TOWN_BULLETIN/welcome.md", `---\ntitle: welcome\n---\n\nHello, ${table}.\n`);
+      const plain = t.commit(`bulletin: ${table}`);
+      t.put("PROJECTS/the-town-seal/seal.json", `{"seal":"${table}"}\n`);
+      const sealed = t.commit(SEAL_SUBJECT);
+      await assert.rejects(ingest(c, { townRepo: t.dir, sha: sealed, snapshot: true }), refusal, `${table}: the audit refuses`);
+      assert.equal(await readHead(c), head, `${table}: the head did not move`);
+      assert.equal((await c.query("SELECT count(*)::int n FROM town_index_snapshots WHERE sha = $1", [sealed])).rows[0].n, 0, `${table}: no snapshot recorded`);
+      const blind = await ingest(c, { townRepo: t.dir, sha: plain });
+      assert.equal(blind.work.ledger, "unchanged", `${table}: the plain delta read no held line`);
+    } finally {
+      await owner.query(`UPDATE ${table} SET digest = $1 WHERE seq = 2`, [was]);
+    }
+  }
 });
 
 test("the ledger refuses a changed past and a shrink, and writes nothing", async (tt) => {

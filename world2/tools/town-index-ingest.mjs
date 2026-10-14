@@ -188,8 +188,15 @@ export async function tableFingerprints(client) {
   return { counts, digests };
 }
 
-async function recordSnapshot(client, repo, sha, kind) {
-  const { counts, digests } = await tableFingerprints(client);
+/**
+ * The snapshot row: each table's count and digest, and at a crossing the seal's
+ * `audit` (POS-523) beside the digests, so the record keeps what the deltas
+ * missed (the state file holds it only until the next run): `digests.audit` =
+ * { letters, threads, ledger, mail_lines }. No migration: digests is jsonb.
+ */
+async function recordSnapshot(client, repo, sha, kind, audit = null) {
+  const { counts, digests: tables } = await tableFingerprints(client);
+  const digests = audit ? { ...tables, audit } : tables;
   const crossedAt = kind === "crossing" ? git(repo, "log", "-1", "--format=%cI", sha).trim() : null;
   await client.query(
     `INSERT INTO town_index_snapshots (sha, kind, crossed_at, counts, digests) VALUES ($1, $2, $3, $4, $5)
@@ -681,7 +688,7 @@ export async function ingest(client, { townRepo, sha, seed: seeding = false, res
       if (snapshot) {
         const subject = git(townRepo, "log", "-1", "--format=%s", sha).trim();
         if (subject !== SEAL_SUBJECT) throw new Error(`--snapshot: ${sha} is not a crossing's seal ("${subject}")`);
-        out.counts = await recordSnapshot(client, townRepo, sha, "crossing");
+        out.counts = await recordSnapshot(client, townRepo, sha, "crossing", out.audit ?? null);
       }
     }
     await client.query("COMMIT");

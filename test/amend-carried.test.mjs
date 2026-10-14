@@ -323,11 +323,23 @@ test("075 NOT APPLIED: the tick says so in one line, and both doors disclose rat
   assert.equal(t.verdict, "absent");
   const { default: pg } = await import("pg");
   const p = new pg.Pool({ connectionString: store.url("office_api"), max: 2 });
+  const env = { WORLD2_PG: process.env.WORLD2_PG, WORLD2_PG_URL: process.env.WORLD2_PG_URL };
   try {
     const two = await twinReceipt(p, STOOL, { standing: true });
     assert.equal(two.last_amended, null);
     assert.equal(two.amends?.readable, false);
     assert.match(two.amends.reason, /075 not applied/);
     assert.match(two.says, /^published at S1 \([0-9a-f]{8}\)/);
-  } finally { await p.end(); }
+    // 1.0 discloses the same way: null is never "never amended" when unread.
+    process.env.WORLD2_PG = "1"; process.env.WORLD2_PG_URL = store.url("office_api");
+    __setPoolForTest(p);
+    const one = await readMarkReceipt(STOOL, { repo: world, canon: { id: STOOL }, publishedSha: SHA[5] });
+    assert.equal(one.last_amended, null);
+    assert.equal(one.amends?.readable, false);
+    assert.match(one.amends.reason, /075 not applied/);
+  } finally {
+    __setPoolForTest(null);
+    for (const [k, v] of Object.entries(env)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    await p.end();
+  }
 });

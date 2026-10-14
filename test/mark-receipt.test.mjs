@@ -620,3 +620,14 @@ test("POS-612 · last_amended belongs to the published tense only", () => {
     assert.equal("last_amended" in r, false, status);
   }
 });
+
+test("POS-612 · UNREAD IS NOT 'NEVER AMENDED': the two answers differ in a field a reader can branch on (Wright 10-14)", () => {
+  const never = receiptFrom({ id: STOOL, canon: { id: STOOL }, published_at: S65, settlement: S65, claims: [], last_amended: null });
+  const unread = receiptFrom({ id: STOOL, canon: { id: STOOL }, published_at: S65, settlement: S65, claims: [], amends_unread: "075 not applied" });
+  assert.equal(never.last_amended, null);
+  assert.equal(unread.last_amended, null, "the field is null either way");
+  assert.equal("amends" in never, false, "never amended: nothing is disclosed");
+  assert.equal(unread.amends.readable, false, "unread: the sibling says the table was not read");
+  assert.equal(never.says, unread.says, "the sentence is today's in both; the disclosure is the field, as `docket` is");
+  assert.notDeepEqual(never, unread);
+});

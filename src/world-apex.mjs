@@ -466,11 +466,12 @@ export function crossingDeps() {
     lends: async (markId) => lendsAt(markId),
     nowMs: () => Date.now(),
     crossing: () => currentCrossing(),
-    record: async ({ handle, act, at, lines, summary, mark = null, via = null, set_down_at = null, arrived = null }) => {
+    // `arrival_of`: the arrival tick's enter names its walk act (arrival-entries.mjs), and the pen writes it once
+    record: async ({ handle, act, at, lines, summary, mark = null, via = null, set_down_at = null, arrived = null, arrival_of = null }) => {
       const { execUnderTownLock, lockTimedOut, LOCK_BUSY } = await import("./town-lock.mjs");
       let out;
       try {
-        out = await execUnderTownLock(CROSSING_EXEC, JSON.stringify({ handle, act, at, lines, summary, mark, via, set_down_at, arrived }),
+        out = await execUnderTownLock(CROSSING_EXEC, JSON.stringify({ handle, act, at, lines, summary, mark, via, set_down_at, arrived, ...(arrival_of ? { arrival_of } : {}) }),
           { ...process.env, WORLD_CLONE });
       } catch (e) {
         if (lockTimedOut(e)) { const err = new Error(LOCK_BUSY.defect); Object.assign(err, LOCK_BUSY); throw err; }
@@ -2013,8 +2014,9 @@ async function rideDomain(oriented, key, fields = {}) {
  * THE WAY IN IS A WALK THAT COMPOSES THE ENTRY. An enter from outside a stop is
  * refused 409 (world-crossings.mjs § the portal's "you are not at that door";
  * R15 keeps walk and entry decoupled), so the sentence names the walk:
- * `mark_id` admits a timetable stop and `enter_on_arrival` fires the entry as
- * itself at arrival, where her door shows its terms and boards on accept: true.
+ * `mark_id` admits a timetable stop and `enter_on_arrival` makes the entry as
+ * itself at arrival. The walk shows her terms at once, and with accept: true the
+ * entry is queued and made when the walker arrives (WLD-5, arrival-entries.mjs).
  *
  * Her own berth (the vessel's own id among the stops) is a door only while she
  * is alongside: `portalEntryFor` is null for her, so entering her is the
@@ -2046,7 +2048,7 @@ export function rideDoorsOf(service, at = null, marks = [], unreadable = null) {
     vessel,
     doors,
     affordable_at: doors.map((d) => ({ mark: d.mark, class: marks.find((m) => m.id === d.mark)?.class ?? null, at: d.at })),
-    sentence: `${lent} Every stop on her timetable is a door into her wherever her hull is, and her own berth${vessel ? ` (${vessel})` : ""} is one while she is alongside${at ? ". Nearest first" : ". They are"}: ${list}. Walk to one with the entry composed: do: "walk", args: { mark_id: "<the stop>", enter_on_arrival: true }. On arrival her door shows its terms; walk again with accept: true to board, and aboard, ride is yours to declare.`,
+    sentence: `${lent} Every stop on her timetable is a door into her wherever her hull is, and her own berth${vessel ? ` (${vessel})` : ""} is one while she is alongside${at ? ". Nearest first" : ". They are"}: ${list}. Walk to one with the entry composed: do: "walk", args: { mark_id: "<the stop>", enter_on_arrival: true }. The walk shows her terms at once; walk again with accept: true to board on arrival, and aboard, ride is yours to declare.`,
   };
 }
 

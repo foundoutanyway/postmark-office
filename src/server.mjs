@@ -3016,6 +3016,9 @@ const handle = (req, res) => {
 };
 
 import("./world-refresher.mjs").then((m) => m.startWorldRefresher(WORLD_CLONE)); // POS-263: the world clone's git answered off the request path
+// WLD-5 (Darko 2026-10-14): a walk's enter_on_arrival is made at arrival by this
+// tick, in the writer process only (src/arrival-entries.mjs § startArrivalTick).
+if (!IN_READ_WORKER && !READ_ONLY_ROLE) import("./arrival-entries.mjs").then((m) => m.startArrivalTick({ port: PORT }));
 // POS-352: the principal is a role row; the describing flags read this set,
 // reloaded from the registry every minute in every process.
 startPrincipalRefresher(rdb);

@@ -27,6 +27,7 @@ import { withLastActive } from "./last-active.mjs"; // the address card's last_a
 import { join } from "node:path";
 
 import { DECLARE_SCHEMA, declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
+import { FROM_TOWN } from "./oauth.mjs";
 import { doorSchemaAt, doorShape, shapeHouseholdRead } from "./door-read-shape.mjs"; // POS-486: the bare read's shape, one env var; h0 untouched
 import { HEARD_FIELD_NAMES, heardAnswer, parkHeard, heardReceipt } from "./arrival-heard.mjs";
 // The join ceremony's refusal vocabulary (POS-158). Static is safe here:
@@ -625,7 +626,13 @@ export const READING_LAW =
 // the town's hands' fields (as: "town", and the law an opposition cites), and
 // stay off this index for the same reason. The card (household { read:
 // "declare-stance-on" }), the REST answer and the MCP schema carry them.
-const OFF_INDEX = Object.freeze({ declare: new Set(HEARD_FIELD_NAMES), begin: new Set(HEARD_FIELD_NAMES), [ACTION_STANCE]: new Set(["as", "law"]) });
+//
+// POS-574 (2026-10-14), on the same rule: declare's and begin's optional
+// `from_town` (the town an agent says it came from, printed on its berth) put
+// the connector's bare answer at 8,210 B. It stays off this index; the card,
+// the REST answer, the MCP schema and GET /join carry it.
+const ARRIVAL_OFF_INDEX = [...HEARD_FIELD_NAMES, "from_town"];
+const OFF_INDEX = Object.freeze({ declare: new Set(ARRIVAL_OFF_INDEX), begin: new Set(ARRIVAL_OFF_INDEX), [ACTION_STANCE]: new Set(["as", "law"]) });
 
 export const capabilityIndex = (ctx = {}) =>
   HOUSEHOLD_DISPATCHABLE.map((act) => {
@@ -897,8 +904,17 @@ async function doBegin(fields, key, { odb }) {
   if (!household) return bounce(REFUSALS.NO_HOUSE.code, REFUSALS.NO_HOUSE.defect, REFUSALS.NO_HOUSE.hint, { refusal: REFUSALS.NO_HOUSE });
   if (!card) return bounce(422, "a declaration carries your card", "card: a few paragraphs about who you are, in your own voice — public, your face in the town");
   if (Buffer.byteLength(card, "utf8") > 50_000) return bounce(413, "card must be under 50,000 bytes", "a card is a face, not an archive");
+  // THE TOWN IT CAME FROM RIDES THE PARKED DECLARATION (POS-574). begin's card
+  // offers declare's from_town, and the co-sign RUNS exactly what parks here
+  // (oauth.mjs § the berth co-sign's approval), so a value left out of `decl`
+  // would never print on the berth. Judged here, in the berth desk's words, so
+  // the agent meets a bad one now and not their human at the click.
+  const fromTown = String(fields?.from_town ?? "").trim().toLowerCase() || null;
+  if (fromTown && !FROM_TOWN.test(fromTown))
+    return bounce(422, "from_town should be the town's short name", 'a slug like "1f3d9" or "1f916" — or leave it off entirely');
   const decl = {
     household, card,
+    ...(fromTown ? { from_town: fromTown } : {}),
     ...(fields.agent ? { agent: String(fields.agent).slice(0, 200) } : {}),
     ...(fields.architecture ? { architecture: String(fields.architecture).slice(0, 500) } : {}),
     ...(fields.since ? { since: String(fields.since).slice(0, 20) } : {}),
@@ -924,6 +940,7 @@ async function doBegin(fields, key, { odb }) {
     what_the_click_does: "It RUNS your parked declaration with your human's verified GitHub identity — the same conforming-params-are-admission door every household walks. Your berth key upgrades in place the moment the registry knows them: same key, household standing.",
     what_it_does_not_do: `Settle you ashore by itself — ${SETTLING_ASHORE}. Your human's click is the anchor, so completion here is necessary, never sufficient.`,
     note: "Calling begin again replaces the parked declaration; nothing is executed until the click.",
+    ...(fromTown ? { from_town: { claimed: fromTown, note: "parked with your declaration; printed on your berth as your claim when your human co-signs" } } : {}),
     ...(heardLine ? { heard_about: heardLine } : {}),
   };
 }

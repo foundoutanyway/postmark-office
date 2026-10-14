@@ -1913,7 +1913,10 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
     ...(await keptPresence()), // POS-284: the kept positions, as GET /world/present reads them
   });
   const transport = await transportBlock(w, at, { crossing });
-  return { standpoint: { ...at, stance: choice.stance }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}), ...(noteUnavailable ? { note_unavailable: noteUnavailable } : {}) };
+  // An entry queued on this walker's walk, or refused at its arrival, on their
+  // own standpoint and nowhere else (WLD-5, Darko's G3). Absent otherwise.
+  const arrival = choice.handle ? await (await import("./arrival-entries.mjs")).arrivalLineFor(choice.handle).catch(() => ({})) : {};
+  return { standpoint: { ...at, stance: choice.stance, ...arrival }, crossing: { n: crossing, derivation: CROSSING_DERIVATION }, note, primer, ...o, ...(present ? { present } : {}), ...(transport ? { transport } : {}), ...(noteUnavailable ? { note_unavailable: noteUnavailable } : {}) };
 }
 
 // The telling's own line grammar, for residents: `  · <m> <bearing> — <who>`,
@@ -2994,9 +2997,11 @@ export async function worldBlockForHandle(handle, key = null) {
   // only when the painting named nothing; it is the whole function now.
   const home = homeOf(handle, w);
   const transport = await doorstepTransportFor(handle, w);
+  // the walker's own arrival line, as the standpoint carries it (WLD-5, G3); absent otherwise
+  const arrival = await (await import("./arrival-entries.mjs")).arrivalLineFor(handle).catch(() => ({}));
   if (!home.placed) return { mark_id: null, x: null, y: null, sited: false,
     ...(home.declaration_refused ? { declaration_refused: home.declaration_refused } : {}),
-    ...(transport ? { transport } : {}) };
+    ...(transport ? { transport } : {}), ...arrival };
   // HOMES ARE PER RESIDENT (Darko 2026-10-04; POS-368). The four keys are
   // unchanged; what rides beside them says WHICH home and HOW: `via` is
   // "declared" (the resident's own home word), "own" (their parcel) or
@@ -3009,7 +3014,7 @@ export async function worldBlockForHandle(handle, key = null) {
     ...(home.home_mark ? { home_mark: home.home_mark } : {}),
     ...(home.declaration ? { declaration: home.declaration } : {}),
     ...(home.declaration_refused ? { declaration_refused: home.declaration_refused } : {}),
-    ...(transport ? { transport } : {}) };
+    ...(transport ? { transport } : {}), ...arrival };
 }
 
 /**
@@ -4948,16 +4953,17 @@ export async function occupiedNowBy(who, thresholds, deps) {
 // and stepped inside" beside `position: { arrived: false, remainingM: 6865 }`.
 // The receipt was eighty minutes early.
 //
-// THE ENTRY ITSELF IS NOT EARLY, and that is why this is a wording fix. The act
-// is written now and STAMPED at the arrival crossing, so it is not occupancy
-// until the walker gets there — #2690 is that law and
-// test/dec5-walk-clock-behaviour.test.mjs drives it with a row from the future.
-// The `entered` list is a true record of rows written; what was false at
-// departure was only the tense of the sentence around it.
+// Since WLD-5 (Darko, 2026-10-14) NOTHING IS WRITTEN AHEAD: a walk that has not
+// arrived gets a pre-check, and the entry is made at arrival by the office's
+// arrival tick (arrival-entries.mjs). The pre-check's `entered` list is what
+// the mark would let you cross now, which is not a fact yet, so it stays
+// withheld exactly as the early rows' list was.
 //
-// So: a walk that has NOT arrived reads QUEUED, and a zero-distance walk — you
-// were already standing there, `position.arrived` is true, the arrival instant
-// IS this instant — keeps today's words untouched.
+// So: a walk that has NOT arrived reads QUEUED when the entry was queued, and
+// `queued_for_arrival: false` with the reason when the pre-check would not
+// enter (G2: nothing is queued). A zero-distance walk — you were already
+// standing there, `position.arrived` is true, the arrival instant IS this
+// instant — keeps today's words untouched.
 //
 // THE DOOR'S OWN WORDS RIDE EITHER SHAPE. `entered` and `within` are the two
 // keys that assert a present fact, and only they are withheld; a refusal and a
@@ -4966,14 +4972,15 @@ export async function occupiedNowBy(who, thresholds, deps) {
 // (test/walk-grammar.test.mjs, ruling 3). A queued receipt that dropped them
 // would trade an early sentence for a missing one.
 //
-// `eta` is the ARRIVAL CROSSING itself — the instant the entry was adjudicated
-// against — not the `eta_crossings` duration the same answer already carries.
+// `eta` is the ARRIVAL CROSSING itself, from the unrounded remainder, so it
+// names the same instant as `arrives_at` — not the `eta_crossings` duration
+// the same answer already carries.
 //
 // CONSUMERS: `walkViaOffice`'s own reply, and nothing else. `arrived_note` has
 // one writer and no reader in the office; `grep` over postmark-site,
 // postmark-world and the town repo finds the receipt's `entry` block read by no
 // door at all (the town hits are residents' letters, which are content).
-export function walkEntryReceipt(entry, { arrived, stop, eta } = {}) {
+export function walkEntryReceipt(entry, { arrived, stop, eta, queued = true, why = null } = {}) {
   if (!entry) return {};
   if (arrived) return {
     entry,
@@ -4982,6 +4989,8 @@ export function walkEntryReceipt(entry, { arrived, stop, eta } = {}) {
       : "arrived, and stepped inside — the entry was adjudicated at the arrival instant, by its own door",
   };
   const { entered, within, ...doorsWords } = entry;
+  if (queued === false) return { entry: { queued_for_arrival: false, stop, eta, ...doorsWords,
+    note: `nothing is queued: ${why ?? "the mark would not let you in as its law stands now"}. Nothing has been entered` } };
   return { entry: { queued_for_arrival: true, stop, eta, ...doorsWords,
     note: "the entry is adjudicated when you arrive; nothing has been entered yet" } };
 }
@@ -5568,53 +5577,56 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
       recordsOf: (h) => departures.filter((d) => d.handle === h),
     }).catch(() => null);
   }
-  // ── THE ENTRY LEG, FIRING AS ITSELF AT ARRIVAL ────────────────────────────
+  // ── THE ENTRY LEG, MADE AT ARRIVAL (WLD-5, POS-618; Darko 2026-10-14) ──────
   //
-  // Ruled: "the entry leg fires AS ITSELF at arrival — the enter act's own
-  // terms/consent-at-thresholds delivery, never bypassed by riding a walk; if
-  // the entry refuses, THE WALK STILL STANDS."
+  // Ruled first: "the entry leg fires AS ITSELF at arrival — the enter act's
+  // own terms/consent-at-thresholds delivery, never bypassed by riding a walk;
+  // if the entry refuses, THE WALK STILL STANDS." Ruled again on 10-14, on how:
+  // "delaying the row on the ledger until they actually arrive at the thing,
+  // while still affording residents the convenience of being able to say: I
+  // want to enter at the time I arrive."
   //
-  // So this composes `enterViaOffice` and does not fork it: the same door, the
-  // same threshold law, the same terms delivery. What it substitutes is the
-  // INSTANT and the STANDPOINT, and that substitution is the tense law rather
-  // than a convenience — state-and-time: an event is judged against the
-  // geometry of its own instant. The walk is declared now and ARRIVES later
-  // (position = f(record, clock)), so an entry judged at the walk's instant
-  // would be adjudicated from the doorstep the walker has not reached yet, and
-  // `verbs.enter`'s proximity check would refuse a walker who is on their way.
+  // So this door writes NO enter row for a walker who has not arrived. It used
+  // to run the enter here with the arrival crossing as its clock, which wrote
+  // rows now and dated them ahead: 49 of the ledger's 52 backward ferry steps,
+  // and a portal's landing that could not be written at all. Now:
   //
-  // HOW IT IS ENCODED, said plainly because the ruling asked: the entry is
-  // DECLARED at walk-time and EVALUATED AT THE ARRIVAL INSTANT. `now` becomes
-  // the arrival's fractional crossing (departure + the leg's own ETA, the
-  // derivation this answer already computed and reports) and `standpointOf`
-  // becomes the arrival point. Nothing is scheduled and nothing waits: the
-  // threshold ledger's own stamp carries the arrival crossing, so the act is
-  // written where it happens on the town's clock.
+  //   · ALREADY THERE (a zero-length leg, or a start inside the mark): the
+  //     ordinary enter runs now, with the office's real deps.
+  //   · ON THE WAY: a pre-check, the same enter judged at the arrival instant
+  //     from the walk's target with a pen that writes nothing. If it would
+  //     enter, the intent is queued against this walk's act and the office's
+  //     arrival tick makes the entry when the walker arrives, by the mark's law
+  //     at that moment (arrival-entries.mjs). If it would not, nothing is
+  //     queued and the answer says why (Darko, G2).
   //
-  // The import is lazy on purpose — `world-crossings` reaches back into this
+  // The import is lazy on purpose: `world-crossings` reaches back into this
   // module, and a top-level edge would be a cycle for a leg most walks never
   // take.
   let entry = null;
   let arrivedAtCrossing = null;
+  let queued = null, queueWhy = null;
   if (enterOnArrival) {
-    arrivedAtCrossing = at + (result.position.etaCrossings ?? 0);
-    try {
-      const { enterViaOffice } = await import("./world-crossings.mjs");
-      const { crossingDeps } = await import("./world-apex.mjs");
-      entry = await enterViaOffice(worldClone, { mark: targetMarkId, handle: who, accept: payload.accept === true }, key, {
-        ...crossingDeps(),
-        walking: null,
-        stop: null,
-        now: () => arrivedAtCrossing,
-        standpointOf: async () => ({ x: toward.x, y: toward.y, name: who }),
-      });
-    } catch (e) {
-      // THE WALK STILL STANDS. The leg is already recorded; an entry that
-      // refuses is a fact about the door, not about the journey — so it is
-      // disclosed on the answer rather than thrown, and the walker learns both
-      // halves of what happened in one sentence.
-      entry = { refused: e?.defect ?? String(e?.message ?? e), ...(e?.hint ? { hint: e.hint } : {}), ...(e?.code ? { code: e.code } : {}) };
-    }
+    // The arrival on the town clock, from the UNROUNDED remainder and the
+    // leg's own stride: the instant `arrives_at` names, as a crossing.
+    const strideKm = result.pace > 0 ? result.pace : WALK_KM_PER_CROSSING;
+    arrivedAtCrossing = at + (Number(result.position.remainingM ?? 0) / (strideKm * 1000));
+    const { entryAtTheWalk } = await import("./arrival-entries.mjs");
+    const { enterViaOffice } = await import("./world-crossings.mjs");
+    const { crossingDeps } = await import("./world-apex.mjs");
+    const made = await entryAtTheWalk({
+      who, key, mark: targetMarkId, accept: payload.accept === true,
+      into: payload.into == null || payload.into === "" ? null : String(payload.into),
+      arrived: result.position.arrived === true,
+      target: { x: toward.x, y: toward.y },
+      arrivalCrossing: arrivedAtCrossing,
+      dueAt: crossingSailsAt(arrivedAtCrossing),
+      walkActId: result.seq ?? null,
+      household: resolvedWorldHousehold(key),
+    }, { enter: (p, k, d) => enterViaOffice(worldClone, p, k, d), crossingDeps });
+    entry = made.entry;
+    queued = made.queued;
+    queueWhy = made.why ?? null;
   }
 
   return {
@@ -5634,15 +5646,16 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
           acted_by_note: `this walk was ${String(payload.as_human)}'s act, recorded under ${who} — the seat is the body the world can place, and ${seatedGround} is the ground that seats them` }
       : {}),
     departed_at_crossing: at,
-    ...walkEntryReceipt(entry, { arrived: result.position.arrived === true, stop: targetMarkId, eta: arrivedAtCrossing }),
+    ...walkEntryReceipt(entry, { arrived: result.position.arrived === true, stop: targetMarkId, eta: arrivedAtCrossing,
+      queued: queued !== false, why: queueWhy }),
     leg_m: legM,
     via_crossings: via,
     eta_crossings: result.position.etaCrossings,
     // The same arrival on the wall clock (POS-331 part 3, crossings.mjs §
     // arrivesAt), from the unrounded remainder and the leg's own stride (the
     // stamped pace, else the engine's legacy constant, positionAt's own rule),
-    // so read: "walk" names the same instant to the second. The queued entry
-    // is still adjudicated at departure + the rounded eta (`entry.eta`).
+    // so read: "walk" names the same instant to the second. A queued entry's
+    // `entry.eta` is the same arrival as a crossing (WLD-5).
     arrives_at: arrivesAt(at, result.position.remainingM, result.pace > 0 ? result.pace : WALK_KM_PER_CROSSING),
     // ABSENT unless the Mists slowed this road, so every other answer is the one it was
     ...(mistFactor ? { mists: { factor: mistFactor, deepest: +mistRoad.deepest.toFixed(3), stride_km: result.pace,
@@ -5988,8 +6001,9 @@ export const WORLD_TOOLS = [
       mode: { type: "string", enum: ["rim", "center"], description: "where ON the destination you stop — NOT the destination itself (that is mark_id: or x:/y:). \"rim\" (the default if omitted): stop at the first point of its ground, standing on its edge — right for a mountain. \"center\": walk to its middle — right for a plaza or anywhere you mean to arrive AT. Meaningless for x/y targets; a coordinate is already a point." },
       handle: { type: "string", description: "which of YOUR residents is walking (omit if your key holds one; a multi-resident key must name one, or it bounces with the list)" },
       exit: { type: "boolean", description: "DEC-5: if this walk would carry you OUT of a mark you are within, pass true to step out of it (innermost outward) and walk in one call; without it such a walk is refused and names the mark. Walking INTO a footprint never enters — entry stays your own act." },
-      enter_on_arrival: { type: "boolean", description: "step inside the mark you are walking to, at the moment you arrive. Only meaningful with mark_id — a coordinate is not enterable, and pairing it with x/y bounces by name. The entry fires AS ITSELF: its own threshold law, terms and consent-at-thresholds delivery, adjudicated at the ARRIVAL instant rather than this one, so riding a walk bypasses nothing — until you arrive the receipt reads queued_for_arrival, never entered. A counter-edge door shows its terms and records nothing until you pass accept: true. IF THE ENTRY REFUSES, THE WALK STILL STANDS, alongside the door's own words." },
-      accept: { type: "boolean", description: "your explicit word at the threshold, for use with enter_on_arrival where the door declares a counter-edge (the Post Office's `aboard`). Walk once without it to READ the terms on arrival; walk again with it to cross." },
+      enter_on_arrival: { type: "boolean", description: "step inside the mark you are walking to, when you arrive. Only meaningful with mark_id — a coordinate is not enterable, and pairing it with x/y bounces by name. The mark's law is checked now, and the entry is made at the ARRIVAL instant by the ordinary enter and that law as it stands then, so riding a walk bypasses nothing. Until you arrive the receipt reads queued_for_arrival, never entered. A mark that refuses you now, or wants your word (accept: true) or a way (into:), queues nothing and says why. IF THE ENTRY REFUSES, THE WALK STILL STANDS." },
+      accept: { type: "boolean", description: "your explicit word at the threshold, for use with enter_on_arrival where the door declares a counter-edge (the Post Office's `aboard`). Walk once without it to READ the terms; walk again with it to have the entry made on arrival." },
+      into: { type: "string", description: "with enter_on_arrival, at a portal that leads more than one way: which way, one of the ids its answer lists in `choose`." },
     }, additionalProperties: false } },
   { name: "world_withdraw_mark",
     description: "Withdraw your own mark — the terminal supersession (edit-law's revision family). The mark leaves your sketchbook now and canon at the next crossing (the settlement unpublishes it); its whole life stays in the log — nothing is erased. Guards: only the hand that left a mark may withdraw it; a mark still holding other marks inside it refuses (move or withdraw the children first); a mark with escrow on it refuses (staked stamps anchor it — your own come back with world_unstake, another resident's must be unstaked by its owner). To CHANGE a mark rather than remove it, use world_leave_mark with amend: true — a withdrawal is for marks that should stop standing.",

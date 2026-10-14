@@ -985,7 +985,7 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //   slim  19417 -> 19467 (+50, +0.26%) = stances +50
   //
   // ⚠ AND RE-CAPTURED A THIRTEENTH TIME, 2026-10-14 (lane plumb-arrival, WLD-5),
-  // because the PR moved the world pin, 17b64ef1 -> 4814c61c (the head of
+  // because the PR moved the world pin, 17b64ef1 -> 01f7c83e (the head of
   // postmark-world#206, over main 9988b669), as the tenth note says a pin move
   // must. The code was cleared first: at this PR's head with a CI-shaped clone at
   // the OLD pin (suite-clones.sh's fetch), F7c5 is green. Then the diff, leaf by

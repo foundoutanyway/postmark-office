@@ -1860,9 +1860,12 @@ async function departuresBlock(oriented) {
 }
 
 /** What you are aboard, when it next moves, and how you get off. Null when your frame is the world. */
-async function frameBlock(oriented, key) {
+async function frameBlock(oriented, key, args = {}) {
   if (!movementV2Enabled()) return null;
-  const handle = oriented?.standpoint?.stance === "embodied" ? [...(key?.handles ?? [])].find((h) => true) ?? null : null;
+  // The resident the read names, else the key's only one (`standingHandle`) —
+  // never the key's FIRST handle, which on a two-resident key answered about
+  // the housemate (the #3394 shape, § rideDomain).
+  const handle = oriented?.standpoint?.stance === "embodied" ? standingHandle(args, key) : null;
   const who = oriented?.standpoint?.handle ?? handle;
   if (!who) return null;
   try {
@@ -2068,7 +2071,15 @@ export async function happenedFor(oriented, args, key) {
   if (!movementV2Enabled()) return null;
   const since = Number(args.since);
   if (!Number.isFinite(since)) return null;
-  const who = oriented?.standpoint?.handle ?? null;
+  // WHOSE BACKLOG: THE RESIDENT THE READ NAMES (2026-10-14). This read
+  // `oriented.standpoint.handle` alone, which orient's standpoint never carries
+  // (the same hole § rideDomain closed for #3394), so `who` was always null:
+  // no claim effects, no hold effects, no transitions, and `around_you` never
+  // left the caller out. Every resident read `to_you: { complete: true,
+  // count: 0 }` over crossings that had ruled on their ground. `standingHandle`
+  // is the walk door's rule: the named handle, else the key's only one.
+  const standing = oriented?.standpoint?.stance === "embodied" ? standingHandle(args, key) : null;
+  const who = oriented?.standpoint?.handle ?? standing;
   const nowCrossing = oriented?.crossing?.n ?? currentCrossing();
   try {
     const at = { x: oriented.standpoint.x, y: oriented.standpoint.y };
@@ -2283,7 +2294,7 @@ async function apexRead(args, key, ctx = {}) {
   // `happened` rides only a read that ASKED, with `since:`. It is a cursor, not
   // a feed: the crossing number is the town's clock and the caller keeps their
   // own place in it, the same shape `world_say`'s `latest` already proved.
-  const frame = await frameBlock(oriented, key);
+  const frame = await frameBlock(oriented, key, args);
   // The shore side of the same contract (the-stop-answers, timetable class,
   // 2026-08-23): a read taken at a landing carries the vessel's next departures
   // from it. Aboard, `frame.moves_next` already answers — the two never speak

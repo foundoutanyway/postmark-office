@@ -37,6 +37,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { actsQuery, world2Enabled } from "./world2-acts.mjs";
+import { errorSaid, faultLogged, isHttpStatus } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 import { DEPARTURE_ACTIONS, departureRecordOf, fractionalCrossing } from "../world2/tools/live-reads.mjs";
 
 export const ARRIVAL_TICK_MS = 10_000;
@@ -100,7 +101,7 @@ export async function queueArrival({ walkActId, handle, household = null, mark, 
     if (rows === null) return { queued: false, why: "this office is not pointed at the store" };
     return rows.length === 1 ? { queued: true } : { queued: false, why: "this walk's entry is already queued" };
   } catch (e) {
-    return { queued: false, why: `the store did not take it (${String(e?.message ?? e).split("\n")[0].slice(0, 160)})` };
+    return { queued: false, why: `the store did not take it (${faultLogged("an arrival entry could not be queued", e)})` };
   }
 }
 
@@ -156,9 +157,11 @@ export async function entryAtTheWalk({ who, key, mark, accept = false, into = nu
   return q.queued ? { entry: answer, queued: true } : { entry: answer, queued: false, why: `${q.why}. Walk there and enter by hand` };
 }
 
-/** A thrown refusal in the walk answer's own words (`world.mjs § THE WALK STILL STANDS`). */
+/** A thrown refusal in the walk answer's own words (`world.mjs § THE WALK STILL STANDS`):
+ *  a refusal is relayed by its own defect; anything else is the office's fault, logged. */
 function refusalOf(e) {
-  return { refused: e?.defect ?? String(e?.message ?? e), ...(e?.hint ? { hint: e.hint } : {}), ...(e?.code ? { code: e.code } : {}) };
+  if (isHttpStatus(e?.code) && e?.defect) return { refused: e.defect, ...(e.hint ? { hint: e.hint } : {}), code: e.code };
+  return { refused: "the office could not check this entry", hint: faultLogged("an arrival entry's pre-check tripped", e), code: 500 };
 }
 
 // ── AT ARRIVAL ───────────────────────────────────────────────────────────────
@@ -171,8 +174,9 @@ function refusalOf(e) {
 export function arrivalOutcome({ answer = null, error = null, seq = null } = {}) {
   if (error) {
     if (error.arrival_settled != null) return { outcome: "entered", enterActId: String(error.arrival_settled) };
-    if (error.code === 503 || error.name === "PenUnreachableError") return { held: String(error.defect ?? error.message ?? error).slice(0, 200) };
-    return { outcome: "refused", words: wordsOf(error.defect ?? error.message ?? error, error.hint) };
+    if (error.code === 503 || error.name === "PenUnreachableError") return { held: error.defect ?? "the office's record could not be reached" };
+    if (isHttpStatus(error.code) && error.defect) return { outcome: "refused", words: wordsOf(error.defect, error.hint) };
+    return { outcome: "refused", words: wordsOf("the office could not make the entry", faultLogged("an arrival entry tripped", error)) };
   }
   if (!answer) return { outcome: "refused", words: "the mark gave no answer" };
   if (answer.choose) return { outcome: "refused", words: wordsOf(answer.note ?? "this portal leads more than one way, and the way you named is not one of them") };
@@ -218,7 +222,7 @@ export async function arrivalTick({ now = Date.now(), query = actsQuery, current
       const done = await query(SETTLE_SQL, [walk, settle.outcome, settle.enterActId ?? null, settle.words ?? null]);
       if (done?.length) out[settle.outcome].push(walk);
     } catch (e) {
-      out.held.push({ walk, why: String(e?.message ?? e).split("\n")[0].slice(0, 160) });
+      out.held.push({ walk, why: errorSaid(e).split("\n")[0].slice(0, 160) });   // the log line's, never an answer
     }
   }
   out.line = `arrivals: ${out.due} due · ${out.entered.length} entered · ${out.refused.length} refused · ${out.already.length} already · ${out.overtaken.length} overtaken`
@@ -291,9 +295,8 @@ export const arrivalOnceGuard = ({ walk, actor }) => async (client) => {
     "SELECT id::text AS id FROM acts WHERE actor = $1 AND action = 'enter' AND payload->>'arrival_of' = $2 ORDER BY id LIMIT 1",
     [actor, String(walk)]);
   if (rows.length) {
-    const e = new Error(`walk ${walk} was already entered on arrival, by act ${rows[0].id}`);
-    Object.assign(e, { code: 409, defect: e.message, hint: "nothing was written a second time", arrival_settled: rows[0].id });
-    throw e;
+    const defect = `walk ${walk} was already entered on arrival, by act ${rows[0].id}`;
+    throw Object.assign(new Error(defect), { code: 409, defect, hint: "nothing was written a second time", arrival_settled: rows[0].id });
   }
 };
 
@@ -358,7 +361,7 @@ export function startArrivalTick({ port, env = process.env, log = console, tick 
       timer.last = { at: new Date().toISOString(), line: r.line };
       if (r.due) log.log?.(`[arrivals] ${r.line}`);
     } catch (e) {
-      timer.last = { at: new Date().toISOString(), error: String(e?.message ?? e).slice(0, 200) };
+      timer.last = { at: new Date().toISOString(), error: errorSaid(e).slice(0, 200) };   // the operator's, never an answer
       log.error?.(`[arrivals] the tick could not read the queue: ${timer.last.error}`);
     } finally { timer.running = false; }
   };

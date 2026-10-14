@@ -145,7 +145,10 @@ test("arrivalOutcome — every answer of the ordinary enter has one settle", () 
   assert.deepEqual(arrivalOutcome({ answer: { entered: ["a"], refused: { mark: "a/b" }, stranded_at: "a/b" }, seq: "6" }),
     { outcome: "refused", enterActId: "6", words: "refused at a/b" }, "a chain refused part-way keeps the act it wrote");
   assert.equal(arrivalOutcome({ answer: { entered: [], crossed_nothing: "nothing" } }).outcome, "refused");
-  assert.deepEqual(arrivalOutcome({ error: { name: "PenUnreachableError", message: "gone" } }), { held: "gone" });
+  assert.deepEqual(arrivalOutcome({ error: { name: "PenUnreachableError", message: "gone" } }), { held: "the office's record could not be reached" });
+  const tripped = arrivalOutcome({ error: new Error("pg: relation does not exist") });
+  assert.equal(tripped.outcome, "refused");
+  assert.equal(tripped.words.includes("relation"), false, "a codeless error's own text never reaches the walker (POS-578)");
   for (const o of [{ answer: { entered: ["a"] } }, { answer: { already: true, entered: [] } }])
     assert.ok(ARRIVAL_OUTCOMES.includes(arrivalOutcome(o).outcome));
 });
@@ -329,4 +332,15 @@ test("THE REACH AT ARRIVAL is measured from the walk's target: a published arriv
   const o = await officeAt({ published: { x: 836.95, y: 1000 } });
   const { answer } = await enterAtArrival(ROW, { arrived: true, target: OUTSIDE_FACE }, { base: o.base, enter: enterViaOffice, worldClone: CLONE });
   assert.deepEqual(answer.entered, [SPIRE, "spire/vestibule"]);
+});
+
+test("[pin] the line rides the walker's own standpoint (every read) and their doorstep's world block, and nothing else (G3)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/world.mjs", import.meta.url), "utf8");
+  assert.match(src, /const arrival = choice\.handle \? await \(await import\("\.\/arrival-entries\.mjs"\)\)\.arrivalLineFor\(choice\.handle\)\.catch\(\(\) => \(\{\}\)\) : \{\};\n  return \{ standpoint: \{ \.\.\.at, stance: choice\.stance, \.\.\.arrival \},/,
+    "worldOrient: a spectator's glance (coords, no handle) carries nobody's line");
+  const block = src.slice(src.indexOf("export async function worldBlockForHandle("), src.indexOf("async function doorstepTransportFor("));
+  assert.match(block, /const arrival = await \(await import\("\.\/arrival-entries\.mjs"\)\)\.arrivalLineFor\(handle\)/);
+  assert.equal(block.split("...(transport ? { transport } : {}), ...arrival };").length - 1, 2, "both of the doorstep block's answers carry it");
+  assert.equal((src.match(/arrivalLineFor\(/g) ?? []).length, 2, "and no other reader of world.mjs");
 });

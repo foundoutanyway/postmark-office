@@ -255,11 +255,10 @@ export async function arrivalOf(row, { query = actsQuery, now = Date.now(), walk
  * so it acts with the walker's own handle and the household the walk was
  * declared under.
  */
-export async function enterAtArrival(row, a) {
-  const { enterViaOffice } = await import("./world-crossings.mjs");
-  const { crossingDeps } = await import("./world-apex.mjs");
-  const { WORLD_CLONE } = await import("./world.mjs");
-  const base = crossingDeps();
+export async function enterAtArrival(row, a, { base = null, enter = null, worldClone = null } = {}) {
+  enter ??= (await import("./world-crossings.mjs")).enterViaOffice;
+  base ??= (await import("./world-apex.mjs")).crossingDeps();
+  worldClone ??= (await import("./world.mjs")).WORLD_CLONE;
   let seq = null;
   const deps = {
     ...base,
@@ -272,7 +271,7 @@ export async function enterAtArrival(row, a) {
     record: async (p) => { const r = await base.record({ ...p, arrival_of: String(row.walk) }); seq = r?.seq ?? seq; return r; },
   };
   const key = { handles: new Set([row.handle]), household: row.household ?? null };
-  const answer = await enterViaOffice(WORLD_CLONE, {
+  const answer = await enter(worldClone, {
     mark: row.mark, handle: row.handle, accept: row.accept === true, ...(row.into_mark ? { into: row.into_mark } : {}),
   }, key, deps);
   return { answer, seq: seq == null ? null : String(seq) };
@@ -347,7 +346,7 @@ const timer = { handle: null, running: false, last: null };
  * One run now (the restart's catch-up), then every ARRIVAL_TICK_MS, serial: a
  * tick still running when the next is due lets it pass. Unref'd. Idempotent.
  */
-export function startArrivalTick({ port, env = process.env, log = console } = {}) {
+export function startArrivalTick({ port, env = process.env, log = console, tick = arrivalTick } = {}) {
   if (timer.handle) return false;
   if (String(env.ARRIVAL_TICK ?? "").toLowerCase() === "off") { log.log?.("[arrivals] ARRIVAL_TICK=off: entries queued on a walk are not made until it is on"); return false; }
   if (!world2Enabled(env) || Number(port) === 0) return false;
@@ -355,7 +354,7 @@ export function startArrivalTick({ port, env = process.env, log = console } = {}
     if (timer.running) return;
     timer.running = true;
     try {
-      const r = await arrivalTick();
+      const r = await tick();
       timer.last = { at: new Date().toISOString(), line: r.line };
       if (r.due) log.log?.(`[arrivals] ${r.line}`);
     } catch (e) {
@@ -368,6 +367,9 @@ export function startArrivalTick({ port, env = process.env, log = console } = {}
   timer.handle.unref?.();
   return true;
 }
+
+/** Tests only: stop the timer. */
+export function stopArrivalTick() { if (timer.handle) clearInterval(timer.handle); Object.assign(timer, { handle: null, running: false, last: null }); }
 
 /** The tick's last run, for an operator. */
 export const arrivalTickLast = () => timer.last;

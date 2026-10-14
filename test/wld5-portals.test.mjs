@@ -172,3 +172,14 @@ test("A DUNGEON WITHHOLDS THE EXIT CARD while your stack holds one, and only the
   assert.equal(withoutExitInDungeon(cards, { stack: ["spire/the-approach"], marks: marks(), verbs }), cards);
   assert.equal(withoutExitInDungeon(cards, { stack: ["spire/grounds"], marks: marks(), verbs: {} }), cards, "a clone without the class withholds nothing");
 });
+
+test("[pin] the four resident reads ask sightFor before they read a mark (the wiring sightedWorld's test cannot see)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/world.mjs", import.meta.url), "utf8");
+  for (const fn of ["worldOrient", "worldEyes", "worldInvestigate", "worldFind"]) {
+    const start = src.indexOf(`export async function ${fn}(`);
+    assert.ok(start >= 0, `${fn} exists`);
+    const head = src.slice(start, start + 900);
+    assert.match(head, /const w = await sightFor\(await world\(\),/, `${fn} reads the world through sightFor`);
+  }
+});

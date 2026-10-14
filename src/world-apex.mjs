@@ -287,22 +287,6 @@ function lendsAt(markId) {
  * verbs they are actually standing in — it costs them the vehicle's, which they
  * will be told about by the refusal's own sentence.
  */
-/** The cards a dungeon withholds (WLD-5): `exit`, while the stack stands
- *  inside one, by the world tools' own answer (world-verbs.mjs § heldDungeon).
- *  `withoutExitInDungeon` is the pure half; a clone that predates WLD-5 has
- *  no dungeon class, so it withholds nothing. */
-export function withoutExitInDungeon(actions, { stack = [], marks = [], verbs = {} } = {}) {
-  if (typeof verbs.heldDungeon !== "function" || !verbs.heldDungeon(stack, marks)) return actions;
-  return actions.filter((e) => e.action !== "exit");
-}
-async function withheldInADungeon(actions, stack) {
-  try {
-    const { crossingLaw } = await import("./world-crossings.mjs");
-    const { verbs } = await crossingLaw(WORLD_CLONE);
-    return withoutExitInDungeon(actions, { stack, marks: (await worldStateRaw())?.marks ?? [], verbs });
-  } catch { return actions; }
-}
-
 export async function occupiedMarksOf(handle) {
   const who = String(handle ?? "").trim();
   if (!who) return [];
@@ -2232,11 +2216,6 @@ async function apexRead(args, key, ctx = {}) {
       // that would consume it stays in world-grants.mjs, one argument away.
     });
     actions = resolved.entries;
-    // A DUNGEON OFFERS NO EXIT (WLD-5): while your stack holds one, the exit
-    // card is withheld, and the exit act's own handler refuses it naming the
-    // portals out. Cards only ever ADD grants, so this is the one subtraction,
-    // and it asks the world tools whether you are inside a dungeon.
-    if (occupied.length) actions = await withheldInADungeon(actions, occupied);
     refusedGrants = resolved.refused;
     seatedAt = resolved.seated;
     handoffSeat = resolved.handoff;

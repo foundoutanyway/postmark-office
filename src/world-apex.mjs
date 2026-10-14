@@ -451,7 +451,8 @@ export function crossingDeps() {
     stop: async (who, here, key, opts = {}) => walkViaOffice(WORLD_CLONE, { handle: who, x: here.x, y: here.y,
       ...(opts?.from && Number.isFinite(Number(opts.from.x)) && Number.isFinite(Number(opts.from.y)) ? { __from: { x: Number(opts.from.x), y: Number(opts.from.y) } } : {}),
       ...(opts?.exit === true ? { exit: true } : {}) }, key),
-    now: () => (Date.now() - Date.UTC(2026, 5, 12)) / (12 * 3600 * 1000),
+    // given the door's one reading (world-crossings.mjs § passageInstant), it names that reading's ferry
+    now: (ms = Date.now()) => (ms - Date.UTC(2026, 5, 12)) / (12 * 3600 * 1000),
     // THE ACTS THIS ACTOR HAS WRITTEN, oldest first — the ride fold's one input
     // (world-ride.mjs § rideStateFrom). Read from the STORE (POS-152), which is
     // never truncated, so an entry older than the drain cursor is still here; a

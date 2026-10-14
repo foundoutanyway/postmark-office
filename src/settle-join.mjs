@@ -62,6 +62,8 @@ import { HANDLE_RE, joinBranch, houseForName, houseForAccount, planRegistryJoin,
 import { mintHousehold, joinHousehold, collectingDrain, NO_DRAIN } from "./ceremony.mjs";
 import { planHouseKey, appendHouseKey, houseKeyBounce, registryWith } from "./house-key.mjs";
 import { penCommit, landOrRefuse } from "./write.mjs";
+import { holdsHand } from "./named-hand.mjs";
+import { trippedError } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 // ── WHO MAY CALL IT ─────────────────────────────────────────────────────────
 //
@@ -100,9 +102,10 @@ const refuse = (r, detail = null) => Object.assign(new Error(r.defect), {
   code: r.code, defect: r.defect, hint: detail ? `${detail} — ${r.hint}` : r.hint,
 });
 
+// The caller is the hand this credential is FOR, not a housemate it lists
+// (POS-389, named-hand.mjs): a resident's own key is its own handle only.
 export function callerMaySettle(key) {
-  const held = key?.handles ?? new Set();
-  return SETTLE_JOIN_CALLERS.some((h) => held.has(h));
+  return SETTLE_JOIN_CALLERS.some((h) => holdsHand(key, h));
 }
 
 // ── THE PEN'S IDENTITY BLOCK ────────────────────────────────────────────────
@@ -340,8 +343,7 @@ async function runUnderTownLock(payload, { clone }) {
     out = await execUnderTownLock(EXEC, JSON.stringify(payload), { ...process.env, TOWN_CLONE: clone });
   } catch (e) {
     if (lockTimedOut(e)) throw Object.assign(new Error(LOCK_BUSY.defect), LOCK_BUSY);
-    throw Object.assign(new Error("the settle-join pass tripped"),
-      { code: 500, defect: "the settle-join pass tripped", hint: String(e.stderr ?? e.message ?? e).slice(0, 300) });
+    throw trippedError("the settle-join pass tripped", e); // its stderr goes to the log (POS-578)
   }
   const result = JSON.parse(out.trim().split("\n").at(-1));
   if (result.error)

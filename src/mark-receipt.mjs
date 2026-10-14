@@ -61,7 +61,7 @@ import { execFileSync } from "node:child_process";
 // `window` is the candle's, and it is labelled as the candle's. Nothing here
 // re-uses the bare word "crossing" for either.
 export const RECEIPT_CLOCK =
-  "crossing = the SETTLEMENT epoch (S-number + the sha it blessed, 05:45/17:45Z) — not the ferry's 00:00/12:00Z crossing, and not the candle's window";
+  "crossing = the SETTLEMENT epoch (S-number + the sha it blessed, 05:45/17:45Z) — not the ferry's 00:00/12:00Z crossing, and not candle N, the candle's own interval (LOGOS/classes.md § the register, crossing ③)";
 
 /**
  * The bulletin's own five words for why a mark did not ride.
@@ -86,7 +86,7 @@ export const RECEIPT_CLOCK =
  * and `world2/tools/review-rule.mjs` at 247-248 — writes `<name>: <detail>`:
  *
  *     duplicate: a standing mark already carries this slug
- *     superseded: a later claim in this window amends this one
+ *     superseded: a later claim in this candle amends this one
  *     insufficient-stamps: staked 3, liquid 1 at town 9f2a1b0c
  *     parcel-overlap: standing parcel "k-of-garrison/the-long-field"
  *     counterclaim: collides with 77 — a mind rules (census D2)
@@ -123,7 +123,20 @@ export const RECEIPT_CLOCK =
  * carried up in `docs/2026-09-08/jetto-candle-refusal-report.md` with the exact
  * sentence to change rather than edited here.
  */
-export const CAUSE_WORDS = Object.freeze(["held", "contested", "unbacked", "malformed", "quarantined", "unpublished"]);
+/**
+ * ⚑ `opposed` IS THE SEVENTH WORD, RULED BY DARKO 2026-10-08 (POS-364).
+ *
+ * A parcel over one of the town's limits (the-town/claim-cap, the-town/one-per-
+ * resident) is decided at the clearing as OPPOSED, citing the law mark, and
+ * never holds ground (world2/tools/parcel-cap.mjs § opposedCheck). Governance
+ * taking a claim away, citing the law, is none of the six: nobody else claims
+ * it (not contested), the stake is fine (not unbacked), the record is fine (not
+ * malformed), and nothing waits on a person (not quarantined, not held, not
+ * unpublished). The town's and a parcel holder's stance oppositions return a
+ * mark at the settlement (the fold's `returned[]`) and write no refusal check
+ * on a claim today; when one does, its check is `opposed` and this word is it.
+ */
+export const CAUSE_WORDS = Object.freeze(["held", "contested", "unbacked", "malformed", "quarantined", "unpublished", "opposed"]);
 
 const CAUSE_OF_CHECK = Object.freeze({
   // ── the CANDLE's writers (world2/tools/clearing-job.mjs) ──────────────────
@@ -143,6 +156,16 @@ const CAUSE_OF_CHECK = Object.freeze({
   // `canon-absent` on the nightly read — land on different words on purpose,
   // because they ask a resident for different things.
   "escrow-absent": "unbacked",
+  // A claim the store would not file (the roll does not name its claimant, or
+  // Postgres refused its one row), refused alone so the rest of the window
+  // locks (POS-356). RULED 2026-10-08 by Darko: `quarantined`, set aside by the
+  // town's own gate until a person fixes what it names.
+  "unfileable": "quarantined",
+  // A parcel over a limit, decided at the clearing (`opposed: <law>: <slug> — …`),
+  // and the spelling the clearing's older count wrote on the rows it refused
+  // (`parcel-cap: …`, before the A build). RULED 2026-10-08 by Darko: `opposed`.
+  "opposed": "opposed",
+  "parcel-cap": "opposed",
   // ── the REVIEW lane's writer (world2/tools/review-rule.mjs) ───────────────
   //
   // ⚑ `contested`, NOT `held` (repaired 2026-09-07, reviewer-found — and it is
@@ -233,6 +256,19 @@ export function checkNameOf(refusalCheck) {
 }
 
 const CAUSE_ROW_PREFIX = "claims.refusal_check = ";
+
+/**
+ * THE LAW A CLEARING'S OPPOSITION CITES (POS-364; Darko RULED A, 2026-10-08): a
+ * parcel over a limit is decided `opposed: <law mark>: …` (world2/tools/
+ * parcel-cap.mjs § opposedCheck). The law mark, or null for any other check.
+ * Its bulletin word is `opposed` (CAUSE_WORDS); the sentence also names the law.
+ */
+export function opposedLawOf(refusalCheck) {
+  const raw = String(refusalCheck ?? "").trim();
+  if (checkNameOf(raw) !== "opposed") return null;
+  const m = /^opposed:\s*([^:\s]+)/i.exec(raw);
+  return m ? m[1] : null;
+}
 
 export function causeOf(refusalCheck) {
   const raw = String(refusalCheck ?? "").trim();
@@ -374,7 +410,9 @@ export function receiptFrom(records = {}) {
       ...base, status: "refused", cause, cause_row,
       crossing: settlement ?? null,
       settlement_sha: settlement?.sha ?? null,
-      says: `refused at window ${row.window_id}${cause ? ` — ${cause}` : ""}${row.decided_at ? ` (${row.decided_at})` : ""}`
+      says: opposedLawOf(row.refusal_check)
+        ? `opposed at candle ${row.window_id}, citing ${opposedLawOf(row.refusal_check)}: the parcel is over its limit and holds no ground${row.decided_at ? ` (${row.decided_at})` : ""}`
+        : `refused at candle ${row.window_id}${cause ? ` — ${cause}` : ""}${row.decided_at ? ` (${row.decided_at})` : ""}`
         + (cause ? "" : " — the check that refused it has no word in the bulletin's five yet; the row is named beside this"),
     };
   }
@@ -383,22 +421,22 @@ export function receiptFrom(records = {}) {
       ...base, status: "locked",
       crossing: settlement ?? null,
       settlement_sha: settlement?.sha ?? null,
-      says: `locked at window ${row.window_id} — the candle ruled for it; it reaches the world at the settlement that carries the window`,
+      says: `locked at candle ${row.window_id} — the candle ruled for it; it reaches the world at the settlement that carries that candle`,
     };
   }
   if (row?.status === "retracted") {
-    return { ...base, status: "retracted", says: `retracted at window ${row.window_id} — you took it off the docket before the close` };
+    return { ...base, status: "retracted", says: `retracted at candle ${row.window_id} — you took it off the docket before the close` };
   }
   if (row?.status === "held_review") {
     return { ...base, status: "held_review", cause: "held", cause_row: "claims.status = \"held_review\"",
-      says: `held at window ${row.window_id} — a mind rules on it; it did not ride and it was not refused` };
+      says: `held at candle ${row.window_id} — a mind rules on it; it did not ride and it was not refused` };
   }
 
   // 3 · PENDING. On the public docket, waiting for the candle.
   if (row?.status === "pending") {
     return {
       ...base, status: "pending",
-      says: `pending at window ${row.window_id} — staked and on the public docket since ${row.submitted_at ?? "its stake"}; it rides when that window closes`,
+      says: `pending at candle ${row.window_id} — staked and on the public docket since ${row.submitted_at ?? "its stake"}; it rides when that candle closes`,
     };
   }
 
@@ -468,17 +506,61 @@ const git = (repo, args) => execFileSync("git", ["-C", repo, ...args], {
  * Each flag fixes a different case and BOTH are needed: `--follow` alone still
  * answers S6 for the re-leave, oldest-add alone still answers S8 for the move.
  * `test/mark-receipt.test.mjs § THE THREE LIVES A MARK'S FILE CAN HAVE`.
+ *
+ * ── A LOOK-ALIKE IS NOT A MOVE (repaired 2026-10-13, postmark#3548) ──────────
+ *
+ * `git log --follow` follows more than renames: it runs copy detection as well,
+ * so a NEW file that is mostly the same as an older file reads as a copy of it
+ * and the walk carries on down the OLDER file's history. Mark files are short
+ * and share a frontmatter shape, so two marks with the same body are copies to
+ * git. Live: little-bird/a-second-cold-cup-on-the-long-bench first lands in the
+ * S97 commit, and its receipt named S42 — the settlement that added the FIRST
+ * cup — with a real sha, which is the one thing this function exists to prevent.
+ *
+ *   a look-alike of an older mark   truth S10 · answered S9   wrong
+ *
+ * So the walk is done by hand, one move at a time, and a hop is taken only when
+ * the commit that added the path RENAMED another path into it (`-M`, renames
+ * only: the source is gone). A copy leaves its source standing and is not a
+ * move. Exact matches only (`--follow -M100%`) is not the repair: the world's
+ * household un-nesting (857dc401) renamed 255 mark files and edited 99 of them
+ * in the same commit, and every one of those would have read as a fresh add.
+ * `test/mark-receipt.test.mjs § TWO MORE LIVES`.
  */
+const MAX_MOVES = 16;
+
+/** The path `commit` RENAMED into `path`, or null. Renames only — never copies. */
+function renamedFrom(repo, commit, path) {
+  let out;
+  try {
+    out = git(repo, ["diff-tree", "-r", "-M", "-z", "--root", "--no-commit-id", "--name-status", "--diff-filter=R", commit]);
+  } catch { return null; }
+  // -z: `R<score>\0<from>\0<to>\0`, repeated.
+  const f = out.split("\0");
+  for (let i = 0; i + 2 < f.length; i += 3) {
+    if (/^R\d*$/.test(f[i]) && f[i + 2] === path) return f[i + 1];
+  }
+  return null;
+}
+
 export function settlementThatCarried(repo, path, { tags = null, ref = "HEAD" } = {}) {
   if (!repo || !path) return null;
-  let added;
+  let added = "";
   try {
-    // --follow so a rename is one life, not two; no -1 so every add is listed
-    // (newest first) and the OLDEST is taken below. `--follow` takes exactly one
-    // pathspec, which is what this function is handed.
-    const adds = git(repo, ["log", "--follow", "--diff-filter=A", "--format=%H", ref, "--", path])
-      .split("\n").map((s) => s.trim()).filter(Boolean);
-    added = adds.length ? adds[adds.length - 1] : "";
+    // No -1, so every add of the path is listed (newest first) and the OLDEST
+    // is taken. Then one hop back for each RENAME into it, so a move is one
+    // life, not two — and a look-alike is its own life, not its twin's.
+    let at = ref, p = path;
+    for (let hop = 0; hop < MAX_MOVES; hop++) {
+      const adds = git(repo, ["log", "--diff-filter=A", "--format=%H", at, "--", p])
+        .split("\n").map((s) => s.trim()).filter(Boolean);
+      if (!adds.length) break;
+      added = adds[adds.length - 1];
+      const from = renamedFrom(repo, added, p);
+      if (!from) break;
+      p = from;
+      at = `${added}^`;
+    }
   } catch { return null; }
   if (!added) return null;
   let containing;
@@ -601,7 +683,7 @@ export async function readMarkReceipt(id, { repo, key = null, canon = null, publ
     id: markId, canon: canonRow, published_at: carried, claims,
     sketchbook, withdrawn, settlement,
     // ⚑ NOTHING RECORDS THE SITE PIN, and this is the honest null rather than a
-    // guess. `site_pin` is the `postmark-world` version `keeminlee/postmark-site`
+    // guess. `site_pin` is the `postmark-world` version `postmark-town/postmark-site`
     // is built against; the office holds no clone of the site and no record of
     // its pin, so the one field of the plan's receipt shape that the store
     // cannot derive is this one. It is a FINDING, not a schema change: either

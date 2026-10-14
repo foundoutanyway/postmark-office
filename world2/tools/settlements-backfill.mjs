@@ -92,6 +92,9 @@ import { resolve } from "node:path";
 
 import { SETTLEMENT_TAG, isRepoRoot } from "../../src/settlements.mjs";
 import { recordCarried, receiptLine, TICK_CAP } from "./mark-carried-backfill.mjs";
+import { stockChests } from "./chest-stock.mjs";
+import { recoverOrphanDrops } from "../../src/drop-recovery.mjs";
+import { currentCrossing } from "../../src/crossings.mjs";
 
 const NL = String.fromCharCode(10);
 const arg = (n, d = null) => { const i = process.argv.indexOf(`--${n}`); return i === -1 ? d : process.argv[i + 1]; };
@@ -194,6 +197,45 @@ export async function carriedOnTick(client, repo) {
   }
 }
 
+/**
+ * THE FIRST STOCK OF EVERY CHEST THE SETTLEMENTS ADMITTED (WLD-27,
+ * chest-stock.mjs): once per chest, ever, by the plan and by the nonce. Like
+ * the carried step, its failure is one named line and never undoes the
+ * settlement rows already committed; a store without the unit acts or the law
+ * says so. An unstocked chest is a line, not a failure.
+ */
+export async function stockedOnTick(client, { stock = stockChests, crossing = currentCrossing } = {}) {
+  try {
+    const r = await stock(client, { crossing: crossing() });
+    return { verdict: "ok", line: r.line, result: r };
+  } catch (e) {
+    return { verdict: "error", line: `chests: NOT stocked (non-fatal) — ${String(e?.message ?? e).slice(0, 200)}` };
+  }
+}
+
+/**
+ * ORPHANED SET-DOWNS COME BACK (WLD-27 F0, drop-recovery.mjs): every
+ * `units:drop` older than one tick with neither a mark filed for it nor an
+ * undo is returned to its dropper, once, with a line. Not gated on the carried
+ * step — it reads acts and claims, not settlements. Non-fatal like its
+ * neighbours: an error is one named line and the next tick tries again.
+ */
+export async function dropsRecoveredOnTick(client, { recover = recoverOrphanDrops, now = Date.now, crossing = currentCrossing } = {}) {
+  try {
+    const r = await recover(client, { now: now(), crossing: crossing() });
+    return { verdict: "ok", line: r.line, result: r };
+  } catch (e) {
+    return { verdict: "error", line: `drops: NOT reconciled (non-fatal) — ${String(e?.message ?? e).slice(0, 200)}` };
+  }
+}
+
+/** The stock step, gated on the carried step that proves admission (finding 7). */
+export async function chestsAfterCarried(client, carried, { stock = stockedOnTick } = {}) {
+  if (carried?.verdict !== "ok")
+    return { verdict: "held", line: `chests: not stocked this tick — the carried step did not settle (${carried?.verdict ?? "not run"}), and a chest is stocked only on the settlement that carried it` };
+  return stock(client);
+}
+
 // ── the arm ──────────────────────────────────────────────────────────────────
 
 const iso = (d) => (d == null ? "—" : new Date(d).toISOString().replace(/\.\d{3}Z$/, "Z"));
@@ -269,17 +311,30 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     const text = render(plan, extra, { dbName: who.d, user: who.u, repo, mode });
     if (!json && !quiet) console.log(text);
 
-    let wrote = 0, verdict = "ok", carried = null;
+    let wrote = 0, verdict = "ok", carried = null, drops = null;
     if (quiet && !apply && !verify) console.log(text.split(NL)[1]);   // the census line, nothing else
     if (conflicts.length) {
       verdict = "CONFLICT";
       console.error(`${NL}REFUSED: ${conflicts.length} tag(s) moved — ${conflicts.map((r) => `S${r.number}`).join(", ")}. A blessing is canon; a moved tag is a person's finding, not a row to rewrite.`);
     } else if (apply) {
+      // THE SETTLEMENT NAMES ITS SNAPSHOT (POS-358, 065): the snapshot the seal
+      // took at the window this crossing closed, written with the row, since no
+      // pen may UPDATE a settlement. A store without 065 has no column, and the
+      // row is written exactly as before.
+      const { rows: [linkable] } = await client.query(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'settlements' AND column_name = 'snapshot_id') AS ok");
       await client.query("BEGIN");
       for (const r of fresh) {
-        await client.query(
-          "INSERT INTO settlements (number, tag_sha, published_at, window_id, blessed_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (number) DO NOTHING",
-          [r.number, r.tag_sha, r.published_at, r.window_id, r.blessed_at]);
+        if (linkable.ok) {
+          await client.query(
+            `INSERT INTO settlements (number, tag_sha, published_at, window_id, blessed_at, snapshot_id)
+             VALUES ($1, $2, $3, $4, $5, (SELECT id FROM world_snapshots WHERE window_id = $4)) ON CONFLICT (number) DO NOTHING`,
+            [r.number, r.tag_sha, r.published_at, r.window_id, r.blessed_at]);
+        } else {
+          await client.query(
+            "INSERT INTO settlements (number, tag_sha, published_at, window_id, blessed_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (number) DO NOTHING",
+            [r.number, r.tag_sha, r.published_at, r.window_id, r.blessed_at]);
+        }
         wrote++;
       }
       await client.query("COMMIT");
@@ -295,6 +350,13 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
       // git cannot answer. Before it, the cap skips and says so.
       carried = await carriedOnTick(client, repo);
       if (!json) console.log(carried.line);
+      // THE FIRST STOCK (WLD-27), after the settlement rows: a chest the newest
+      // settlement admitted is stocked by the tick that first sees it.
+      // ONLY ON A SETTLED CARRIED STEP (Bevel's review, finding 7): the stock's proof
+      // of admission IS the carried rows, so a tick whose carried step erred,
+      // refused or skipped stocks nothing and says why; the next tick tries again.
+      const chests = await chestsAfterCarried(client, carried);
+      if (!json) console.log(chests.line);
       if (carried.verdict === "DISAGREE") verdict = "CONFLICT";
     } else if (verify) {
       const missing = fresh.map((r) => r.number);
@@ -309,10 +371,19 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
         console.log(`${NL}EQUAL: ${plan.length} tag(s), ${plan.length} row(s), every column agrees (compared ${plan.length})`);
       }
     }
+    // ORPHANED SET-DOWNS (WLD-27 F0), on EVERY --apply tick — a new settlement
+    // or none, a refused tag or not: it reads acts and claims, not the tags.
+    // This is the office tick's one live step (postmark-office-keep.timer →
+    // office-keep.sh → here, every 15 minutes), so "older than one tick" is
+    // measured against that cadence (drop-recovery.mjs § TICK_MS).
+    if (apply) {
+      drops = await dropsRecoveredOnTick(client);
+      if (!json) console.log(drops.line);
+    }
     receipt = { mode, verdict, db: who.d, user: who.u, repo, tags: derived.length, new: fresh.length, present: plan.filter((r) => r.state === "present").length,
       drift: drift.map((r) => r.number), conflict: conflicts.map((r) => r.number), extra, wrote, compared: plan.length,
       rows: plan.map((r) => ({ number: r.number, state: r.state, tag_sha: r.tag_sha, published_at: iso(r.published_at), window_id: r.window_id, blessed_at: iso(r.blessed_at) })),
-      ...(carried ? { carried: carried.line } : {}) };
+      ...(carried ? { carried: carried.line } : {}), ...(drops ? { drops: drops.line } : {}) };
   } finally {
     await client.end();
   }

@@ -1,7 +1,8 @@
 #!/bin/bash
 # world2-ingest.sh — the two projection pens on a poll.
 #
-#   law-ingest    world-law repo -> law_projection + identities
+#   law-ingest    world-law repo -> law_projection (`identities` is the registry's
+#                 VIEW since 055, POS-350; no pen writes it)
 #   stamp-ingest  town repo      -> stamp_projection
 #
 # ── WHY A POLL AT ALL, AND WHAT A DEAD ONE COSTS ────────────────────────────
@@ -74,7 +75,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # this script and one DEPLOY.md sentence). The law file's first reader is the
 # roll-call row this change adds.
 case "${1:-both}" in
-  law)    MODE=law;    RUN_LAW=1; RUN_STAMPS=0; RUN_BLESSED=1; STATE=ingest-law.json ;;
+  law)    MODE=law;    RUN_LAW=1; RUN_STAMPS=0; RUN_BLESSED=0; STATE=ingest-law.json ;;
   stamps) MODE=stamps; RUN_LAW=0; RUN_STAMPS=1; RUN_BLESSED=0; STATE=ingest-stamps.json ;;
   both)   MODE=both;   RUN_LAW=1; RUN_STAMPS=1; RUN_BLESSED=0; STATE=ingest.json ;;
   *)      echo "usage: world2-ingest.sh [law|stamps|both]   (no argument = both)" >&2; exit 2 ;;
@@ -87,6 +88,16 @@ if ! w2_pgenv law_ingester PG_LAW_INGESTER_PASSWORD; then
   w2_state "$STATE" "\"mode\":\"$MODE\",\"status\":\"cannot-run\",\"detail\":\"PG_LAW_INGESTER_PASSWORD unreadable\""
   exit 2
 fi
+
+# A JSON string of stdin's first 2000 bytes, escaped in bash: no python, and
+# no `node` (a stubbed PATH may own it). w2_json_escape keeps the TAIL; a
+# refusal's head is the part that says what was refused (POS-619).
+json_head() {
+  local s
+  s="$(head -c 2000)"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\t'/\\t}"; s="${s//$'\r'/}"; s="${s//$'\n'/\\n}"
+  printf '"%s"' "$s"
+}
 
 run_pen() {                     # run_pen <world|town|world-blessed> <tool> <repo-flag> [extra flag]
   local which="$1" tool="$2" flag="$3" extra="${4:-}" dir="$WORLD2_LAB/ingest-clones/$1" sha out rc
@@ -104,15 +115,35 @@ run_pen() {                     # run_pen <world|town|world-blessed> <tool> <rep
 
 # A pen that does not run in this mode contributes exit 0 and no line, so the
 # STATUS ladder and the unit's exit code keep exactly the shape they had.
-LAW_RC=0;  LAW_SHA="";  LAW_LINE="";  LAW_OUT=""
+LAW_RC=0;  LAW_SHA="";  LAW_LINE="";  LAW_OUT="";  REFUSAL_LINE=""
 BLESSED_RC=0; BLESSED_SHA=""; BLESSED_LINE=""; BLESSED_OUT=""
 TOWN_RC=0; TOWN_SHA=""; TOWN_LINE=""; TOWN_OUT=""
 
+# ── THE SETTLEMENT'S LAW, NOT WORLD MAIN ON A CLOCK (POS-364; R2) ───────────
+# "Everyone reads the newest snapshot, minus what has been opposed" (R2), and
+# the law is part of what a settlement is. So the law pen reads the checkout at
+# the NEWEST SETTLEMENT (world2-refresh-clone.sh world-blessed), not world main:
+# a law merged to main governs from the first settlement that carries it, and
+# the clearing's pin (projection_heads['world-law'], which the seal stamps as
+# the snapshot's law_sha) is that settlement's law. One run now writes both
+# the rows and the pin, so the separate `--blessed` run below (POS-270) has
+# nothing left to add in `law` mode and does not run there.
 if [ "$RUN_LAW" -eq 1 ]; then
-  run_pen world law-ingest.mjs --law-repo
+  run_pen world-blessed law-ingest.mjs --law-repo
   LAW_RC=$PEN_RC; LAW_SHA=$PEN_SHA; LAW_OUT=$PEN_OUT
   LAW_LINE="$(printf ',"law":{"exit":%d,"sha":"%s"}' "$LAW_RC" "$LAW_SHA")"
   [ "$LAW_RC" -ne 0 ] && echo "[world2-ingest] LAW INGEST FAILED (exit $LAW_RC)" >&2
+  # ── A LAW THE PARSER WOULD READ DIMINISHED IS REFUSED WHOLE (POS-619) ──────
+  # law-ingest exits 1 with "REFUSED: …" and the lint's sentence per lossy mark,
+  # and nothing is written: every law update is held until the mark is fixed.
+  # So the refusal rides the state file in its OWN field, from its head:
+  # `detail` keeps only the output's last 600 characters, which can cut the
+  # REFUSED line itself. The sentinel's law_pen probe reads this field
+  # (tools/site-sentinel.mjs § 12), so a held law pages; it never stalls quietly.
+  if [ "$LAW_RC" -ne 0 ]; then
+    refusal="$(printf '%s\n' "$LAW_OUT" | sed -n '/^REFUSED: /,$p')"
+    [ -n "$refusal" ] && REFUSAL_LINE=",\"refusal\":$(printf '%s' "$refusal" | json_head)"
+  fi
 fi
 
 # ── THE BLESSED LAW (POS-270, 2026-09-27) ────────────────────────────────────
@@ -120,8 +151,8 @@ fi
 # class reads ask law_projection at the newest settlements.tag_sha — "the bless
 # overrides the tick" (Keemin, 2026-09-18, postmark#2934) — and main runs ahead
 # of the tag between a crossing and its blessing. `--blessed` writes only that
-# sha's law_projection rows: identities and projection_heads['world-law'] stay
-# the main run's, so the clearing's pin never moves backwards. After the main
+# sha's law_projection rows: projection_heads['world-law'] stays the main
+# run's, so the clearing's pin never moves backwards. After the main
 # run, so a failure here can never hold the clearing's rulebook hostage.
 if [ "$RUN_BLESSED" -eq 1 ]; then
   run_pen world-blessed law-ingest.mjs --law-repo --blessed
@@ -152,8 +183,8 @@ if [ "$RUN_STAMPS" -eq 1 ]; then
   else                      DETAIL="$(printf 'stamp: %s' "$TOWN_OUT")"; fi
 fi
 
-w2_state "$STATE" "$(printf '"mode":"%s","status":"%s"%s%s,"detail":%s' \
-  "$MODE" "$STATUS" "$LAW_LINE$BLESSED_LINE" "$TOWN_LINE" \
+w2_state "$STATE" "$(printf '"mode":"%s","status":"%s"%s%s%s,"detail":%s' \
+  "$MODE" "$STATUS" "$LAW_LINE$BLESSED_LINE" "$TOWN_LINE" "$REFUSAL_LINE" \
   "$(printf '%s' "$DETAIL" | w2_json_escape)")"
 
 if [ "$LAW_RC" -ne 0 ] || [ "$TOWN_RC" -ne 0 ] || [ "$BLESSED_RC" -ne 0 ]; then exit 1; fi

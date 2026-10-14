@@ -39,7 +39,19 @@
 
 import { __setPoolForTest as __setActsPool } from "../src/world2-acts.mjs";
 import { __setPoolForTest as __setPenPool } from "../src/world2-pen.mjs";
-import { __clearHouseCache } from "../src/household-deriver.mjs";
+import { __clearHouseCache, resolveHouse } from "../src/household-deriver.mjs";
+import { registryFromRows, pinsFromRows } from "../src/registry-rows.mjs";
+
+/** The `identities` view's `handle, household` over seeded registry rows, by handle. */
+function identitiesOf(households, pins) {
+  const rows = { households, pins, meta: [] };
+  const registry = registryFromRows(rows), pinned = pinsFromRows(rows);
+  const handles = new Set([...households.flatMap((h) => h.residents ?? []), ...pins.map((p) => p.handle)]);
+  return [...handles].sort().map((handle) => {
+    const { slug } = resolveHouse(handle, registry, pinned);
+    return { handle, household: slug ? `hh:${slug}` : `solo:${handle}` };
+  });
+}
 
 /** The env that says "this office IS pointed at the record". */
 export const RECORD_ON = Object.freeze({ WORLD2_PG: "1", WORLD2_PG_URL: "postgres://acts-pen-stub/none" });
@@ -95,6 +107,12 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
     }
 
     if (/^BEGIN/i.test(q)) return { rows: [], rowCount: 0 };
+    // A TRANSACTION-SCOPED ADVISORY LOCK (WLD-27: the mark's stake lock, the
+    // drop's and the chest's) is granted at once: this pen is one client with
+    // no second transaction to wait on, so there is nothing to order. The
+    // ordering those locks give is proved against a real Postgres
+    // (test/exit-stake-boundary.test.mjs, test/drop-recovery.test.mjs).
+    if (/^SELECT pg_advisory_(xact_)?(un)?lock(_shared)?\(hashtext\((\$1|'[^']*')\)\)$/i.test(q)) return { rows: [{}], rowCount: 1 };
     if (/^COMMIT/i.test(q)) { state.committed += 1; return { rows: [], rowCount: 0 }; }
     if (/^ROLLBACK/i.test(q)) { state.rolledBack += 1; return { rows: [], rowCount: 0 }; }
     if (/set_config\('app\.household'/i.test(q)) { state.household = params[0] ?? null; return { rows: [], rowCount: 0 }; }
@@ -240,6 +258,14 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
         const hit = marks.filter((m) => m.slug === params[0]).slice(0, 1);
         return { rows: hit.map((m) => ({ slug: m.slug, status: m.status ?? "standing", kind: m.kind ?? "sited", geometry: m.geometry ?? null })), rowCount: hit.length };
       }
+      // THE IDEA POST'S ID (POS-290, idea-store.mjs § mintIdeaId): an id a Think
+      // Tank mark holds is never an idea post's, so the mint asks which of the
+      // author's ids the marks hold, and a duplicate asks whether one mark stands.
+      if (/^SELECT slug FROM marks WHERE slug (LIKE|=) \$1$/i.test(q)) {
+        const like = /LIKE/i.test(q);
+        const hit = marks.filter((m) => (like ? m.slug.startsWith(String(params[0]).replace(/%$/, "")) : m.slug === params[0]));
+        return { rows: hit.map((m) => ({ slug: m.slug })), rowCount: hit.length };
+      }
       return { rows: [], rowCount: 0 };
     }
     if (/^INSERT INTO claims/i.test(q)) {
@@ -268,11 +294,27 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
       return { rows: [{ keys: state.householdKeys.length ? state.householdKeys : null }], rowCount: 1 };
     }
     if (/^UPDATE claims/i.test(q)) return { rows: [], rowCount: 0 };
+    // The candle's lock (POS-404): the door shares it before it reads the open
+    // window. No clearing runs against a stub, so it is granted at once.
+    if (/^SELECT pg_advisory_xact_lock_shared\(/i.test(q)) return { rows: [{}], rowCount: 1 };
 
+    // `identities`, the registry's VIEW (055, POS-350), over the same seeded
+    // rows: every listed resident and every pinned handle, housed by the office's
+    // one deriver (resolveHouse), which test/identities-from-the-registry.test.mjs
+    // holds equal to the view on a real Postgres.
+    if (/^SELECT handle, household FROM identities/i.test(q)) {
+      const rows = identitiesOf(households, pins);
+      return { rows, rowCount: rows.length };
+    }
     // The registry, as `registry-store.mjs`'s three fixed SELECTs ask for it.
     if (/FROM households/i.test(q)) return { rows: households.map((r) => ({ ...r })), rowCount: households.length };
     if (/FROM household_pins/i.test(q)) return { rows: pins.map((r) => ({ ...r })), rowCount: pins.length };
     if (/FROM registry_meta/i.test(q)) return { rows: meta.map((r) => ({ ...r })), rowCount: meta.length };
+    // The standing gate (POS-347) asks the record before every act: this
+    // record has suspended nobody.
+    if (/FROM standing_acts/i.test(q)) return { rows: [], rowCount: 0 };
+    // …and has never raised the gangway (POS-353).
+    if (/FROM gangway_acts/i.test(q)) return { rows: [], rowCount: 0 };
 
     for (const [matcher, handler] of also) {
       const hit = typeof matcher === "function" ? matcher(q, params) : matcher.test(q);

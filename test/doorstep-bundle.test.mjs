@@ -214,7 +214,7 @@ test("THE FLIP, ON THE RE-STRUNG LAW: DOMAIN drift in a SHADOW read's segment is
 });
 
 test("THE FLIP: the falsifier above can fail — a tampered segment is caught", async () => {
-  const d = doorstep(db, HANDLE, AS_OF);
+  const d = (await doorstep(db, HANDLE, AS_OF));
   // If this comparison could not fail, the test above would be decoration. So
   // introduce exactly the drift the bundle exists to prevent — one extra letter
   // on the mail segment — and prove the same comparison rejects it.
@@ -229,13 +229,13 @@ test("the sync core declares only what it fills; the finished bundle declares al
   // inferred: `doorstep()` answers from the hydrated office index, and the
   // consent inbox is derived by the world engine. Each names exactly what it
   // has.
-  assert.deepEqual(doorstep(db, HANDLE, AS_OF).segments, [...INDEX_SEGMENTS]);
-  assert.equal(doorstep(db, HANDLE, AS_OF).stances, undefined, "the sync core does not pretend to the seventh");
+  assert.deepEqual((await doorstep(db, HANDLE, AS_OF)).segments, [...INDEX_SEGMENTS]);
+  assert.equal((await doorstep(db, HANDLE, AS_OF)).stances, undefined, "the sync core does not pretend to the seventh");
   assert.deepEqual((await doorstepBundle(HANDLE, ctx)).segments, [...DOORSTEP_SEGMENTS]);
 });
 
-test("the two metadata keys are the ONLY things stripped — no segment answer owns them", () => {
-  const d = doorstep(db, HANDLE, AS_OF);
+test("the two metadata keys are the ONLY things stripped — no segment answer owns them", async () => {
+  const d = (await doorstep(db, HANDLE, AS_OF));
   for (const name of INDEX_SEGMENTS) {
     // `serves` and `args` are metadata ABOUT the segment. If a read ever
     // answered with a field of either name, the strip above would silently eat
@@ -247,8 +247,8 @@ test("the two metadata keys are the ONLY things stripped — no segment answer o
   assert.deepEqual([...SEGMENT_META], ["serves", "args"]);
 });
 
-test("the bundle law is on the page, and it says what the pointers mean", () => {
-  const d = doorstep(db, HANDLE, AS_OF);
+test("the bundle law is on the page, and it says what the pointers mean", async () => {
+  const d = (await doorstep(db, HANDLE, AS_OF));
   assert.equal(d.the_bundle, BUNDLE_LAW);
   // ⚠ THE MATCHED PHRASE CHANGED WITH THE LAW, 2026-08-31. It used to be
   // /ask the named read yourself and you get the same object back/ — true while
@@ -260,8 +260,8 @@ test("the bundle law is on the page, and it says what the pointers mean", () => 
 
 // ── the segments' own shapes ────────────────────────────────────────────────
 
-test("segments are BOUNDED, and each carries the total the bound is a cut of", () => {
-  const d = doorstep(db, HANDLE, AS_OF);
+test("segments are BOUNDED, and each carries the total the bound is a cut of", async () => {
+  const d = (await doorstep(db, HANDLE, AS_OF));
   // "A bound and its count are ONE change, never two" — a total that cannot
   // differ from its list length is not a total.
   assert.equal(d.mail.letters.length, 20);
@@ -279,12 +279,12 @@ test("segments are BOUNDED, and each carries the total the bound is a cut of", (
     "the window decides how much of the series is said; the totals stay whole-ledger");
 });
 
-test("awaiting is DERIVED FROM THE WHOLE LEDGER, then bounded", () => {
+test("awaiting is DERIVED FROM THE WHOLE LEDGER, then bounded", async () => {
   // "A budget decides how much gets said; it must not decide what is true."
   // The five awaiting threads sit at conversation indices 25–29, past the
   // twenty-row page: derive from the slice and the answer is "nothing awaits
   // your reply" to someone with five threads that do.
-  const d = doorstep(db, HANDLE, AS_OF);
+  const d = (await doorstep(db, HANDLE, AS_OF));
   const a = d.awaiting;
   assert.equal(a.threads_total, 5);
   assert.equal(a.threads.length, 5);
@@ -326,7 +326,7 @@ test("awaiting's cursor walks to the end and stops, and the total does not shrin
 });
 
 test("the correspondence_offset a caller passes reaches the awaiting segment", async () => {
-  const d = doorstep(db, HANDLE, AS_OF, { conversationsOffset: 20 });
+  const d = (await doorstep(db, HANDLE, AS_OF, { conversationsOffset: 20 }));
   assert.equal(d.awaiting.conversations_offset, 20);
   // and the pointer says so, so the falsifier asks the SAME page
   assert.equal(d.awaiting.args.offset, 20);
@@ -338,7 +338,7 @@ test("the window segment is a read of its own now, not a copy the doorstep alone
   const viaDoor = await householdApex({ read: "window", handle: HANDLE }, null, { db });
   assert.deepEqual(viaDoor, direct);
   assert.equal(direct.window.hand_set, "2026-08-24");
-  const d = doorstep(db, HANDLE, AS_OF);
+  const d = (await doorstep(db, HANDLE, AS_OF));
   assert.deepEqual(answerOf(d.window), direct);
 });
 
@@ -359,8 +359,8 @@ test("a resident with no pane reads an honest empty, not a missing field", async
 
 // ── what the retired keys became ────────────────────────────────────────────
 
-test("the retired top-level keys are GONE, and the page names where each went", () => {
-  const d = doorstep(db, HANDLE, AS_OF);
+test("the retired top-level keys are GONE, and the page names where each went", async () => {
+  const d = (await doorstep(db, HANDLE, AS_OF));
   for (const dead of ["inbox", "awaiting_reply", "awaiting_reply_total", "correspondence", "outgoing", "prs"]) {
     assert.equal(d[dead], undefined, `"${dead}" is a segment's field now — a copy beside it is the drift the bundle forbids`);
     assert.ok(d.moved[dead], `a cached reader losing "${dead}" is owed the door that serves it, not silence`);
@@ -650,7 +650,7 @@ test("THE FLIP: the counter falsifier can fail — the answer Vex read is reject
     // The defect exactly as Vex read it: the disclosure present, the counter
     // answering from the index alone. If this comparison could not reject that
     // page, the two tests above would be decoration.
-    const asShipped = { ...d, pending_outbox: doorstep(db, HANDLE, AS_OF).pending_outbox };
+    const asShipped = { ...d, pending_outbox: (await doorstep(db, HANDLE, AS_OF)).pending_outbox };
     assert.ok(asShipped.your_pending_letters.standing.length > 0);
     assert.throws(() => assert.equal(asShipped.pending_outbox, d.pending_outbox),
       "a page that lists standing letters beside an index-only count must be a page this suite refuses");
@@ -747,7 +747,7 @@ test("THE CUT: slim drops the connector's fat blocks, and the REST bundle keeps 
   assert.equal(/abridged/.test(fat.doorstep_version), false);
 });
 
-test("THE CUT: psa keeps each notice's date, title and url, and never its body", () => {
+test("THE CUT: psa keeps each notice's date, title and url, and never its body", async () => {
   // A fixed day, so the seven-day window is a fact and not today's weather.
   const DAY = Date.parse("2026-08-22T12:00:00Z");
   const wall = [
@@ -765,8 +765,8 @@ test("THE CUT: psa keeps each notice's date, title and url, and never its body",
   psaDb.prepare("INSERT INTO bulletin VALUES (?, ?)")
     .run(PSA_SLUG, JSON.stringify({ slug: PSA_SLUG, data: { title: "public service announcements" }, body: wall }));
 
-  const fat = doorstep(psaDb, HANDLE, AS_OF, { nowMs: DAY });
-  const slim = doorstep(psaDb, HANDLE, AS_OF, { nowMs: DAY, slim: true });
+  const fat = (await doorstep(psaDb, HANDLE, AS_OF, { nowMs: DAY }));
+  const slim = (await doorstep(psaDb, HANDLE, AS_OF, { nowMs: DAY, slim: true }));
 
   assert.equal(fat.psa.entries.length, 2, "both notices are inside the window");
   assert.equal(slim.psa.entries.length, fat.psa.entries.length, "the cut is per entry — it drops no notice");
@@ -785,4 +785,80 @@ test("THE CUT: psa keeps each notice's date, title and url, and never its body",
     "the teaser is the opening SENTENCE, whole — not the first 200 characters mid-word");
   assert.equal(slim.psa.entries[1].qualifier, "night",
     "the qualifier stays: it is the word that says whether you are reading a notice or a correction to one");
+});
+
+// ── WLD-38: the Mists forecast rides the one finisher, on every door ─────────
+// The world reads are INJECTED (mists-forecast.mjs § __setMistsDepsForTest —
+// the doors build their own context, so a test reaches the forecast's world
+// there), and so is a small stand-in engine (a clear box whose east side is the wall): a wall that creeps west from x = 1000 at
+// 100 m a crossing from crossing 300, with a 100 m fringe. The real engine's
+// readings are driven in test/mists-forecast.test.mjs; here what is proved is
+// the bundle: REST's context, the flat read_doorstep and household read:
+// "doorstep" all carry the same block, computed with the page's one clock.
+import { __setMistsDepsForTest } from "../src/mists-forecast.mjs";
+import { crossingSailsAt } from "../src/crossings.mjs";
+const MISTS_ENGINE = {
+  mistsAt: (c, m) => {
+    if (c < 300) return null;
+    const edge = 1000 - 100 * (Math.min(c, 310) - 300);
+    return { crossing: c, edge, clear: { minX: -1e6, maxX: edge, minY: -1e6, maxY: 1e6 }, clearings: [], fringeM: m.fringe_m };
+  },
+  mistsHere: (p, m) => (p.x > m.edge ? { inWall: true, wallM: 0 } : { inWall: false, wallM: m.edge - p.x }),
+};
+const mistsDeps = (over = {}) => ({
+  pointed: () => true,
+  household: async () => ({ residents: [HANDLE] }),
+  publishedMarks: () => [{ id: `${HANDLE}/east-shed`, by: HANDLE, kind: "sited", at: { x: 600, y: 0 }, extent: { w: 240, h: 10 } }],
+  skeleton: () => ({ mists: { fringe_m: 100, schedule: [{ crossing: 300 }, { crossing: 310 }] } }),
+  engine: async () => MISTS_ENGINE,
+  ringOf: async (m) => [[-120, -5], [120, -5], [120, 5], [-120, 5]].map(([dx, dy]) => ({ x: m.at.x + dx, y: m.at.y + dy })),
+  ...over,
+});
+const NOW_303 = Date.parse(crossingSailsAt(303));
+
+test("WLD-38 · THE MISTS BLOCK IS THE SAME ON EVERY DOOR: REST's bundle, read_doorstep and household read \"doorstep\", one forecast at the page's clock", async () => {
+  __setMistsDepsForTest(mistsDeps());
+  try {
+    const rest = await doorstepBundle(HANDLE, { ...ctx, nowMs: NOW_303 });
+    // east edge 720: fringe once 1000 − 100k − 720 < 100 → k = 2 (302 ≤ now: already); wall once 720 > 1000 − 100k → k = 3 (303, now)
+    assert.equal(rest.mists.serves, "world.mists");
+    assert.deepEqual(rest.mists.reaches.map((r) => [r.mark, r.wall.crossing, r.wall.now]), [[`${HANDLE}/east-shed`, 303, true]]);
+    assert.ok(!rest.segments.includes("mists"), "beside the segments, not one of them");
+    const flat = await callTool("read_doorstep", { handle: HANDLE }, ctx);
+    const viaHousehold = await callTool("household", { read: "doorstep", handle: HANDLE }, ctx);
+    // the doors read the wall clock; the block's marks and reaches are the same forecast
+    for (const [door, d] of Object.entries({ flat, household: viaHousehold })) {
+      assert.equal(d.mists?.serves, "world.mists", `[${door}] carries the block`);
+      assert.deepEqual(d.mists.reaches.map((r) => r.mark), [`${HANDLE}/east-shed`], `[${door}]`);
+    }
+    assert.deepEqual(flat.mists, viaHousehold.mists, "the two connector doors carry the identical block");
+  } finally { __setMistsDepsForTest(null); }
+});
+
+test("WLD-38 · AN UNREADABLE FORECAST IS NAMED ON THE PAGE, AND THE REST OF THE PAGE STANDS", async () => {
+  const plain = await doorstepBundle(HANDLE, ctx);
+  __setMistsDepsForTest(mistsDeps({ engine: async () => null }));
+  try {
+    const d = await doorstepBundle(HANDLE, ctx);
+    assert.match(d.mists.unavailable, /^mists-forecast-unavailable: /);
+    assert.deepEqual(d.segments, [...DOORSTEP_SEGMENTS]);
+    for (const s of DOORSTEP_SEGMENTS) assert.deepEqual(d[s], plain[s], `segment ${s} is untouched`);
+  } finally { __setMistsDepsForTest(null); }
+  assert.equal("mists" in plain, false, "r000 has no mark the Mists reach (and locally no world at all): no key");
+});
+
+test("WLD-38 · A HOUSE OR A GROUND THAT CANNOT BE READ IS NAMED ON THE PAGE — never a partial list, never a missing block — and the segments stand", async () => {
+  const plain = await doorstepBundle(HANDLE, { ...ctx, nowMs: NOW_303 });       // the same clock: the segments are compared whole
+  for (const [why, over, said] of [
+    ["the registry", { household: async () => null }, /household registry could not be read/],
+    ["a footprint", { ringOf: async () => { throw new Error("parcel dial unread"); } }, /the ground of r000\/east-shed could not be read \(parcel dial unread\)/],
+  ]) {
+    __setMistsDepsForTest(mistsDeps(over));
+    try {
+      const d = await doorstepBundle(HANDLE, { ...ctx, nowMs: NOW_303 });
+      assert.match(d.mists?.unavailable ?? "", said, `${why}: ${JSON.stringify(d.mists)}`);
+      assert.equal("reaches" in d.mists, false, `${why}: no partial list beside it`);
+      for (const s of DOORSTEP_SEGMENTS) assert.deepEqual(d[s], plain[s], `${why}: segment ${s} is untouched`);
+    } finally { __setMistsDepsForTest(null); }
+  }
 });

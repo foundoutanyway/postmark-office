@@ -140,6 +140,10 @@ import { canonRegisterAt } from "./canon-register.mjs";
 // § THE SECOND DOOR.
 import { escrowAbsentAmong, escrowPresenceAt } from "./escrow-presence.mjs";
 import { computeStanding } from "./standing.mjs";
+// The same operator `marks`' exclusion constraint and the clearing's step 4/5
+// use, so the ruling, the candle and the constraint can never disagree about
+// what "overlaps" means: one owner, imported, never a second copy (POS-599).
+import { OVERLAP } from "./overlap.mjs";
 
 const arg = (n) => { const i = process.argv.indexOf(n); return i === -1 ? null : process.argv[i + 1]; };
 const has = (n) => process.argv.includes(n);
@@ -147,11 +151,6 @@ const has = (n) => process.argv.includes(n);
 export const RULINGS = Object.freeze(["grant", "refuse", "hold"]);
 export const REVIEW_CLASS = "review";     // the acts class — see § THE ACT
 export const REVIEW_ACTION = "rule";      // "a mind RULES" (census D2's own verb)
-
-// The same operator `marks`' exclusion constraint and the clearing's step 4/5
-// use, so the ruling, the candle and the constraint can never disagree about
-// what "overlaps" means.
-const OVERLAP = "a.bbox && b.bbox";
 
 /**
  * THE CONTEST — every claim the ruling is about.
@@ -444,6 +443,10 @@ async function main() {
  * lawful second ruling or stops noticing a missing one. Same shape as
  * `falsifier-acts-claims-closure.mjs`'s `(journal_seq, slug)` fix: the pairing
  * key has to be an identity.
+ *
+ * NO `journal_seq`: migration 025 dropped the column, and this INSERT kept
+ * naming it, so every act failed until POS-405. test/review-rule-act.test.mjs
+ * runs the tool against the current schema.
  */
 async function writeAct(pg, out) {
   if (!process.env.WORLD2_OFFICE_URL) {
@@ -455,8 +458,8 @@ async function writeAct(pg, out) {
     await c.connect();
     const { rows: [r] } = await c.query(
       `INSERT INTO acts (at, crossing, actor, action, object, at_anchor, at_dx, at_dy,
-                         witnesses, class, payload, effect, household, journal_seq)
-       VALUES ($1,$2,$3,$4,$5,NULL,NULL,NULL,NULL,$6,$7,$8,NULL,NULL) RETURNING id::text`,
+                         witnesses, class, payload, effect, household)
+       VALUES ($1,$2,$3,$4,$5,NULL,NULL,NULL,NULL,$6,$7,$8,NULL) RETURNING id::text`,
       [new Date().toISOString(), fractionalCrossing(), out.by, REVIEW_ACTION,
        out.slug ?? out.claim, REVIEW_CLASS,
        JSON.stringify({ claim: out.claim, rule: out.rule, because: out.because, at: out.at,

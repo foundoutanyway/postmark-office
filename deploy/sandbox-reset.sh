@@ -3,7 +3,7 @@
 #
 # THE DESIGN (founder-ruled 2026-08-26): the dev instance's default state is a
 # certified settlement snapshot, declared as the `sandbox/seed` tag PAIR —
-# postmark-town/postmark + keeminlee/postmark-world (first pair: S47's, town
+# postmark-town/postmark + postmark-town/postmark-world (first pair: S47's, town
 # 830a6996 / world 52c281b8). Both clones hard-reset to their tag, derived
 # state is deleted and rebuilt, the dev service restarts. Local rehearsal
 # commits (TOWN_PUSH=0 keeps them local by construction) are DISCARDED —
@@ -29,9 +29,17 @@ echo "== derived state: delete + rebuild =="
 rm -f "$D"/office.db* "$D"/dynamic.db* "$D"/world.db*
 cd "$D"
 node src/hydrate.mjs --town "$D/town-clone" --db "$D/office.db" >/dev/null
-node src/world-hydrate.mjs --world "$D/world-clone" --office "$D" --db "$D/world.db" >/dev/null 2>&1 || \
-  node src/world-hydrate.mjs --world "$D/world-clone" --db "$D/world.db" >/dev/null
-echo "  office.db + world.db rebuilt from the seed"
+echo "  office.db rebuilt from the seed"
+# world.db is retired (POS-270 lane W 3b): the dev office reads the world graph
+# snapshot from its sandbox store, written as that store's law pen. The
+# operator supplies PG* for it; without them the snapshot is NOT rebuilt, and
+# this says so rather than leave the dev office on an older world quietly.
+if [ -n "${PGDATABASE:-}" ] && [ -n "${PGUSER:-}" ]; then
+  node src/world-hydrate.mjs --world "$D/world-clone" --office "$D" --to-store >/dev/null
+  echo "  the world graph snapshot rebuilt from the seed (store $PGDATABASE, as $PGUSER)"
+else
+  echo "  WORLD GRAPH NOT REBUILT: export the sandbox store's law-pen PG* (PGHOST/PGDATABASE/PGUSER/PGPASSWORD) and run again" >&2
+fi
 
 echo "== start dev office =="
 sudo systemctl start postmark-office-dev.service

@@ -328,3 +328,58 @@ export function townLoginHands(clone, engine) {
   if (typeof engine?.currentHouseholds !== "function") return new Map();
   return loginHands(engine.currentHouseholds(clone), readPins(clone));
 }
+
+/**
+ * THE WORLD'S HOUSEHOLD MAPS, for a town clone: `{ households, logins, names }`,
+ * in the shape tools/world-households-export.mjs publishes as
+ * WORLD/households.json — the SNAPSHOT's road (POS-410), which derives a past
+ * settlement's map from its sealed register. The export itself renders the
+ * store alone since POS-350 (§ worldHouseholdsFromStore). The town's
+ * own resolver (`engine.currentHouseholds`: the pins, the ADDRESS logins and the
+ * ledger's dated `registry:` lines), the pins' logins, then one key per declared
+ * house (tools/households.json). Moved here from the export on 2026-10-05
+ * (POS-410) so a settlement snapshot derives the same map from its own register
+ * rows; the export's emission does not move.
+ *
+ * `register` is the registry handed in rather than read off the clone: `pins`
+ * (`{ handle: { login, id } }`) and `declared` (`{ households: { slug: rec } }`).
+ * A field left undefined falls back to the clone's file, which is the snapshot's
+ * road: its clone is an overlay whose two files ARE the sealed register's rows.
+ */
+export function worldHouseholdsAt(clone, engine, register = {}) {
+  // (The snapshot's road, POS-410. The export no longer comes here: it renders
+  // the store alone, § worldHouseholdsFromStore below.)
+  const ledgerHouseholds = householdsOf(engine.currentHouseholds(clone));
+  const pins = register.pins !== undefined ? register.pins : readPins(clone);
+  const { logins: ledgerLogins } = loginKeys(pins, ledgerHouseholds);
+  const declared = register.declared !== undefined ? register.declared : (() => {
+    try { return JSON.parse(readFileSync(join(clone, "tools", "households.json"), "utf8")); } catch { return null; }
+  })();
+  return oneKeyPerHouse(ledgerHouseholds, ledgerLogins, declared);
+}
+
+/**
+ * THE WORLD'S HOUSEHOLD MAPS, FROM THE STORE ALONE (POS-350, Wright 2026-10-13):
+ * `{ households, logins, names }`, what tools/world-households-export.mjs
+ * renders as WORLD/households.json.
+ *
+ * `identities` is the store's view of the registry (055): every handle the
+ * registry knows, keyed `hh:<slug>` for the house the office's one deriver
+ * names, else `solo:<handle>`. It takes the place the town ledger's
+ * `currentHouseholds` held (`worldHouseholdsAt`), so the export no longer
+ * reads a town checkout for any value: the store is the record, the file is
+ * its rendering. The pins' logins and one key per declared house compose on
+ * top exactly as before, so a login still names the house holding its account,
+ * and a pin no house holds keeps its `gh:<id>`.
+ *
+ * @param identities `[{ handle, household }]`, the view's rows.
+ * @param pins       `{ handle: { login, id, … } }`, as `loadPins` gives it.
+ * @param declared   `{ households: { slug: rec } }`, as `loadRegistry` gives it.
+ */
+export function worldHouseholdsFromStore({ identities, pins, declared }) {
+  const households = {};
+  for (const { handle, household } of [...(identities ?? [])].sort((x, y) => String(x.handle).localeCompare(String(y.handle))))
+    households[String(handle)] = String(household);
+  const { logins } = loginKeys(pins, households);
+  return oneKeyPerHouse(households, logins, declared);
+}

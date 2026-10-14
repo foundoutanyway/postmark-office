@@ -55,6 +55,13 @@ import { fileURLToPath } from "node:url";
 const OFFICE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const scratch = mkdtempSync(join(tmpdir(), "postmark-hhrefresh-"));
 after(() => { try { rmSync(scratch, { recursive: true, force: true }); } catch { /* litter */ } });
+// THE STORE the crossing's household export renders (POS-350): the export reads
+// the registry from the store, never the fixture town's printouts, so each
+// crossing re-states the store from the town seed first.
+import { registryStoreForTowns } from "./helpers/office-under-test.mjs";
+const REG = await registryStoreForTowns({ db: "refresh_registry_test" });
+after(() => REG.stop());
+
 
 const has = (cmd) => { try { execFileSync("sh", ["-c", cmd], { stdio: "ignore" }); return true; } catch { return false; } };
 // The chain is POSIX-shell shaped. Where `sh` is not a real shell these SKIP
@@ -72,16 +79,13 @@ const OLD_STAMP = "2026-08-07T12:58:17.724Z";
 let seq = 0;
 
 /**
- * ONE CROSSING, IN A BOTTLE — the settlement-source-flip harness, with a town
- * that has a real resolver in it.
+ * ONE CROSSING, IN A BOTTLE — the settlement-source-flip harness, with a
+ * registry in the store.
  *
- * The fixture town carries `tools/stamp-mint.mjs` and `tools/github-ids.json`,
- * which is what `tools/world-households-export.mjs` reads through
- * `src/household-logins.mjs`. Injecting the engine as a fixture module is the
- * pattern that module's own header blesses ("`engine` is injected — the town's
- * own stamp-mint module — so a falsifier hands in a fixture engine rather than a
- * real town"), and it is the only way to test a registry refresh without
- * standing up ten thousand files of the real town.
+ * The fixture town carries `tools/github-ids.json`, which `runCrossing`
+ * re-states into the store (REG.seedFromSync) before every crossing; since
+ * POS-350 `tools/world-households-export.mjs` renders that store alone
+ * (`identities`, the pins, the declared houses) and reads no town ledger.
  */
 function crossing(label, { env = {}, pins = null, reuse = null, breakExport = false } = {}) {
   if (reuse) return runCrossing(reuse, { env });
@@ -119,8 +123,12 @@ function crossing(label, { env = {}, pins = null, reuse = null, breakExport = fa
   writeFileSync(join(seed, "WORLD", "households.json"), `${JSON.stringify({
     generated_at: OLD_STAMP,
     source: "the fixture's standing registry — deliberately older than the newcomer's pin",
-    households: { alpha: "gh:1" },
-    logins: { "alpha-hub": "gh:1" },
+    // The store's spelling (POS-350): alpha is pinned and no house holds the
+    // account, so `identities` answers `solo:alpha` (Darko 10-04's rule), the
+    // pin's login binds its `gh:<id>`, and the second key binds alpha's own
+    // sketchbook name to the household.
+    households: { alpha: "solo:alpha" },
+    logins: { alpha: "solo:alpha", "alpha-hub": "gh:1" },
   }, null, 2)}\n`);
   // A sweep stub that behaves like the real one where this script touches it,
   // plus the one thing this lane needs: it records THE REGISTRY IT READ, at the
@@ -186,23 +194,15 @@ process.stdout.write(JSON.stringify({
     [NEWCOMER]: { login: NEWCOMER_LOGIN, id: NEWCOMER_ID },
   };
   writeFileSync(join(townSeed, "tools", "github-ids.json"), `${JSON.stringify(pinRows, null, 2)}\n`);
-  // The injected engine. `currentHouseholds` is what the export calls, and the
-  // export deliberately calls it rather than `householdKeys` — a ledger-only
-  // re-key is invisible to the bare base, which is the 2026-08-07 cadaeic.space
-  // bug this fixture must not re-create by taking a shortcut.
-  writeFileSync(join(townSeed, "tools", "stamp-mint.mjs"), `
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-export function currentHouseholds(clone) {
-  const pins = JSON.parse(readFileSync(join(clone, "tools", "github-ids.json"), "utf8"));
-  return new Map(Object.entries(pins).map(([handle, rec]) => [handle, { key: "gh:" + rec.id }]));
-}
-`);
+  // NO ENGINE (POS-350): the export renders the STORE's registry, which
+  // `runCrossing` re-states from this seed's pins, and reads no town ledger, so
+  // the fixture town carries no `stamp-mint.mjs` for it to fall back on.
   if (breakExport) {
-    // A town whose resolver throws — the state where the crossing must refuse
-    // rather than fold on a registry it cannot vouch for.
-    writeFileSync(join(townSeed, "tools", "stamp-mint.mjs"),
-      'export function currentHouseholds() { throw new Error("the fixture town\'s resolver is broken"); }\n');
+    // A STORE THE EXPORT CANNOT READ — the state where the crossing must refuse
+    // rather than fold on a registry it cannot vouch for. (Until POS-350 this
+    // was a town whose resolver threw; the export reads no town since then, so
+    // the trip moved to the one source it does read.)
+    env = { ...env, WORLD2_PG_URL: "postgres://office_api@127.0.0.1:9/none" };
   }
   g(".", "init", "-q", "-b", "main", townSeed);
   g(townSeed, "config", "user.email", "seed@postmark.invalid");
@@ -258,6 +258,7 @@ function runCrossing(root, { env = {} } = {}) {
   const seen = join(root, `registry-seen-${++seq}.json`);
   const argvOut = join(root, `sweep-argv-${seq}.txt`);
 
+  REG.seedFromSync(join(root, "town-seed"));
   const res = spawnSync("sh", [join(OFFICE, "deploy", "settlement-auto.sh")], {
     encoding: "utf8",
     env: {
@@ -273,6 +274,7 @@ function runCrossing(root, { env = {} } = {}) {
       WORLD_DYNAMIC_DB: join(root, "dynamic.db"),
       REGISTRY_SEEN_OUT: seen,
       SWEEP_ARGV_OUT: argvOut,
+      ...REG.env,
       ...env,
     },
   });
@@ -313,7 +315,7 @@ test("F1 · a handle pinned after the standing registry's stamp is in the regist
   assert.notEqual(c.published.generated_at, OLD_STAMP,
     "the published registry still carries the stamp it had before the crossing — nothing was refreshed");
   assert.ok(c.published.town_sha, "the published registry must name the town it was derived from");
-  assert.equal(c.published.households[NEWCOMER], `gh:${NEWCOMER_ID}`,
+  assert.equal(c.published.households[NEWCOMER], `solo:${NEWCOMER}`,
     `${NEWCOMER} was pinned after ${OLD_STAMP} and the crossing must have grouped them`);
 
   // THE BEHAVIOUR, not the bytes: the wall's conjunction over what shipped.
@@ -321,7 +323,7 @@ test("F1 · a handle pinned after the standing registry's stamp is in the regist
     "the wall must bind the newcomer's mark: households[by] and logins[branch] both resolve");
 
   // And the fold read the refreshed file, not the one main was carrying.
-  assert.equal(c.registrySeen.households[NEWCOMER], `gh:${NEWCOMER_ID}`,
+  assert.equal(c.registrySeen.households[NEWCOMER], `solo:${NEWCOMER}`,
     "the fold must have read the REFRESHED registry — the refresh has to land before the fold, not beside it");
 
   // The receipt says the crossing looked.
@@ -459,7 +461,7 @@ test("F17 · VERIFIED IMPLIES STAMPED — an unstamped standing registry is rewr
   assert.deepEqual(c.receipt.registry.rekeyed, []);
   assert.ok(c.published.town_sha,
     "the published registry is stamped, so `verified implies stamped` holds and the world's refusal is sound");
-  assert.deepEqual(c.published.households, { alpha: "gh:1" },
+  assert.deepEqual(c.published.households, { alpha: "solo:alpha" },
     "and the mapping itself is untouched, which is what makes this a stamping and not a migration");
 });
 
@@ -540,7 +542,16 @@ test("F7 · the refresh runs on a STORE crossing too, because the wall and the l
   // so the receipt must show it ran even on a crossing that went on to refuse.
   // The store's `identities`/`town_roll` do not yet feed the wall or the lint,
   // so a store crossing that skipped this step would fold on the same stale file.
-  const c = crossing("store", { env: { SETTLEMENT_SOURCE: "store" } });
+  //
+  // NO WAIT FOR A CANDLE THAT CANNOT COME (POS-491). Since POS-350 the fixture
+  // DOES carry a store credential (REG.env, for the registry's export), so the
+  // crossing's candle wait (await-clearing.mjs, settlement-auto.sh:837) connects
+  // and polls its full SETTLEMENT_CLEARING_WAIT_S default, 240 s, for a window
+  // no fixture clears: 258 s for this one test, past the file's 180 s timeout,
+  // which is the hang CI measured (the watcher's tree, office#484). Zero asks
+  // once and refuses `clearing-did-not-run`, which is the early refusal this
+  // test was written against.
+  const c = crossing("store", { env: { SETTLEMENT_SOURCE: "store", SETTLEMENT_CLEARING_WAIT_S: "0" } });
   assert.equal(c.receipt.source, "store");
   assert.equal(c.receipt.registry.ran, true,
     "the registry refresh is not git-mode only — under `store` the same three readers still read this file");

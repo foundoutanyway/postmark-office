@@ -94,6 +94,17 @@ import { readWindowState } from "./panes.mjs";
 import { pendingPaperRows, PAPER_ACTS, SETTLES_AT } from "./town-updates.mjs";
 import { standingOf, isSuspended } from "./standing.mjs";
 
+// The read's own road to standing: through the town index's read when the
+// office is switched to the store (the pool every read worker already holds),
+// else the record's one pool. Same table, same answer.
+async function standingForRead(handle) {
+  const { townIndexReads, readTownIndex } = await import("./town-index-store.mjs");
+  if (!townIndexReads()) return standingOf(handle);
+  const { standingForHandlesVia } = await import("./standing-store.mjs");
+  const { out } = await readTownIndex((c) => standingForHandlesVia(c, [handle]));
+  return out.get(handle) ?? null;
+}
+
 /** The rungs, in order. Exported because the site's encoding names them. */
 export const TENSE = Object.freeze({ settled: "settled", written: "written", pending: "pending" });
 export const TENSES = Object.freeze(["settled", "written", "pending"]);
@@ -120,6 +131,21 @@ export function readAddress(clone, handle) {
 // declared `assets:` line and by the same rule: the door lets the resident
 // declare and the parser never infers (#865, Keemin 2026-07-29).
 const IMAGE_RE = /\.(png|jpe?g|webp|gif|avif|svg)$/i;
+
+/**
+ * ADDRESS.md's raw text as the checkout currently holds it, through the read's
+ * own freshness context (POS-603): no checkout, or a suspended handle (whose
+ * context carries none), answers null — the same gate every overlay keeps.
+ * The text is raw because the town's card rule (ownProse) strips the
+ * frontmatter itself.
+ */
+export function addressTextIn(ctx, handle) {
+  if (!ctx?.clone) return null;
+  try {
+    const file = join(ctx.clone, "WHITE_PAGES", handle, "ADDRESS.md");
+    return existsSync(file) ? readFileSync(file, "utf8") : null;
+  } catch { return null; }
+}
 
 /** HOME/HOME.md as the checkout currently holds it: `{ data, body, images }`. */
 export function readHomeFile(clone, handle) {
@@ -176,13 +202,24 @@ const same = (a, b) => {
 // composed read a context that already holds the rows; `freshnessFor` only
 // reads them. A context built without `freshFor` has no rows and composes no
 // overlay: the settled index answers, which is this module's garnish rule.
+//
+// STANDING IS READ HERE TOO (POS-347): the record is the store now, and the
+// store answers with a promise, so the door asks it once, before the read, and
+// the context carries the answer. An unreadable standing composes no overlay
+// (the garnish rule: every failure answers "no overlay"), so a suspended
+// resident's live files are never shown because a read failed.
 export async function freshFor(handle, { odb = null, clone = null, asOf = null } = {}) {
   let pendingRows = [];
   try { pendingRows = await pendingPaperRows(odb, handle); } catch { /* garnish only */ }
-  return { clone, asOf, pendingRows };
+  let suspended = false;
+  if (handle) {
+    try { suspended = isSuspended(await standingForRead(handle)); }
+    catch { suspended = true; /* unreadable: no overlay, the settled index answers */ }
+  }
+  return { clone, asOf, pendingRows, suspended };
 }
 
-export function freshnessFor(handle, { clone = null, asOf = null, pendingRows = [] } = {}) {
+export function freshnessFor(handle, { clone = null, asOf = null, pendingRows = [], suspended = false } = {}) {
   const ctx = { handle, clone: null, asOf: asOf ?? null, suspended: false, pending: new Map() };
   if (!handle) return ctx;
 
@@ -191,13 +228,9 @@ export function freshnessFor(handle, { clone = null, asOf = null, pendingRows = 
     catch { /* garnish only */ }
   }
 
-  // The gate, read live from the clone per call — the road standing.mjs takes
-  // for exactly the reason it names: a Registrar commit lifting a quarantine
-  // needs a pull, not an office restart.
-  if (ctx.clone) {
-    try { ctx.suspended = isSuspended(standingOf(handle, ctx.clone)); }
-    catch { /* absent ledger is the ordinary case: nobody has ever been suspended */ }
-  }
+  // The gate, read from the store by `freshFor` before the read (POS-347): a
+  // Registrar's lift lands at the next read, never at a pull or a restart.
+  ctx.suspended = Boolean(suspended);
   if (ctx.suspended) { ctx.clone = null; return ctx; }
 
   // Newest-last, so a resident who edited twice is described by the second row.
@@ -337,6 +370,29 @@ export function composeHome(row, ctx) {
   }
   row.freshness = freshnessBlock(ctx, { home: stampFor(ctx, "home", fresher) });
   return row;
+}
+
+/**
+ * THE HOME THE INDEX HAS NOT SEEN YET (POS-603). A resident's FIRST
+ * `do: "home"` founds the page on the record (edit.mjs § the home founds on
+ * first write, UNPLACED), and until the index is rebuilt there is no homes row
+ * for the readers to compose over, so both answered null: the owner's own
+ * readback said "no home page", and the papers kept asking for the page just
+ * tended. This is the base those readers compose over instead, and nothing more:
+ * the handle as the title until the page's own `title:` overlays it, an empty
+ * description and image list for the page to overlay, and region NULL — the
+ * founding contract's "unplaced", never a placement read from the page.
+ *
+ * THE CALLER'S GATE COMES FIRST. Both readers call this only for a handle the
+ * index already holds as a resident (its own indexed identity read), so no path
+ * is built from a handle nobody validated, and a missing row is never licence to
+ * answer for a stranger. Here: no checkout (or a suspended handle, whose context
+ * carries none) and no page on the record both answer null, as before.
+ */
+export function composeFoundedHome(handle, ctx) {
+  if (!ctx?.clone) return null;
+  if (!readHomeFile(ctx.clone, handle)) return null;
+  return composeHome({ handle, title: handle, region: null, description: "", images: [], picture: null }, ctx);
 }
 
 /**

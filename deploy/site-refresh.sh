@@ -143,8 +143,12 @@
 #   sudo mkdir -p /srv/postmark-site-refresh /srv/postmark-harbor
 #   sudo chown meepo /srv/postmark-site-refresh /srv/postmark-harbor
 #
-#   # 2. the script itself
+#   # 2. the script itself, AND its helper beside it: the script runs
+#   #    "$SELF_DIR/site-refresh-pin.mjs" (POS-601) from its own directory, and
+#   #    without it every publish stops at "the world pin could not be written"
+#   #    (the standing release keeps serving). The office deploy carries both.
 #   sudo install -o meepo -m 755 deploy/site-refresh.sh /srv/postmark-office/deploy/site-refresh.sh
+#   sudo install -o meepo -m 644 deploy/site-refresh-pin.mjs /srv/postmark-office/deploy/site-refresh-pin.mjs
 #
 #   # 3. meepo must be able to swap the link in /var/www (it owns nothing there today)
 #   sudo chown meepo /var/www           # or: setfacl -m u:meepo:rwx /var/www
@@ -230,12 +234,18 @@ WEBROOT="${SITE_WEBROOT:-/var/www/postmark-town-site}"
 SITE_REMOTE="${SITE_REMOTE:-https://github.com/postmark-town/postmark-site.git}"
 TOWN_REMOTE="${TOWN_REMOTE:-https://github.com/postmark-town/postmark.git}"
 WORLD_REMOTE="${WORLD_REMOTE:-https://github.com/postmark-town/postmark-world.git}"
-API="${POSTMARK_API:-https://postmark.town/api}"
+# The office's box door, never the public URL (Darko 2026-10-13): through
+# nginx every read of a pass spent the box's own keyless bucket, and a day of
+# refreshes drew 17,531 429s. 127.0.0.1:4390 is the office's second listener,
+# bound to loopback and named by no nginx location; a keyless GET that arrives
+# there is not charged (src/bouncer.mjs boxLocal).
+API="${POSTMARK_API:-http://127.0.0.1:4390}"
 OUT="${SITE_REFRESH_REPORT:-/srv/postmark-harbor/site-refresh.json}"
 KEEP="${SITE_REFRESH_KEEP:-5}"
 MAX_PASSES="${SITE_REFRESH_MAX_PASSES:-3}"
 
 TOWN="$ROOT/town"          # our own town clone — never the office's, never locked
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # where this script and its helpers live (POS-601)
 SITE="$ROOT/site"          # the extract tree: site @ origin/main, runs the extractors
 BUILD="$ROOT/build"        # the build tree: a worktree of SITE, detached at the tag
 RELEASES="$ROOT/releases"
@@ -262,6 +272,26 @@ report() { # status detail
     "$(printf '%s' "$2" | tr -d '\n' | tr '"' "'")" > "$OUT" 2>/dev/null || true
 }
 say() { echo "[site-refresh] $*"; }
+
+# THE BUILD'S STDOUT, LESS ONE LINE PER PAGE (POS-557). Astro prints every page
+# it writes ("13:10:01   ├─ /mail/<slug>/index.html (+3ms)"), about 5,300 a
+# build, which put some 900 MB a week into syslog through
+# the journal. Those lines are cut and counted; everything else on stdout (the
+# route headers, the timings, "N page(s) built", "Complete!") passes through,
+# and stderr, where Astro writes its warnings and errors, is never piped here
+# at all. Astro has no log level between info and silent on its CLI, so this
+# filter is the knife. Portable awk (the box's is mawk): no POSIX classes, the
+# escape byte built with sprintf. A failed build still fails the run: pipefail
+# hands the pipeline the build's own exit code.
+quiet_build_log() {
+  awk '
+    BEGIN { ansi = sprintf("%c", 27) "\\[[0-9;]*m" }
+    { line = $0; gsub(ansi, "", line) }
+    line ~ /^[ \t0-9:.APMapm]*(├─|└─) / { cut++; next }
+    { print; fflush() }
+    END { if (cut) printf "[site-refresh] build: %d per-page lines left out of the log (POS-557)\n", cut }
+  '
+}
 die() { report failed "$1"; echo "[site-refresh] FAILED: $1" >&2; exit 1; }
 
 # EVERY failure writes the board, not just the ones with a `|| die` on them.
@@ -274,6 +304,11 @@ die() { report failed "$1"; echo "[site-refresh] FAILED: $1" >&2; exit 1; }
 # their own better message.
 on_err() { local rc=$?; report failed "the run stopped unexpectedly at line $1 (exit $rc) — see journalctl -u postmark-site-refresh"; echo "[site-refresh] FAILED at line $1 (exit $rc)" >&2; exit 1; }
 trap 'on_err $LINENO' ERR
+
+# PREFLIGHT (POS-601): the pin helper travels beside this script. Missing, every
+# publish would stop at the pin step, so say so at the top of every tick, by name,
+# before any fetch or build is spent.
+[ -f "$SELF_DIR/site-refresh-pin.mjs" ] || die "the pin helper is missing ($SELF_DIR/site-refresh-pin.mjs): install it beside site-refresh.sh (INSTALL step 2)"
 
 # ── SINGLE-FLIGHT ───────────────────────────────────────────────────────────
 # Non-blocking on purpose. A second trigger arriving mid-build must STAND DOWN,
@@ -412,7 +447,9 @@ build_once() {
 
   # sync-atlas.yml's three steps, its order, its arguments.
   say "extract: the checkout-coupled half (media, atlas, daily, works, doorstep bundles)"
-  ( cd "$SITE" && GH_TOKEN="${GH_TOKEN:-}" POSTMARK_CROSSING="$crossing" node tools/extract-town.mjs --town "$TOWN" ) \
+  # POSTMARK_API named here, not inherited from the unit: the doorsteps are
+  # read from the same office the rest of the pass reads (2026-10-13).
+  ( cd "$SITE" && GH_TOKEN="${GH_TOKEN:-}" POSTMARK_API="$API" POSTMARK_CROSSING="$crossing" node tools/extract-town.mjs --town "$TOWN" ) \
     || die "extract-town.mjs tripped"
   say "extract: the API-fed half"
   # fetch-town.mjs also writes /data/pin.json (the site's tools/lib/world-pin-publish.mjs),
@@ -421,10 +458,14 @@ build_once() {
   # so every BOX build — which is every prod build — kept writing `code_ref: null`
   # with its own note saying so. Same two values the stamp step below passes, so
   # the two files cannot disagree about which ref and which lane built the site.
-  # (What pin.json CANNOT say is which world the BUILD tree compiled: it reads
-  # this extract tree's lockfile, i.e. site main's floor, and the build tree may
-  # have advanced past it. /build.json's world_sha is that answer — see the stamp.)
-  ( cd "$SITE" && POSTMARK_API="$API" PUBLIC_CHANNEL=release BUILD_CODE_REF="$TAG" node tools/fetch-town.mjs --town "$TOWN" ) \
+  # (What this extract-tree pin.json cannot say is which world the BUILD tree
+  # compiled: it reads this extract tree's lockfile, i.e. site main's floor, and
+  # the build tree may have advanced past it. POS-601: the publish step below
+  # keeps this file's floor fields and re-derives world_installed from the BUILD
+  # tree, the same answer /build.json's world_sha gives — see "the pin".)
+  # The letter cache lives beside the clones, outside the extract tree that is
+  # reset every pass: the next pass reads only the letters that moved.
+  ( cd "$SITE" && POSTMARK_API="$API" POSTMARK_LETTER_CACHE="$ROOT/letter-cache.json" PUBLIC_CHANNEL=release BUILD_CODE_REF="$TAG" node tools/fetch-town.mjs --town "$TOWN" ) \
     || die "fetch-town.mjs tripped"
   say "extract: approved renditions"
   ( cd "$SITE" && node tools/sync-renditions.mjs --town "$TOWN" ) \
@@ -561,8 +602,13 @@ build_once() {
   fi
 
   say "build: astro, release channel"
-  ( cd "$BUILD" && PUBLIC_CHANNEL=release PUBLIC_BUILD_SHA="$(git -C "$BUILD" rev-parse HEAD)" npm run build --silent ) \
-    || die "the site build tripped"
+  # BUILD_CROSSING rides into the build too, not only the stamp: pages that key
+  # what they show to the crossing (the season's line under the ferry clock)
+  # read it at build time, and an unset one renders them as if no crossing were
+  # known. The SAME number the extract and the stamp get, asked once above;
+  # empty when the office did not answer, never a guess.
+  ( cd "$BUILD" && PUBLIC_CHANNEL=release PUBLIC_BUILD_SHA="$(git -C "$BUILD" rev-parse HEAD)" BUILD_CROSSING="$crossing" npm run build --silent ) \
+    | quiet_build_log || die "the site build tripped"
 
   # ── the stamp: what this page was built from, in its own bytes ────────────
   # BUILD_TOWN_SHA and BUILD_CROSSING are new (postmark-site
@@ -588,6 +634,26 @@ build_once() {
   fi
 
   [ -d "$BUILD/dist-town" ] || die "the build produced no dist-town/"
+
+  # ── the pin: the floor from the extract, the installed world from the build ─
+  #
+  # POS-601. fetch-town.mjs ran in the EXTRACT tree (site main), so the pin.json it
+  # wrote says `world_installed` = site main's floor, read from that tree's own
+  # lockfile, whatever the resolver then installed in the BUILD tree. /build.json
+  # (above) reads the BUILD tree and is right; the pin was not. Running the site's
+  # whole writer here would swap the floor fields for the build's, so this changes
+  # only the installed half (deploy/site-refresh-pin.mjs says how and why), reading
+  # the SAME file build.json's world_sha comes from: the build tree's
+  # package-lock.json, AFTER the install/re-lock above. An unreadable lockfile
+  # makes world_installed null with a note; it never becomes the floor. If the
+  # extract left no readable pin, the publish stops here and the standing release
+  # keeps serving: a pin that cannot name its floor must not ship.
+  [ -f "$SELF_DIR/site-refresh-pin.mjs" ] || die "the pin helper is missing ($SELF_DIR/site-refresh-pin.mjs)"
+  node "$SELF_DIR/site-refresh-pin.mjs" \
+    --extract "$SITE/public/atelier/postmark/data/pin.json" \
+    --lock "$BUILD/package-lock.json" \
+    --out "$BUILD/dist-town/data/pin.json" \
+    || die "the world pin could not be written (the extract's pin.json is missing or unreadable)"
 
   # ── publish: a whole new release dir, then one rename ─────────────────────
   # A RELEASE DIR IS NEVER REUSED, and that is what makes the swap below atomic

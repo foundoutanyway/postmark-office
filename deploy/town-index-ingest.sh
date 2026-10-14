@@ -20,6 +20,15 @@
 #
 # Exit 0 ingested (or nothing new) · 1 the pen refused or failed (the reason is in
 # $WORLD2_STATE_DIR/town-index.json) · 2 the lane could not run · 3 no head yet.
+#
+# ── THE SEAL'S AUDIT (POS-523) ───────────────────────────────────────────────
+# A delta derives the letters, the threads and the mail ledger from what changed
+# only; each seal's --snapshot run derives those four whole, writes any row the
+# deltas missed, and prints the count (`· audit {...}`). The state file keeps
+# every seal's count from this run as "audits": [{ "sha", "audit" }], until the
+# next run; the record keeps it in the seal's town_index_snapshots row
+# (digests.audit). A count above zero is a delta that missed a row, written
+# back, and worth reading.
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +38,16 @@ STATE=town-index.json
 TOOL="$WORLD2_OFFICE/world2/tools/town-index-ingest.mjs"
 DIR="$WORLD2_LAB/ingest-clones/town-index"
 URL="https://github.com/postmark-town/postmark.git"
+
+# THE ONE SWITCH (POS-341 part 4). STAMP_LINES lives in /etc/postmark-office.env
+# (the ferry and the keep tick read it there), and with it set the quest rows
+# fold on the store's key base. The ferry's run inherits it; the timer's unit
+# reads the dev env, so this reads that one line from its one home. Unset there,
+# unset here, and unsetting it is the rollback.
+if [ -z "${STAMP_LINES:-}" ] && [ -r /etc/postmark-office.env ]; then
+  STAMP_LINES="$(sed -n 's/^STAMP_LINES=//p' /etc/postmark-office.env | tail -n 1 | tr -d "\"'")"
+  export STAMP_LINES
+fi
 
 if ! w2_pgenv law_ingester PG_LAW_INGESTER_PASSWORD; then
   w2_state "$STATE" '"status":"cannot-run","detail":"PG_LAW_INGESTER_PASSWORD unreadable"'
@@ -66,6 +85,7 @@ run() {                          # run <sha> [--snapshot]
   (cd "$WORLD2_OFFICE" && node "$TOOL" --town-repo "$DIR" --sha "$1" "${@:2}" 2>"$ERR")
 }
 
+audits=""
 for seal in $seals; do
   if ! out="$(run "$seal" --snapshot)"; then
     echo "[town-index] the crossing at $seal did not ingest: $(tail -n 5 "$ERR")" >&2
@@ -73,6 +93,8 @@ for seal in $seals; do
     exit 1
   fi
   echo "[town-index] $out"
+  audit="$(printf '%s' "$out" | sed -n 's/.* · audit \({[^}]*}\).*/\1/p')"
+  audits="${audits:+$audits,}{\"sha\":\"$seal\",\"audit\":${audit:-null}}"
 done
 
 if ! out="$(run "$TARGET")"; then
@@ -81,4 +103,4 @@ if ! out="$(run "$TARGET")"; then
   exit 1
 fi
 echo "[town-index] $out"
-w2_state "$STATE" "\"status\":\"ok\",\"sha\":\"$TARGET\",\"detail\":$(printf '%s' "$out" | w2_json_escape)"
+w2_state "$STATE" "\"status\":\"ok\",\"sha\":\"$TARGET\",\"audits\":[$audits],\"detail\":$(printf '%s' "$out" | w2_json_escape)"

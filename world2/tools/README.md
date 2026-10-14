@@ -28,6 +28,13 @@ runs the other way — it is the only one that reads the DB and writes the repo.
 | `falsifier-conversations-equality.mjs` | that port vs `voices.mjs` itself, on identical inputs, era by era |
 | `falsifier-acts-lane-closure.mjs` | every WRITE lane reaches `acts`, checked from each lane's own pen — and a census that reds when a new act appears that nobody has ruled on. STANDING INVOCATION CARRIES `--since 2026-08-29T00:20Z` (the fix's lab deploy): exactly ONE act was lost before the lanes closed — wright's say at 2026-08-28T16:18:38.744Z, the lab's first witnessed act, which lives in voices-log.jsonl and never reached `acts`. The exclusion is dated at the deploy so it excuses only the pre-fix era and nothing after; the loss itself is recorded here, in the merge commit (87f4fe65), and in the epic — a red nobody can act on is a falsifier nobody reads (the discarded-draft lesson), but a loss nobody wrote down is worse. THE MIRROR EXPIRY IS PER LANE (DEC-2, ruled 2026-08-29): this tool and `falsifier-acts-parity.mjs` red past a lane's own backstop in `LANE_MIRROR` (`src/world2-acts.mjs`) and NAME the lanes, and the arena is exempt by P-143's ruling. A lane's obligation ends by removing its row — its read ports landed, its deletion ruled — never by moving a date. |
 
+The table is the founding set (2026-08-28/29). The directory has grown since:
+39 more tools stand beside these (among them `marks-ingest.mjs`,
+`town-index-ingest.mjs`, `escrow-ingest.mjs`, `graph-ingest.mjs`,
+`paperwork-import.mjs`, `migrations-landed.mjs`, `snapshot-backfill.mjs` and
+`world-snapshot.mjs`), each with its contract in its own header and none listed
+here; `ls world2/tools/` is the roster.
+
 The law these implement is quoted verbatim in each file's header, from the gold
 plan (`G:/Starstory/PULSE/gold-plans/postmark-world-2/postmark-world-2.md` §3, §4)
 and the census ruling (`census.md`, decision 1 and the seams amendment). Read the
@@ -102,11 +109,13 @@ Requires the office's own `node_modules` (`pg`, and `graphology` by way of
 `src/world-store.mjs`), so run from an office checkout.
 
 ```sh
-export PGHOST=localhost PGDATABASE=world2_dev PGUSER=law_ingester
+export PGHOST=localhost PGDATABASE=world2_dev PGUSER=law_ingester   # world2_dev IS PROD (AGENTS.md)
 export PGPASSWORD=…            # /etc/postmark-world2-dev.env, PG_LAW_INGESTER_PASSWORD
 
 # a fresh shallow clone per run, discarded after — the stateless contract
-git clone --depth 1 --branch world-2 https://github.com/keeminlee/postmark-world.git /tmp/law
+# (the box's units do this through deploy/world2-refresh-clone.sh: world main,
+# or the newest settlement/S<n> tag for the blessed pass)
+git clone --depth 1 --branch main https://github.com/postmark-town/postmark-world.git /tmp/law
 node world2/tools/law-ingest.mjs --law-repo /tmp/law --sha "$(git -C /tmp/law rev-parse HEAD)"
 rm -rf /tmp/law
 
@@ -267,7 +276,7 @@ each tag's message naming the other half:
 
 | half | repo | tag → commit |
 |---|---|---|
-| world | `keeminlee/postmark-world` | `sandbox/seed` → `52c281b8312d0a1d36eb81d03fbd1a36840a4eb1` |
+| world | `postmark-town/postmark-world` | `sandbox/seed` → `52c281b8312d0a1d36eb81d03fbd1a36840a4eb1` |
 | town | `postmark-town/postmark` | `sandbox/seed` → `830a69963d8e4801ad4ed8bb80da38e79fd3fdbf` |
 
 The world half is also `settlement/S47` — the same commit, `settlement: sweep 0
@@ -292,7 +301,7 @@ the only git it runs is `rev-parse`. A `--tag`/`--sha` that disagrees with HEAD 
 refused, not corrected.
 
 ```sh
-git clone --depth 1 --branch sandbox/seed https://github.com/keeminlee/postmark-world.git /tmp/frozen
+git clone --depth 1 --branch sandbox/seed https://github.com/postmark-town/postmark-world.git /tmp/frozen
 
 export PGHOST=localhost PGDATABASE=world2_dev PGUSER=world2_owner
 export PGPASSWORD=…            # /etc/postmark-world2-dev.env, PG_WORLD2_OWNER_PASSWORD
@@ -1074,7 +1083,7 @@ era's acts and its claim set from the two checkouts, ingests both, runs the
 against 1.0's at S(k) with `seed-import.mjs`'s own `compareMarks`.
 
 ```sh
-git clone https://github.com/keeminlee/postmark-world.git ~/world-full   # FULL history
+git clone https://github.com/postmark-town/postmark-world.git ~/world-full   # FULL history
 
 export PGHOST=localhost PGDATABASE=world2_dev PGUSER=world2_owner PGPASSWORD=…
 export WORLD2_CLEARING_URL=postgres://clearing_job:…@localhost/world2_dev
@@ -1547,7 +1556,7 @@ psql -c "DROP VIEW IF EXISTS docket, standing_marks CASCADE;
          DROP FUNCTION IF EXISTS windows_tile() CASCADE;"
 for f in 001_tables 002_grants 004_marks_data 005_candle_tiling 006_claim_identity; do
   psql -f world2/schema/$f.sql; done
-git clone --depth 1 --branch sandbox/seed https://github.com/keeminlee/postmark-world.git ~/frozen-world
+git clone --depth 1 --branch sandbox/seed https://github.com/postmark-town/postmark-world.git ~/frozen-world
 node world2/tools/seed-import.mjs --world-repo ~/frozen-world --tag sandbox/seed \
   --town-sha 830a69963d8e4801ad4ed8bb80da38e79fd3fdbf --with-acts
 WORLD2_PG_URL=…owner… node world2/tools/ledger-backfill.mjs --world-repo ~/frozen-world
@@ -2304,7 +2313,7 @@ postgres is fine to CI."** The scratch database this falsifier needs would be
 pull request (and on dispatch) against a `postgres:16` service that lives for
 one job: the five roles, both databases floored from `world2/schema/` (every
 `NNN_*.sql` in name order as `world2_owner`, 003 skipped — it is a falsifier
-query, not a migration), a shallow read-only checkout of `keeminlee/postmark-world`
+query, not a migration), a shallow read-only checkout of `postmark-town/postmark-world`
 at `main` for `--world-repo`, the run with `--json`. ~2 minutes, most of it
 `npm ci`. The floor loop lives in `.github/scripts/guard-falsifier-floor.sh`
 and the receipt printer in `guard-falsifier-report.mjs`; both are workflow

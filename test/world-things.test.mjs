@@ -14,8 +14,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -25,12 +24,13 @@ import { declareHolding, liveHolder, holdingsOf, heldPositionOf } from "../src/w
 import { openDynamic } from "../src/dynamic-store.mjs";
 import { readAttachments, declareAttachment } from "../src/dynamic-entities.mjs";
 import { NO_WORLD_DB, clearWorld, publishWorld } from "./helpers/world-rows.mjs";
+import { tempDir } from "./helpers/temp-dir.mjs";
 
 // The class layer reads the world graph snapshot (POS-270 lane W 3a): storeWith()
 // publishes an OK store as one, and world.db's path points nowhere.
 process.env.WORLD_STORE_DB = NO_WORLD_DB;
 
-const TMP = mkdtempSync(join(tmpdir(), "office-things-"));
+const TMP = tempDir("office-things-");
 
 // ── a world store carrying the Keeping Works in miniature ───────────────────
 //
@@ -362,7 +362,12 @@ test("world_hold and world_holdings are on the flat tool list", async () => {
   assert.ok(names.includes("world_hold"));
   assert.ok(names.includes("world_holdings"));
   const hold = WORLD_TOOLS.find((t) => t.name === "world_hold");
-  assert.deepEqual(hold.inputSchema.required, ["thing"]);
+  // `thing` stopped being required with WLD-27: counted units move by
+  // label/count/from/to with no thing named. The door itself refuses a call
+  // naming none of them ("which thing?"), so the requirement moved, not left.
+  assert.equal(hold.inputSchema.required, undefined);
+  for (const field of ["thing", "to", "label", "count", "from", "act", "chest", "handle"]) assert.ok(field in hold.inputSchema.properties, field);
+  assert.deepEqual(hold.inputSchema.properties.act.enum, ["consume", "refill"]);
   assert.equal(hold.inputSchema.additionalProperties, false);
   // The door must SAY the decoupling, not merely implement it.
   assert.match(hold.description, /WHO MADE IT IS NOT WHO HOLDS IT/);

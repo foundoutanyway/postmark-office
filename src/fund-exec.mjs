@@ -28,11 +28,14 @@
 // { error: { code, defect, hint } } (a bounce is an answer); exit 1 only when
 // the machinery itself trips.
 
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { penCommit, penTransaction, landOrRefuse } from "./write.mjs";
+import { penTransaction } from "./write.mjs";
+import { landStamped } from "./stamp-lines.mjs"; // POS-341: the ledger's lines are recorded in the store in the commit's transaction
+import { lastLedgerLine } from "./stamp-tail.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -56,7 +59,7 @@ function classifyFatal(stderr) {
     return { code: 409, defect: "the ledger is catching up", hint: "the town is mid-crossing — try again in a moment" };
   if (/precedes the ledger tail/.test(s))
     return { code: 409, defect: "the ledger moved ahead of the clock", hint: "try again in a moment" };
-  return { code: 500, defect: "the receipt refused", hint: (s.split("\n").find(Boolean) ?? "unknown").slice(0, 200) };
+  return { code: 500, defect: "the receipt refused", hint: faultLogged("the receipt refused", { stderr: s }) }; // to this child's stderr, the office's log (POS-578)
 }
 
 // The town's own rail set (stamp-mint.mjs KEEPING_RAILS, which the pot-receipt
@@ -97,18 +100,17 @@ async function main() {
       return refusal(code, defect, hint);
     }
 
-    const commit = landOrRefuse(() => penCommit(CLONE, [
+    const commit = await landStamped(CLONE, [
       join(CLONE, "WHITE_PAGES", "stamp-ledger.md"),
       join(CLONE, "WHITE_PAGES", `pot-${pot}.json`),
-    ], `fund: $${usd} witnessed for ${from} → pot ${pot} (${rail} rail, via ${via})`));
+    ], `fund: $${usd} witnessed for ${from} → pot ${pot} (${rail} rail, via ${via})`);
     // A payer reads this, so it says what happened to the MONEY: nothing. The
     // receipt was not kept, and the same transaction verifies once when retried.
     if (commit?.error) return refusal(commit.error.code, commit.error.defect,
       "the office lost its race with other town traffic, so this payment is not witnessed yet and nothing was recorded — your payment itself is untouched; verify the same transaction again and it is recorded once");
 
-    const { parseStampLedger } = await import(pathToFileURL(mint));
-    const entries = parseStampLedger(readFileSync(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"), "utf8"));
-    const line = entries.at(-1)?.raw ?? "";
+    // SNAPSHOT 7 (POS-314): the receipt line is the file's last, read from its end.
+    const line = lastLedgerLine(join(CLONE, "WHITE_PAGES", "stamp-ledger.md"));
 
     return { line, pot, usd, from, ref, date, rail, commit };
   }));

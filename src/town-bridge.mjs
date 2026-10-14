@@ -151,6 +151,7 @@ import { currentKeysOf, judgeHouseKey } from "./house-key.mjs";
 import { planFirstIdeaSweep, writeFirstIdeaSweep } from "./first-idea-sweep.mjs";
 import { replayPaperAct } from "./town-updates.mjs";
 import { replayLetter } from "./town-mail.mjs";
+import { recipientsProbe } from "./ashore.mjs"; // the recipient check's wrap, the door's own (POS-444)
 import { townLockPath, useFlock } from "./town-lock.mjs";
 
 /**
@@ -265,6 +266,10 @@ export async function runTownDrain(odb, {
   // platform rather than the guard.
   requireLock = true, lockHeld = townLockHeld, dryRun = false, log = console.error,
   planLines = plannedRegistryLines,
+  // the writer's post-store house-key judgment (POS-600), injectable for the
+  // same reason as `planLines`: its refusal and its throw are branches a
+  // falsifier must reach through this function, not only through the writer
+  storeJudge = undefined,
 } = {}) {
   const t0 = Date.now();
   const done = (r) => { const out = { ...r, took_ms: Date.now() - t0 }; log?.(drainLine(out)); return out; };
@@ -382,7 +387,7 @@ export async function runTownDrain(odb, {
   // requestResidency, the same). Every credential shape either carries `ghId`
   // or is refused there: OAuth tokens and household keys always carry it, an
   // un-cosigned berth key carries none and is bounced, a cosigned berth upgrades
-  // in place to its human's id, and a static OFFICE_KEYS entry has no GitHub
+  // in place to its human's id, and a static key with no gh_id has no GitHub
   // identity at all. Nor does the berth arc open a window: `household do:
   // "begin"` PARKS the declaration on the berth row and writes no journal row
   // ("nothing is executed until the click"), and the co-sign runs the parked
@@ -470,7 +475,10 @@ export async function runTownDrain(odb, {
   // record, while the mail still sails. (An absent pen key refused above.)
   let heldUnkeyed = [];
   if (plan.plans.length && existsSync(join(clone, "WHITE_PAGES", "stamp-ledger.md"))) {
-    plan.ledger = planLines(plan.plans, { date: stamp, keys: currentKeysOf(clone) });
+    // The ENTRY keys, once, before any write (POS-600): the writer re-plans from
+    // the same snapshot after its store loop, never from a clone or store it moved.
+    plan.entryKeys = currentKeysOf(clone);
+    plan.ledger = planLines(plan.plans, { date: stamp, keys: plan.entryKeys });
     const judged = judgeHouseKey(clone, plan.ledger, { date: stamp, registry: plan.registry });
     if (judged.splits?.length)
       return done({ ran: false, refused: "household-split", drained: 0, counts, head,
@@ -485,7 +493,7 @@ export async function runTownDrain(odb, {
     } else plan.signed = judged.signed;
   }
 
-  const touched = await writeTownDrain(clone, plan, { date: stamp });
+  const touched = await writeTownDrain(clone, plan, { date: stamp, ...(storeJudge ? { judge: storeJudge } : {}) });
 
   // A DRAIN THAT REFUSED TO RENDER MUST NOT READ AS A QUIET CROSSING (POS-158).
   // The settled rows are in the RECORD either way — that is the durable half,
@@ -512,20 +520,24 @@ export async function runTownDrain(odb, {
   // while the report prints the word that promises it was kept. So the cursor
   // does not move at all while any row stalled, exactly as it does not while
   // the gangway holds one.
-  const stalledRows = [...heldUnkeyed, ...(touched.stalled ?? [])];
+  const stalledRows = [...heldUnkeyed, ...(touched.stalled ?? []), ...(touched.keyHeld ?? [])];
   if (heldUnkeyed.length)
     log(`drain: ${heldUnkeyed.length} join row(s) cannot be keyed to their house at this crossing and are held — the cursor is held`);
   if (touched.stalled?.length)
     log(`drain: ${touched.stalled.length} row(s) could not reach the record and are still pending — the cursor is held`);
+  if (touched.keyHeld?.length)
+    log(`drain: ${touched.keyHeld.length} landed join row(s) held by the house-key judgment re-run after the store loop — no card, key line or register written for them; the record may hold their membership; still pending, the cursor is held`);
 
   // The join files are the only bytes the bridge itself put on disk, so they
   // are the only ones it commits. Every door below commits its own work through
   // the same pen — one commit per act, exactly as that act would have made had
   // the flag been off, which is what keeps the drain's history readable as the
   // history it replaced.
+  // the rows that SETTLED: neither stalled at the store nor held by a key judgment (POS-600)
+  const settledHandles = plan.plans.map(({ row }) => row.handle).filter((h) => !stalledRows.some(({ row }) => row.handle === h));
   const commit = touched.length
     ? penCommit(clone, touched.map((rel) => join(clone, rel)),
-      `drain: ${plan.plans.length} settled into the town record (town log seq ≤ ${head})`)
+      `drain: ${settledHandles.length} settled into the town record (town log seq ≤ ${head})`)
     : null;
 
   // ── updates and letters, in seq order ────────────────────────────────────
@@ -564,6 +576,13 @@ export async function runTownDrain(odb, {
   // the resume checks). An accepted letter is never lost; it may be a crossing late.
   const updates = [], letters = [];
   let bounced = 0, held = 0;
+  // THE RECIPIENTS THE COPY HAS NOT CAUGHT UP TO (POS-444): the send door
+  // accepted each of these letters with its recipient check wrapped so a handle
+  // the store holds ashore is a resident, and the replay below asks the same
+  // check, so it takes the same wrap. Otherwise a letter to a resident admitted
+  // since the last ingest is accepted at the door and bounced here. Letters
+  // only: the paper doors are handed `db` as it is.
+  const letterDb = await recipientsProbe(db, rows.filter((r) => r.cls === "letter").map((r) => r.payload?.args?.to));
   const bounce = (e) => {
     if (e?.pen === NOT_LANDED) {
       held += 1;
@@ -599,7 +618,7 @@ export async function runTownDrain(odb, {
     }
     let entry;
     try {
-      const out = replayLetter(row, { doors, db, clone });
+      const out = replayLetter(row, { doors, db: letterDb, clone });
       entry = out.skipped ? { skipped: out.skipped } : { commit: out.result?.commit ?? null };
     } catch (e) { entry = bounce(e); }
     letters.push({ seq: row.seq, id, file, ...entry });
@@ -646,7 +665,9 @@ export async function runTownDrain(odb, {
     cursor: (await townDrainCursor(odb)), commit, first_idea: firstIdea, ...gangwayFields,
     ...(registryRefused ? { registry_refused: registryRefused } : {}),
     ...(stalledRows.length ? { store: stalledRows.map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })) } : {}),
-    settled: plan.plans.map(({ row }) => row.handle),
+    // Only rows that SETTLED (POS-600): a row the store stalled or the post-store
+    // key judgment held is still pending, whatever the record may already hold.
+    settled: settledHandles,
     waiting: plan.waiting.map(({ row, why }) => ({ seq: row.seq, handle: row.handle, why })),
     // JOIN ROWS ONLY. planTownDrain reads the WHOLE pending log and files every
     // row it is not itself going to settle under "not a settling act: <act>" —

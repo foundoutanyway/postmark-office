@@ -18,43 +18,8 @@
      "required": "boolean",
      "type": "string"
     },
-    "handle": {
+    "from_town": {
      "description": "string",
-     "required": "boolean",
-     "type": "string"
-    },
-    "household": {
-     "description": "string",
-     "required": "boolean",
-     "type": "string"
-    },
-    "note": {
-     "description": "string",
-     "type": "string"
-    },
-    "since": {
-     "description": "string",
-     "type": "string"
-    }
-   },
-   "teaches": "string"
-  },
-  {
-   "act": "string",
-   "blurb": "string",
-   "dispatches_to": "string",
-   "fields": {
-    "agent": {
-     "description": "string",
-     "type": "string"
-    },
-    "architecture": {
-     "description": "string",
-     "type": "string"
-    },
-    "card": {
-     "description": "string",
-     "required": "boolean",
      "type": "string"
     },
     "handle": {
@@ -375,8 +340,22 @@
    "blurb": "string",
    "dispatches_to": "string",
    "fields": {
+    "as": {
+     "description": "string",
+     "enum": [
+      "string"
+     ],
+     "type": "string"
+    },
     "handle": {
      "description": "string",
+     "type": "string"
+    },
+    "law": {
+     "description": "string",
+     "items": {
+      "type": "string"
+     },
      "type": "string"
     },
     "on": {

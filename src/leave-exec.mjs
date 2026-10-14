@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { penCommit } from "./write.mjs";
 import { markRecord } from "./mark-record.mjs";
 import { ensureDraftCheckout } from "./world-branches.mjs";
+import { isDroppedUnitMark } from "./world-stacks.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // WORLD_CLONE is the LEASED WORKTREE when the pool is on (tier 1) and the shared
@@ -63,7 +64,7 @@ const frozenDirOf = (id) => {
 };
 
 const answer = (obj) => { console.log(JSON.stringify(obj)); process.exit(0); };
-const err = (code, defect, hint) => answer({ error: { code, defect, hint } });
+const err = (code, defect, hint, extra = {}) => answer({ error: { code, defect, hint, ...extra } });
 
 // phase stamps for the one [timing] stderr line printed on the success path —
 // the write-path decomposition (lock wait lives in the parent's total).
@@ -84,10 +85,10 @@ async function main() {
 
   const tools = join(CLONE, "tools");
   const tEngine = performance.now();
+  const foldMod = await import(pathToFileURL(join(tools, "marks-fold.mjs")));
   const { loadMarks, containmentParents, containmentParentOf, placementParent, worldRootOf,
-          PARCEL_CLAIM_CAP, PARCEL_CAP_LAW_DATE, PARCEL_EXTENT_M,
-          worldToFile, ringToFile, COORDS_FIELD, COORDS_RELATIVE } =
-    await import(pathToFileURL(join(tools, "marks-fold.mjs")));
+          PARCEL_EXTENT_M,
+          worldToFile, ringToFile, COORDS_FIELD, COORDS_RELATIVE } = foldMod;
   phases.push(`engine=${Math.round(performance.now() - tEngine)}ms`);
   let branch;
   try {
@@ -147,6 +148,17 @@ async function main() {
   if (p.op === "withdraw") {
     const rec = byId.get(id);
     if (!rec) return err(404, `no mark "${id}" in your world`, "ids are <by>/<slug> — you can withdraw your drafts and your published marks; check world_my_marks");
+    // A SET-DOWN UNIT'S MARK IS NOT WITHDRAWN ON THIS LANE (Wright, AUTHORITY
+    // 2026-10-13T07:52:24.868Z; Bevel's revised first review of #503, R3). Asked
+    // HERE, of the very record this withdrawal would delete — the household's
+    // own sketchbook as just checked out, published or not — because the door's
+    // early answers (the store, canon) cannot see a private draft on this branch.
+    // Its unit comes back only on the store's single-log path, so this lane
+    // refuses by name before anything is deleted or committed.
+    if (isDroppedUnitMark(rec) || /^act:[1-9][0-9]*$/.test(String(rec.dropped ?? "")))
+      return err(409, `"${id}" is a set-down unit's mark, and it is withdrawn only on the store's path (dropped-unit-withdraw-store-only)`,
+        `its record names the set-down it is (${rec.dropped}). Withdrawing it returns the unit to its dropper, and only the single-log store path (WORLD_SINGLE_LOG=1) makes that return; this office writes marks on the git lane, so nothing was written. Once it is published it is taken back instead: world_hold { thing: "${id}" }.`,
+        { reason: "dropped-unit-withdraw-store-only" });
     const dir0 = rec._dir;
     if (holdsChildren(dir0, id)) return err(409, `"${id}" still holds marks inside it`,
       "withdraw or move the children first — a withdrawal may not strand what stands on it");
@@ -184,11 +196,12 @@ async function main() {
       "a slug is unique per author — pass amend: true to supersede it (a newer declaration on your own node, edit-law's revision family), or pick another slug");
   const priorRec = amending ? byId.get(id) : null;
 
-  // The parcel-claim cap (Keemin's ruling 2026-07-30): a credential household —
-  // handles grouped by WORLD/households.json, the town-pin registry — may claim
-  // at most 3 parcels; holdings predating the law stand as prior estate. The
-  // fold enforces this too (marks-fold § admissibility); bouncing here gives
-  // the resident the honest sentence before anything is written.
+  // The parcel dial. The limits (the household claim cap, the-town/claim-cap;
+  // one parcel per resident, the-town/one-per-resident) no longer refuse at this
+  // door: R11, as Darko amended it 2026-10-04, has the office accept every
+  // physically legal act and the settlement apply limits in act order, citing
+  // the law (POS-364; src/world-settlement.mjs § the limits). This door and the
+  // journal door gave up the same check together: one law, two holders (#2888).
   if (p.kind === "parcel") {
     // The dial, not a declaration: every parcel is the town's square (Keemin,
     // 2026-07-31). The door already bounced any passed extent; this writes the
@@ -196,24 +209,6 @@ async function main() {
     // that has not yet pulled the constant.
     const side = PARCEL_EXTENT_M ?? 25;
     p.extent = { w: side, h: side };
-    // THE CAP ASKS ONLY OF NEW GROUND (2026-09-15, Linear POS-88; the instance:
-    // Current re-amending the-keepers-flat, held since S45, bounced "already
-    // holds 4 parcels"). `amending` was computed above and never consulted here,
-    // so `held` counted the very parcel being amended and an amendment of a
-    // holding read as a claim for new ground. The law's own sentence below says
-    // prior holdings stand; an amendment of one is not a claim. The extent dial
-    // above still applies to every parcel act — every parcel is the town's square.
-    if (!amending) {
-      const cap = PARCEL_CLAIM_CAP ?? 3;
-      let registry = null;
-      try { registry = JSON.parse(readFileSync(join(CLONE, "WORLD", "households.json"), "utf8")).households ?? null; } catch { /* no registry → solo grain */ }
-      const credOf = (handle) => registry?.[handle] ?? `solo:${handle}`;
-      const cred = credOf(p.by);
-      const held = marks.filter((m) => m.kind === "parcel" && credOf(m.by ?? m.household) === cred).length;
-      if (held >= cap)
-        return err(403, `your household already holds ${held} parcel${held === 1 ? "" : "s"}`,
-          `parcel claiming is capped at ${cap} per household (ruled ${PARCEL_CAP_LAW_DATE ?? "2026-07-30"}; prior holdings stand) — new ground for this household is the founder's word, not the door's`);
-    }
   }
 
   // decide the directory. sited/parcel file BY IDENTITY — `WORLD/marks/<by>/

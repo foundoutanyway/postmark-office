@@ -69,6 +69,7 @@ import { bootOnFreePort } from "./spawn-office.mjs";
 import { householdApex } from "../src/household-apex.mjs";
 import { callTool, TOOLS } from "../src/mcp.mjs";
 import { mailAwaiting } from "../src/queries.mjs";
+import { seedStaticKeys } from "./helpers/static-keys.mjs"; // POS-352: static keys are store rows
 import {
   CONVERSATION_IS_THE_ROOT, THREAD_FIELD_IS_A_PARENT, THREAD_IS_THE_LETTER_ID,
   THREE_STRINGS, threadlessReplyHint, unansweredFrom,
@@ -285,7 +286,7 @@ test("F7 · ADDITIVE and nothing else — every key the receipt already answered
     const odb = logDb();
     const clone = mailClone();
     const r = await callTool("send_letter", letter(), ctx({ odb, clone, canWrite: true, key: KEY }));
-    // OPERATIONS.md § Breaking-change rules: "a public HTTP response shape is a
+    // CONTRACT.md § Breaking changes: "a public HTTP response shape is a
     // contract (panes in the wild freeze it in carved JS)". Additive is lawful;
     // renamed or retyped is the break. So the promise is asserted as a promise.
     for (const [k, t] of Object.entries({
@@ -397,8 +398,8 @@ before(async () => {
   const p = join(restTmp, "fixture.db");
   fixtureDb(p).close();
   const IX_ENV = await storeFor(p);
-  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", p], {
-    env: { ...process.env, ...IX_ENV, OFFICE_KEYS: `${REST_KEY}=keemin:wright`, TOWN_CLONE: mailClone(),
+  ({ child, port: PORT } = await bootOnFreePort((port) => spawn(process.execPath, [join(ROOT, "src", "server.mjs"), "--port", String(port), "--db", p, "--oauth-db", seedStaticKeys(join(restTmp, "oauth.db"), `${REST_KEY}=keemin:wright`)], {
+    env: { ...process.env, WORLD_GRAPH_NONE: "1", ...IX_ENV, TOWN_CLONE: mailClone(),
       WORLD_CLONE: join(restTmp, "no-world-clone") },
     stdio: ["ignore", "pipe", "pipe"],
   })));

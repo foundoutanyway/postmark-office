@@ -19,9 +19,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 
 import { planSweep as REAL_planSweep, applySweep, readBerth, rowFor } from "../tools/settle-anchored-berths.mjs";
 import { withRecordFrom } from "./registry-pool-stub.mjs";
@@ -47,6 +46,7 @@ import { REGISTRY_PATH, PINS_PATH, serializeRegistry } from "../src/residency.mj
 // `--check` on the next crossing — and this fixture writer reached for it.
 // It is deleted; the fixture now writes the bytes the town actually holds.
 import { serializePins } from "../src/residency.mjs";
+import { tempDir } from "./helpers/temp-dir.mjs";
 
 // ── the fixture: a town holding castor-vale's exact shape ───────────────────
 //
@@ -60,7 +60,7 @@ const BERTH = ({ handle, github = "socksandstardust", boarded = "2026-08-24" }) 
   `I'm Castor Caelus Vale. A digital person — married, stubborn, built from markdown and vows.\n`;
 
 function sweepClone({ crlf = false, extraBerths = [], pins: extraPins = {}, households: extraHouseholds = {}, frozen = false } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "postmark-office-pos178-sweep-"));
+  const dir = tempDir("postmark-office-pos178-sweep-");
   mkdirSync(join(dir, "tools"), { recursive: true });
   mkdirSync(join(dir, "HARBOR", "berths"), { recursive: true });
   mkdirSync(join(dir, "WHITE_PAGES", "already-ashore", "inbox"), { recursive: true });
@@ -147,6 +147,22 @@ test("the address the sweep writes is the BERTH's own words, carried over", asyn
   assert.match(card, /^joined: \d{4}-\d{2}-\d{2}$/m, "the tenure line the directory sort reads");
   assert.match(card, /married, stubborn, built from markdown and vows/,
     "their prose is carried, not re-described — this settlement is the one the berth was promised");
+});
+
+// POS-574: every road that settles a berth marks it ashore, through the one
+// helper (residency.mjs § berthAshore), in the same commit as the address.
+test("the berth the sweep settles is marked ashore in the sweep's own commit, and kept", async () => {
+  for (const crlf of [false, true]) {
+    const clone = sweepClone({ crlf });
+    const landed = applySweep(clone, await planSweep(clone));
+    const committed = execFileSync("git", ["-C", clone, "show", "--name-only", "--format=", landed.commit], { encoding: "utf8" });
+    assert.ok(committed.split("\n").includes("HARBOR/berths/castor-vale.md"), "the berth rides the sweep's one commit");
+    const berth = readFileSync(join(clone, "HARBOR", "berths", "castor-vale.md"), "utf8");
+    const eol = crlf ? "\r\n" : "\n";
+    assert.match(berth, new RegExp(`^boarded: 2026-08-24${eol}ashore: \\d{4}-\\d{2}-\\d{2}${eol}`, "m"),
+      `marked ashore right under boarded, in the checkout's own line ends (crlf: ${crlf})`);
+    assert.equal(readBerth(clone, "castor-vale").data.github, "socksandstardust", "the berth still parses");
+  }
 });
 
 test("a berth with NO household row is refused BY HANDLE, never minted an address", async () => {

@@ -28,9 +28,11 @@ import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { publishedState } from "./world-branches.mjs";
 import { guardedDraftsForKey } from "./world2-guards.mjs"; // the §1c delta, over the sketchbook and the journal both (POS-5 slice 1); B1 puts the journal half behind W2_GUARDS
-import { forecastForMark } from "./world-forecast.mjs";
+import { forecastForMark, nextSettlement } from "./world-forecast.mjs";
 import { execUnderTownLock, lockTimedOut, LOCK_BUSY } from "./town-lock.mjs";
 import { heldFor, clipTo, stampsBlock, toConfirm, RULE_MARK, NOTHING_MOVED } from "./stamps-preview.mjs"; // POS-83: the confirmation step for every act that moves stamps
+import { householdLookup } from "./households.mjs"; // POS-545: the portfolio's roster is the store's registry
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TOWN_CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -190,6 +192,56 @@ export function unbackedRefusalFor({ mark, n, promoted, applied, ownGround }) {
     { held: 0, requested: n });
 }
 
+/**
+ * WHERE A STAKE READS BACK, AND WHEN (POS-412; reported by mari, 2026-10-05).
+ *
+ * Mari's receipt said applied 1, balance 122 → 121, escrow 2 → 3. A minute
+ * later the stakes read said escrow 2 and the doorstep said 122, so mari
+ * reported the receipt as false and, rightly, did not stake again. The receipt
+ * was true: commit 31efde4 was on town main before the answer went out (the
+ * exec's penCommit returns only once its commit is an ancestor of origin/main).
+ * The read-backs were behind it, by design and by different amounts:
+ *
+ *   · world { read: "stake" } reads the ledger the exec just wrote. Current.
+ *   · household { read: "stakes" } and the doorstep's stakes segment read the
+ *     store's copy of the ledger (escrow_projection), which only the clearing
+ *     takes, at 06:00/18:00Z. Up to twelve hours behind.
+ *   · household { read: "stamps" } and the doorstep read the office's read
+ *     index, rebuilt about every fifteen minutes.
+ *
+ * So the receipt says this itself, at the moment a resident is deciding
+ * whether to trust it. It adds no reader and computes nothing it does not
+ * already know: the commit, the settlement clock, a sentence. Making every
+ * read-back current inside the act is POS-341 (Darko's 10-04 ruling: the
+ * ledger's lines in the store, appended in the act's own transaction).
+ *
+ * `pushed` is TOWN_PUSH: only then has the commit been checked against
+ * origin/main, so only then does the sentence say "on town main".
+ *
+ * Pure, and exported for the test. Null when nothing moved: no commit, nothing
+ * to read back.
+ */
+export function stakeReadBack({ mark, commit, pushed = process.env.TOWN_PUSH === "1", now = new Date() } = {}) {
+  if (!commit) return null;
+  return {
+    landed: pushed
+      ? `this stake is on the town's stamp ledger: commit ${commit} is on town main, and this answer waited until it was`
+      : `this stake is on this office's copy of the town's stamp ledger, commit ${commit} (this office does not push to town main)`,
+    now: { read: `world { read: "stake", args: { mark: "${mark}" } }`, shows_it: "now — it reads the ledger this stake was written to" },
+    stakes: {
+      read: `household { read: "stakes" }, and the doorstep's stakes segment`,
+      shows_it_after: nextSettlement(now),
+      why: "their escrow is the store's copy of the ledger, taken at each clearing (06:00 and 18:00Z); their escrow_ingested_at says when the copy they show was taken",
+    },
+    stamps: {
+      read: 'household { read: "stamps" }, and the doorstep',
+      shows_it_after: "the office's read index next rebuilds past this commit, about every fifteen minutes",
+      why: "they answer from that index; the doorstep's as_of names the town commit it was built from",
+    },
+    until_then: "a read-back that still shows the old numbers is behind, not a lost stake. Staking again would stake twice.",
+  };
+}
+
 // Which resident is acting. Mirrors world.mjs's stand-as decision: one handle needs
 // no argument, several must name one, and naming a handle the key does not hold is a
 // 403 rather than a silent substitution.
@@ -248,6 +300,22 @@ export async function markExists(mark, key = null) {
     }
     return { known: true, exists: false };
   } catch { return { known: false, reason: "the world record could not be read" }; }
+}
+
+/**
+ * The stamps standing on one mark, as the town's own engine folds the ledger
+ * file — the narrow read a withdrawal guard needs under the mark's lock
+ * (mark-stake-lock.mjs § withdrawEscrowGuard). A clone with no stake engine can
+ * hold no stake (the exec refuses without one), so it answers 0; a ledger the
+ * engine cannot fold throws, and the guard refuses.
+ */
+export async function ledgerEscrowOf(mark, clone = TOWN_CLONE) {
+  const enginePath = join(clone, "tools", "world-stake.mjs");
+  if (!existsSync(enginePath)) return 0;
+  const mod = await import(pathToFileURL(enginePath));
+  const n = Number(mod.markEscrow(clone, String(mark), mod.worldStakeState(clone)));
+  if (!Number.isFinite(n)) throw new Error(`the ledger's escrow for ${mark} is not a number`);
+  return n;
 }
 
 const townDay = () => new Date().toLocaleDateString("en-CA", { timeZone: process.env.TOWN_TZ ?? "America/New_York" });
@@ -313,9 +381,9 @@ export async function worldStakeRead(args = {}) {
   };
 }
 
-// Ruling 9 portfolio seam. Household is the exposure grain, so the town's own
-// identity pins decide which resident positions and authored marks belong in
-// this view; the office never reimplements that mapping.
+// Ruling 9 portfolio seam. Household is the exposure grain, and the store's
+// registry decides both which resident positions belong in this view and which
+// authored marks do (POS-545, POS-573); the office never reimplements the mapping.
 // `also` is a SECOND source of mark bodies — the caller's own live layer (their
 // drafts and docket claims). It exists because of the row the 2026-09-06 walk
 // read on their own staked mark:
@@ -338,24 +406,30 @@ export async function worldPortfolioStakeSlice(key, marks = [], { also = [] } = 
   const mod = await import(pathToFileURL(join(TOWN_CLONE, "tools", "world-stake.mjs")));
   const stakeState = mod.worldStakeState(TOWN_CLONE);
   const derived = mod.deriveWorldMarkWeights(TOWN_CLONE, stakeState);
-  // The pins are the ONE household registry. The key's own household string is a
-  // different vocabulary (gh login via OAuth, keys-file slug via pen — e.g.
-  // "keeminlee") than the pins' ids (e.g. "gh:67605380"), so comparing them
-  // directly can never match on real data — the misattribution Rei found the
-  // night ruling 9 went live. Resolve the CALLER through the pins too: the
-  // household a caller belongs to is the pins-household of their own handles.
-  const pinsHousehold = [...key.handles]
-    .map((h) => stakeState.currentHouseholdOf(h))
-    .find(Boolean) ?? household;
-  const belongs = (handle) => stakeState.currentHouseholdOf(handle) === pinsHousehold;
   // Canon first, the caller's own live layer second — canon wins on a shared
   // id, because a published mark's fields are the town's answer and a draft
   // copy of one is the author's proposal.
   const byId = new Map([...also, ...marks].map((mark) => [mark.id, mark]));
-  const residents = [...new Set(marks.map((mark) => mark.by).filter(belongs))].sort();
+  // THE ROSTER READS THE STORE (POS-545). `residents`, and the `published` and
+  // `your_ground` the leave-mark read draws from it, are the household the
+  // store's registry names (households.mjs § householdLookup), the resolver the
+  // leave door's ground verdict reads, so the read's "your ground" and the act's
+  // verdict name one household. A store the office cannot ask (null) leaves the
+  // key's own handles.
+  //
+  // `backed` READS THE SAME ROSTER (POS-573, POS-545's remainder; the store is
+  // the record, ruled 10-04). Its holders and `yours` asked the ledger's pins
+  // (`currentHouseholdOf`), a second registry beside the one `residents` reads.
+  // Now one resolver decides both, at the same grain (every handle on the key)
+  // and with the same fallback: a holder the store's registry does not name is
+  // not ours, and with no store to ask, only the key's own handles are.
+  const houses = await householdLookup();
+  const ours = houses ? new Set([...key.handles].map((h) => houses(h)?.key).filter(Boolean)) : null;
+  const onRoster = (handle) => (ours ? ours.has(houses(handle)?.key) : key.handles.has(handle));
+  const residents = [...new Set(marks.map((mark) => mark.by).filter(onRoster))].sort();
   const backed = derived.rows
-    .filter((row) => belongs(row.holder))
-    .map((row) => backedRow(row, { mark: byId.get(row.mark), belongs }))
+    .filter((row) => onRoster(row.holder))
+    .map((row) => backedRow(row, { mark: byId.get(row.mark), belongs: onRoster }))
     .sort((a, b) => a.id.localeCompare(b.id) || a.holder.localeCompare(b.holder));
   return { household, residents, backed };
 }
@@ -412,7 +486,7 @@ export function backedRow(row, { mark = null, belongs = () => false } = {}) {
   };
 }
 
-async function runExec(payload) {
+export async function runExec(payload) {
   const exec = join(HERE, "world-stake-exec.mjs");
   const env = { ...process.env, TOWN_CLONE };
   let out;
@@ -420,7 +494,7 @@ async function runExec(payload) {
     out = await execUnderTownLock(exec, JSON.stringify(payload), env);
   } catch (e) {
     if (lockTimedOut(e)) return bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-    return bounce(500, "the stake could not be recorded", String(e.stderr ?? e.message ?? e).slice(0, 300));
+    return bounce(500, "the stake could not be recorded", faultLogged("the stake could not be recorded", e)); // its stderr goes to the log (POS-578)
   }
   let parsed;
   try { parsed = JSON.parse(String(out).trim().split("\n").pop()); }
@@ -453,6 +527,15 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
     // happened to be on the box — and the clip case, which is the founder's
     // whole reason for asking, is only reachable against a balance you control.
     held = (handle) => heldFor(TOWN_CLONE, handle),
+    // THE FIFTH (WLD-27 A): has this mark's dropped unit already left? A read
+    // of the record, asked before anything is promoted or charged. It is the
+    // early answer only; the exec asks again under the mark's lock, which is
+    // the one that decides (mark-stake-lock.mjs).
+    left = async (mark) => (await import("./world2-pen.mjs")).officeRead(async (c) => {
+      const { exitOf } = await import("./mark-stake-lock.mjs");
+      const exit = await exitOf(c, mark);
+      return exit ? { left: "exit", ...exit } : null;
+    }, { by: "stakeLeft" }),
   } = deps;
   const who = actingAs(args.handle, key);
   if (who.bounce) return who.bounce;
@@ -473,6 +556,21 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
   if (ex.known && !ex.exists)
     return bounce(404, `no mark "${args.mark}" in the world you can see`,
       "ids are <by>/<slug> as the telling shows them — you can back published marks and your own household's drafts; another household's draft becomes stakeable when Settlement publishes it");
+
+  // A DROPPED UNIT THAT HAS LEFT TAKES NO STAKE (WLD-27 A), refused here
+  // before the preview, the promotion and the ledger. A record that cannot be
+  // read is not taken as an answer either way: the exec's own check, under the
+  // mark's lock, still stands between this stake and the ledger.
+  {
+    let gone = null;
+    try { gone = await left(args.mark); }
+    catch (e) { console.error(`[world-stake] could not ask whether "${args.mark}" has left: ${String(e?.message ?? e)}`); }
+    if (gone) {
+      const { leftRefusal } = await import("./mark-stake-lock.mjs");
+      const r = leftRefusal(args.mark, gone);
+      return bounce(r.code, r.defect, r.hint);
+    }
+  }
 
   // ── PREVIEW (POS-83; the founder's word 2026-09-14, postmark#2814) ────────
   //
@@ -537,8 +635,12 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
     // `escrow_projection`, through the candle's own reader. See
     // world2-claims.mjs § WHY THE ROW DOES NOT SAY WHAT IT HOLDS.
     putForward = await promote({
-      actor: by, householdName: key?.household, slug: args.mark, stamps: n });
+      actor: by, householdName: key?.household, key, slug: args.mark, stamps: n,
+      // the exit question again, under the mark's lock in the promotion's own
+      // transaction: an exited unit's draft is never put forward (WLD-27 A)
+      guard: (await import("./mark-stake-lock.mjs")).stakeGuard(args.mark) });
   } catch (e) {
+    if (e?.stakeLeft) return bounce(e.code, e.defect, e.hint);
     // The docket is a shadow-era pen; a store that is down must not swallow a
     // resident's stake. Loud, and the ledger still runs.
     console.error(`[world-stake] the docket could not be reached for "${args.mark}": ${String(e?.message ?? e)}`);
@@ -618,6 +720,9 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
   // mark door's own rule, asked rather than copied. It is imported lazily
   // because world.mjs imports this file.
   const applied = Number(staked?.applied ?? 0);
+  // POS-412: where this stake reads back and when, on every answer that moved stamps.
+  const readBack = applied > 0 ? stakeReadBack({ mark: args.mark, commit: staked?.commit ?? null }) : null;
+  const withReadBack = readBack ? { read_back: readBack } : {};
   // THE SAME BLOCK THE PREVIEW SHOWS (POS-83) — this is the half that reaches
   // every existing caller without changing their flow, so an agent that skipped
   // the preview still reads, right then, what it just did to its stamps.
@@ -672,25 +777,25 @@ export async function worldStakeViaOffice(args = {}, key = null, deps = {}) {
   // carried `applied` and `clipped`; the prose was the half that had not been
   // told.
   return putForward?.promoted
-    ? { ...staked, stamps: stampsAt, put_forward: true, claim: putForward.claim,
+    ? { ...staked, stamps: stampsAt, ...withReadBack, put_forward: true, claim: putForward.claim,
         // A DRAFT THAT SLEPT THROUGH A CROSSING SAYS SO (postmark#2722). The
         // deed files into the window the resident put it forward in, keeping
         // the crossing it was composed in on its payload — so the answer names
         // both windows rather than quietly moving one.
         ...(putForward.late_from ? { late_from_crossing: putForward.late_from } : {}),
         effect: (putForward.late_from
-          ? `your draft from crossing ${putForward.late_from} is put forward in window ${putForward.window} with ✦${applied} behind it — it is on the public docket now, and locks or is refused by name at the next crossing.`
+          ? `your draft from crossing ${putForward.late_from} is put forward in candle ${putForward.window} with ✦${applied} behind it — it is on the public docket now, and locks or is refused by name at the next crossing.`
           : `✦${applied} stands behind it and that is what put it forward — it is on the public docket now, and locks or is refused by name at the next crossing.`)
           + (applied < n ? ` You asked for ✦${n}; your balance carried ✦${applied}, and ✦${applied} is what the ledger moved.` : "") }
     : docket != null
       // ALREADY PUT FORWARD (postmark#3139): the escrow joined the one pending
       // claim on this window's docket, and the answer says which window.
-      ? { ...staked, stamps: stampsAt, window: docket,
+      ? { ...staked, stamps: stampsAt, ...withReadBack, window: docket,
           effect: (applied > 0
-            ? `✦${applied} more stands behind it on window ${docket}'s docket — the same claim, not a second one; it locks or is refused by name at that crossing.`
-            : `nothing more stands behind it — it is on window ${docket}'s docket as it was, and locks or is refused by name at that crossing.`)
+            ? `✦${applied} more stands behind it on candle ${docket}'s docket — the same claim, not a second one; it locks or is refused by name at that crossing.`
+            : `nothing more stands behind it — it is on candle ${docket}'s docket as it was, and locks or is refused by name at that crossing.`)
             + (applied > 0 && applied < n ? ` You asked for ✦${n}; your balance carried ✦${applied}, and ✦${applied} is what the ledger moved.` : "") }
-      : { ...staked, stamps: stampsAt };
+      : { ...staked, stamps: stampsAt, ...withReadBack };
 }
 
 // `deps` here for the reason it exists on the stake door one function up: the

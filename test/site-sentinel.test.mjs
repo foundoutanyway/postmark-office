@@ -15,8 +15,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -38,10 +37,16 @@ import {
   tick,
   run,
   classifyProblems,
+  classifyDisk,
+  classifyMeeps,
+  classifyLawPen,
+  diskUsage,
+  readDiskState,
   MINUTE,
   HOUR,
   CONFIG,
 } from "../tools/site-sentinel.mjs";
+import { tempDir } from "./helpers/temp-dir.mjs";
 
 const T0 = Date.parse("2026-08-25T12:00:00Z");
 
@@ -557,7 +562,7 @@ const GREEN_TABLE = {
   "https://raw.githubusercontent.com/postmark-town/postmark/main/TOWN_BULLETIN/ferrys-daily.md": { status: 200, body: DAILY_MD },
   "https://api.github.com/repos/postmark-town/postmark/commits": { status: 200, body: JSON.stringify([{ commit: { committer: { date: "2026-08-25T06:00:00Z" } } }]) },
   // One read per watched workflow, by its file (the false DOWN of 2026-09-29).
-  "https://api.github.com/repos/keeminlee/postmark-site/actions/workflows/deploy.yml/runs": {
+  "https://api.github.com/repos/postmark-town/postmark-site/actions/workflows/deploy.yml/runs": {
     status: 200,
     body: JSON.stringify({ workflow_runs: [
       { name: "Deploy (snapshot -> dev, release -> prod)", status: "completed", conclusion: "success", created_at: "2026-08-25T11:44:00Z" },
@@ -568,9 +573,17 @@ const GREEN_TABLE = {
 };
 
 // git ls-remote, stubbed: main tip, then the release tag list.
-const stubExec = ({ siteTip = "sitetip0000", townTip = "towntip0000", relSha = "relsha00000" } = {}) =>
+// The world's settlement tags too (§11): annotated, so each lists twice, and the
+// newest by number is S50, peeled to `settleSha` — the fixture receipt's world.
+const stubExec = ({ siteTip = "sitetip0000", townTip = "towntip0000", relSha = "relsha00000", settleSha = "worldtip0000" } = {}) =>
   (_bin, args) => {
     const repo = args.find((a) => a.startsWith("https://")) ?? "";
+    if (repo.includes("postmark-world")) {
+      return [
+        "tagobj49\trefs/tags/settlement/S49", "older0049\trefs/tags/settlement/S49^{}",
+        "tagobj50\trefs/tags/settlement/S50", `${settleSha}\trefs/tags/settlement/S50^{}`,
+      ].join("\n") + "\n";
+    }
     if (args.includes("--tags")) return `${relSha}\trefs/tags/release/2026-w35.1\n`;
     return repo.includes("postmark-site") ? `${siteTip}\trefs/heads/main\n` : `${townTip}\trefs/heads/main\n`;
   };
@@ -580,7 +593,7 @@ const stubExec = ({ siteTip = "sitetip0000", townTip = "towntip0000", relSha = "
 // the sentinel at it rather than at the box's /srv paths.
 import { writeFileSync as _wf } from "node:fs";
 import { CONFIG as _CFG } from "../tools/site-sentinel.mjs";
-const _wdir = mkdtempSync(join(tmpdir(), "sentinel-watcher-"));
+const _wdir = tempDir("sentinel-watcher-");
 const _wstate = join(_wdir, "state.json");
 _wf(_wstate, "{}");
 import { utimesSync as _ut } from "node:fs";
@@ -612,11 +625,36 @@ _ex("git", ["init", "-q", "-b", "main", _clone]);
 _wf(join(_clone, "ledger.md"), "line\n");
 _ex("git", ["-C", _clone, "add", "ledger.md"]);
 _ex("git", ["-C", _clone, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed"]);
+// §9 fixture: the disk is read through an injected reader, so the suite's
+// verdicts never ride the disk of whatever machine runs it (CI's or the box's).
+const GREEN_DISK = () => ({ path: "/", usedPct: 62, freeBytes: 14 * 2 ** 30 });
+// §10 fixture: a real temp meeps record, written a minute before the fixed
+// clock, so the healthy tick exercises the probe and never reads the box's
+// /srv/postmark-sentinel/meeps.json. Its window is 6h IN THE FIXTURE ONLY, for
+// the same reason the watcher's is: tests that walk the clock forward must not
+// trip it; its own verdicts are pinned in §10 below.
+const _meeps = join(_wdir, "meeps.json");
+_wf(_meeps, JSON.stringify({ schema: 1, generated_at: new Date(T0 - 60_000).toISOString(), status: "OK", summary: "all 9 meeps answering; every round due in the last 3 h fired", problems: [], meeps: {} }));
+// §11 fixture, same discipline: a real temp settlement receipt from the 06:00Z
+// sweep before the fixed clock, published to the world S50 peels to, so the
+// healthy tick exercises the probe and never reads the box's own
+// /srv/postmark-harbor/settlement-auto.json.
+const _settle = join(_wdir, "settlement-auto.json");
+_wf(_settle, JSON.stringify({ at: "2026-08-25T06:00:02Z", status: "published", world_from: "worldprev000", world_to: "worldtip0000", refusal: null, detail: "3 published" }));
+// §12 fixture, same discipline: a real temp law pen state, an ok run a minute
+// before the fixed clock, so the healthy tick exercises the probe and never
+// reads the box's own /srv/world2-lab/state/ingest-law.json. 6h IN THE FIXTURE
+// ONLY, for the clock-walking tests; its own verdicts are pinned in §12 below.
+const _law = join(_wdir, "ingest-law.json");
+_wf(_law, JSON.stringify({ at: new Date(T0 - 60_000).toISOString(), mode: "law", status: "ok", law: { exit: 0, sha: "a".repeat(40) }, detail: "law: ingested law" }));
 const FIXTURE_CONFIG = {
   ..._CFG,
+  lawPen: { ..._CFG.lawPen, path: _law, staleAfterMs: 6 * 60 * 60_000 },
+  settlement: { ..._CFG.settlement, receipt: _settle },
   clones: [{ key: "town_clone", label: "the office's town clone", path: _clone }],
   watchers: [{ key: "usdc_watch", label: "the usdc-watch timer", state: _wstate, cadenceMs: 6 * 60 * 60_000 }],
   siteRefresh: { ..._CFG.siteRefresh, report: _rrep, cadenceMs: 6 * 60 * 60_000 },
+  meeps: { ..._CFG.meeps, path: _meeps, staleAfterMs: 6 * 60 * 60_000 },
 };
 // cadence is 6h IN THE FIXTURE ONLY: the LOUDLY test advances its clock ~1h to
 // exercise held-alert semantics, and the watcher must stay inside its window
@@ -624,7 +662,7 @@ const FIXTURE_CONFIG = {
 // classifyWatcher tests above, not by riding along here.
 
 test("a healthy tick is entirely green and says nothing", async () => {
-  const { probes, alerts } = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG });
+  const { probes, alerts } = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
   const bad = probes.filter((p) => p.verdict !== "OK" && p.verdict !== "INFO");
   assert.deepEqual(bad.map((p) => `${p.key}:${p.verdict} ${p.reason}`), [], "a green town must produce no findings");
   assert.equal(alerts.length, 0, "and therefore nothing to say");
@@ -639,7 +677,7 @@ test("LOUDLY BE NOTIFIED: an outage and a frozen index both surface from one tic
     "https://postmark.town/api/": { status: 200, headers: { "x-postmark-as-of": "frozen00000" }, body: "{}" },
   };
   const state = { probes: {}, stamps: { office_as_of: { value: "frozen00000", first_seen_at: T0 - 2 * HOUR, diverged_since: T0 - 2 * HOUR } } };
-  const { probes, alerts } = await tick({ fetchImpl: stubFetch(broken), exec: stubExec(), state, nowMs: T0, config: FIXTURE_CONFIG });
+  const { probes, alerts } = await tick({ fetchImpl: stubFetch(broken), exec: stubExec(), state, nowMs: T0, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
 
   const daily = probes.find((p) => p.key === "site_daily");
   assert.equal(daily.verdict, "DOWN");
@@ -652,7 +690,7 @@ test("LOUDLY BE NOTIFIED: an outage and a frozen index both surface from one tic
 });
 
 test("env-missing degrades LOUDLY: every reading is still taken, the board is still written, and it says nothing was sent", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "sentinel-degrade-"));
+  const dir = tempDir("sentinel-degrade-");
   const statePath = join(dir, "state.json");
   const outPath = join(dir, "status.json");
   const errs = [];
@@ -1036,7 +1074,7 @@ test("§7 the probe reaches the BOARD, with its detail, and its first tick says 
   // above points the probe at it. Two things are asserted that a classifier
   // test cannot: that the probe is IN the probe list at all, and that `detail`
   // survives onto the board entry the site's popover reads.
-  const { probes, alerts } = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG });
+  const { probes, alerts } = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
   const p = probes.find((x) => x.key === "site_refresh");
   assert.ok(p, "the refresh probe is on the board, beside usdc_watch");
   assert.equal(p.kind, "refresh");
@@ -1192,4 +1230,555 @@ test("the sentinel watches Deploy by its workflow file, and no longer the retire
   assert.deepEqual(WATCHED_WORKFLOWS.map((w) => w.name), ["Deploy"]);
   for (const w of WATCHED_WORKFLOWS) assert.match(w.file, /^[a-z0-9-]+\.ya?ml$/, `${w.name} names its workflow file`);
   assert.ok(!WATCHED_WORKFLOWS.some((w) => /atlas/i.test(w.name)), "the atlas sync is dispatch-only; watching it can only raise stale alarms");
+});
+
+// ── §9: the ground (POS-556, ONE alarm route) ───────────────────────────────
+//
+// THE INSTANCE. On 2026-10-09 the root disk filled (38G of 38G): Postgres went
+// into crash recovery, sign-in failed and the 08:00 ferry refused, two hours
+// before anyone looked. postmark-disk-watch was installed that morning and
+// shouted into Discord on its own timer. Darko, 2026-10-10: "make sure we do it
+// clean so there's ONE route to get to the Meepo bot on discord that the fleet
+// also listens to." The disk is a sentinel probe now, on disk-watch's line.
+
+const GIB = 2 ** 30;
+
+test("§9 THE LINE: 84% is OK, 85% is DOWN, 90% is DOWN — disk-watch's own threshold, carried over", () => {
+  const at = (usedPct) => classifyDisk({ usedPct, freeBytes: 5.2 * GIB, limitPct: CONFIG.disk.limitPct });
+  assert.equal(CONFIG.disk.limitPct, 85);
+  assert.equal(at(84).verdict, "OK");
+  assert.equal(at(85).verdict, "DOWN");
+  assert.equal(at(90).verdict, "DOWN");
+  assert.match(at(84).reason, /84% used, 5\.2G free: under 85%/);
+});
+
+test("§9 the DOWN reason names the percent, the free space and where to look first — disk-watch's words", () => {
+  const { reason, detail } = classifyDisk({ usedPct: 91, freeBytes: 3.4 * GIB, limitPct: 85 });
+  assert.match(reason, /91% used/);
+  assert.match(reason, /3\.4G free; alarm at 85%/);
+  assert.match(reason, /Look at \/tmp, \/srv\/postmark-site-refresh and \/srv\/world2-lab first/);
+  assert.deepEqual(detail, { used_pct: 91, free_bytes: 3.4 * GIB, limit_pct: 85 });
+});
+
+test("§9 the percent is df's: used over used-plus-available, root's reserve in neither, rounded UP", () => {
+  // 84.01% by the arithmetic is 85% on df, and so DOWN here, exactly where
+  // disk-watch's `df --output=pcent` put it.
+  const u = diskUsage({ bsize: 4096, blocks: 10_500, bfree: 2_099, bavail: 1_599 });
+  assert.equal(u.usedPct, 85);
+  assert.equal(u.freeBytes, 1_599 * 4096);
+  assert.equal(diskUsage({ bsize: 4096, blocks: 10_500, bfree: 2_100, bavail: 1_600 }).usedPct, 84);
+  assert.equal(diskUsage({ bsize: 1, blocks: 0, bfree: 0, bavail: 0 }).usedPct, null, "an empty answer is unread, not 0%");
+});
+
+test("§9 an unreadable disk is UNKNOWN and never alerts — and a real read answers a percent", () => {
+  const r = readDiskState("/no/such/mount", { statfs: () => { throw new Error("ENOENT"); } });
+  assert.equal(r.error, "ENOENT");
+  assert.equal(classifyDisk({ ...r, limitPct: 85 }).verdict, "UNKNOWN");
+  assert.equal(classifyDisk({ usedPct: null }).verdict, "UNKNOWN");
+  const live = readDiskState(".");
+  assert.ok(Number.isInteger(live.usedPct) && live.usedPct >= 0 && live.usedPct <= 100, `statfs on this machine answered ${JSON.stringify(live)}`);
+});
+
+test("§9 a full disk reaches the board as disk_root and the sentinel's own Discord message carries it — onset, then recovery", async () => {
+  const full = () => ({ path: "/", usedPct: 87, freeBytes: 4.9 * GIB });
+  const first = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG, readDisk: full });
+  const probe = first.probes.find((p) => p.key === "disk_root");
+  assert.equal(probe.verdict, "DOWN");
+  assert.equal(probe.kind, "disk");
+  assert.equal(probe.detail.used_pct, 87);
+  assert.deepEqual(first.alerts.map((a) => a.key), ["disk_root"], "a full disk on an otherwise green town alerts, and nothing else does");
+
+  // /fleet's sentinelBark reads status, probes[].verdict, probes[].key and generated_at
+  const board = composeBoard({ probes: first.probes, nowIso: first.nowIso, alerting: {} });
+  assert.equal(board.status, "DOWN");
+  assert.equal(board.generated_at, first.nowIso);
+  assert.ok(board.probes.some((p) => p.key === "disk_root" && p.verdict === "DOWN"));
+  const msg = composeMessage({ alerts: first.alerts, board, nowIso: first.nowIso });
+  assert.match(msg, /DOWN — the box's root disk: at 87% used \(4\.9G free; alarm at 85%\)/);
+
+  // the same full disk ten minutes on says nothing: the edge, not the tick
+  const held = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: first.nextState, nowMs: T0 + 10 * MINUTE, config: FIXTURE_CONFIG, readDisk: full });
+  assert.deepEqual(held.alerts, []);
+
+  const back = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: held.nextState, nowMs: T0 + 20 * MINUTE, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  assert.deepEqual(back.alerts.map((a) => `${a.key}:${a.alert.kind}`), ["disk_root:recovered"]);
+});
+
+// THE RULING, HELD: no other file the box runs posts to Discord. A new alarm is
+// a probe in this file; a script with its own webhook call reds here on the PR
+// that adds it. (The watch on the sentinel's own death is off the box, in the
+// town's .github/workflows/offbox-watch.yml, and reads this file's board.)
+test("ONE ROUTE: nothing the office ships to the box posts to Discord except the sentinel (POS-556)", async () => {
+  const { readdirSync, statSync: st } = await import("node:fs");
+  const ROOT = new URL("..", import.meta.url);
+  const POSTER = /SENTINEL_DISCORD_WEBHOOK|DISCORD_WEBHOOK|discord(app)?\.com\/api\/webhooks/;
+  const ALLOWED = new Set(["tools/site-sentinel.mjs", "deploy/postmark-site-sentinel.service"]);
+  const walk = (rel) => {
+    const out = [];
+    for (const name of readdirSync(new URL(rel + "/", ROOT))) {
+      if (name === "node_modules" || name.startsWith(".")) continue;
+      const r = `${rel}/${name}`;
+      if (st(new URL(r, ROOT)).isDirectory()) out.push(...walk(r));
+      else if (/\.(sh|mjs|js|cjs|service|timer|conf|snippet)$/.test(name)) out.push(r);
+    }
+    return out;
+  };
+  const posters = (files) => files.filter((f) => !ALLOWED.has(f) && POSTER.test(readFileSync(new URL(f, ROOT), "utf8")));
+  const files = ["deploy", "tools", "src", "world2"].filter((d) => existsSync(new URL(d, ROOT))).flatMap(walk);
+  assert.ok(files.length > 100, `read ${files.length} files; the walk is wrong`);
+  assert.deepEqual(posters(files), [], "a box script posts to Discord on its own — make it a sentinel probe instead");
+
+  // not vacuous: the retired disk watch's own line is caught
+  const dir = tempDir("one-route-");
+  const planted = join(dir, "planted.sh");
+  _wf(planted, `HOOK="\${SENTINEL_DISCORD_WEBHOOK:-}"\ncurl -d '{}' "$HOOK"\n`);
+  assert.ok(POSTER.test(readFileSync(planted, "utf8")));
+});
+
+// ── §10: the meeps (POS-556, Darko 2026-10-10 13:27) ────────────────────────
+//
+// The record is the one G:/Wright-HQ/tools/meep-watch.mjs writes every five
+// minutes and lands on the box by scp. Its summary below is copied in shape
+// from that watcher's own status.json of 2026-10-10T17:32:41Z.
+
+const MEEPS_REC = (over = {}) => JSON.stringify({
+  schema: 1,
+  generated_at: new Date(T0 - 2 * MINUTE).toISOString(),
+  status: "OK",
+  summary: "all 9 meeps answering; every round due in the last 3 h fired",
+  problems: [],
+  meeps: {},
+  ...over,
+});
+const STUCK_SUMMARY = "STUCK Rei: an input in local-conv-333 at 13:06 EDT has had no reply for 26 min (summary: Thread in wright-starforge)";
+
+test("§10 OK is OK, and the watcher's summary is the reason", () => {
+  const r = classifyMeeps({ raw: MEEPS_REC(), nowMs: T0, staleAfterMs: CONFIG.meeps.staleAfterMs });
+  assert.equal(r.verdict, "OK");
+  assert.match(r.reason, /all 9 meeps answering/);
+});
+
+test("§10 DEGRADED and DOWN are DOWN, and the reason is the record's one-line summary verbatim", () => {
+  for (const status of ["DEGRADED", "DOWN"]) {
+    const r = classifyMeeps({ raw: MEEPS_REC({ status, summary: STUCK_SUMMARY, problems: [{ kind: "STUCK", meep: "Rei" }] }), nowMs: T0, staleAfterMs: CONFIG.meeps.staleAfterMs });
+    assert.equal(r.verdict, "DOWN", status);
+    assert.equal(r.reason, STUCK_SUMMARY);
+    assert.equal(r.detail.problems, 1);
+  }
+});
+
+test("§10 a 16-minute-old record is STALE: the watcher or the desktop has stopped", () => {
+  assert.equal(CONFIG.meeps.staleAfterMs, 15 * MINUTE);
+  const old = classifyMeeps({ raw: MEEPS_REC({ generated_at: new Date(T0 - 16 * MINUTE).toISOString() }), nowMs: T0, staleAfterMs: CONFIG.meeps.staleAfterMs });
+  assert.equal(old.verdict, "STALE");
+  assert.match(old.reason, /16m old/);
+  const fresh = classifyMeeps({ raw: MEEPS_REC({ generated_at: new Date(T0 - 14 * MINUTE).toISOString() }), nowMs: T0, staleAfterMs: CONFIG.meeps.staleAfterMs });
+  assert.equal(fresh.verdict, "OK", "inside the window is the record's own verdict");
+});
+
+test("§10 MISSING, UNPARSEABLE, UNDATED or an unread status is STALE, never UNKNOWN — /fleet barks only on DOWN or STALE", () => {
+  const missing = classifyMeeps({ raw: null, readError: "ENOENT", nowMs: T0, path: "/srv/postmark-sentinel/meeps.json" });
+  assert.equal(missing.verdict, "STALE");
+  assert.match(missing.reason, /no meeps record at \/srv\/postmark-sentinel\/meeps\.json \(ENOENT\)/);
+  assert.equal(classifyMeeps({ raw: "{ half a recor", nowMs: T0 }).verdict, "STALE");
+  assert.equal(classifyMeeps({ raw: MEEPS_REC({ generated_at: null }), nowMs: T0 }).verdict, "STALE");
+  assert.equal(classifyMeeps({ raw: MEEPS_REC({ status: "WEIRD" }), nowMs: T0 }).verdict, "STALE");
+  // and STALE alarms, on the sentinel's own edge
+  assert.equal(transition({ prev: null, next: missing, nowMs: T0 }).alert?.kind, "onset");
+});
+
+test("§10 the probe reaches the board as `meeps` and the sentinel's message carries a stuck meep; a missing record alarms too", async () => {
+  const dir = tempDir("sentinel-meeps-");
+  const path = join(dir, "meeps.json");
+  _wf(path, MEEPS_REC({ status: "DEGRADED", summary: STUCK_SUMMARY }));
+  const cfg = { ...FIXTURE_CONFIG, meeps: { ...CONFIG.meeps, path } };
+  const t1 = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: cfg, readDisk: GREEN_DISK });
+  const probe = t1.probes.find((p) => p.key === "meeps");
+  assert.equal(probe.verdict, "DOWN");
+  assert.equal(probe.kind, "meeps");
+  assert.deepEqual(t1.alerts.map((a) => a.key), ["meeps"], "a stuck meep on an otherwise green town alerts, and nothing else does");
+  const board = composeBoard({ probes: t1.probes, nowIso: t1.nowIso, alerting: {} });
+  assert.equal(board.status, "DOWN");
+  assert.match(composeMessage({ alerts: t1.alerts, board, nowIso: t1.nowIso }), /DOWN — the meeps: STUCK Rei: an input in local-conv-333/);
+
+  const gone = { ...FIXTURE_CONFIG, meeps: { ...CONFIG.meeps, path: join(dir, "never-landed.json") } };
+  const t2 = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: gone, readDisk: GREEN_DISK });
+  assert.equal(t2.probes.find((p) => p.key === "meeps").verdict, "STALE");
+  assert.deepEqual(t2.alerts.map((a) => a.key), ["meeps"]);
+  assert.equal(composeBoard({ probes: t2.probes, nowIso: t2.nowIso, alerting: {} }).status, "STALE");
+});
+
+// ── §11: the settlement (Darko 2026-10-11) ──────────────────────────────────
+//
+// "If the settlement that we expect has not gone through an hour after its
+// expected time … it needs to bark." The two real cases are pinned with their
+// real shas: the 2026-10-10T18:00Z sweep (33306f30, uncovered until S102 on
+// 0cca7f2b, a descendant, cut 10-11 ~06:38Z) and the 2026-10-11T18:00Z sweep
+// (5d878f3c, held, newest still S102 an hour on).
+
+import {
+  classifySettlement,
+  newestSettlementTag,
+  newestSettlementSlot,
+  SETTLEMENT_GRACE_MS,
+  SETTLEMENT_SLOTS_UTC,
+  BAD as _BAD,
+  judgeQuietRange,
+  isSweepPublication,
+} from "../tools/site-sentinel.mjs";
+
+const W_1010 = "33306f30851b245fb5ced97e28062c92e770293c";
+const W_1011 = "5d878f3c55bf6de671ed66b3c7688b05e34c1dec";
+const S102 = { n: 102, sha: "0cca7f2b08a330462d90d2b54c9c66c7f1cb4764" };
+const S101 = { n: 101, sha: "53b918de6783cea4f55d001ed47686e2d6faca15" };
+const RECEIPT = (over = {}) => ({ at: "2026-10-11T18:00:00Z", status: "published", world_from: "aaaa0000", world_to: W_1011, refusal: null, detail: "9 published", ...over });
+const at = (iso) => Date.parse(iso);
+
+test("§11 the hour is the ruling's, named; the slots are the timer's own OnCalendar lines", () => {
+  assert.equal(SETTLEMENT_GRACE_MS, 60 * MINUTE);
+  assert.equal(CONFIG.settlement.graceMs, SETTLEMENT_GRACE_MS);
+  const OFFICE = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+  const unit = readFileSync(join(OFFICE, "deploy", CONFIG.settlement.unit), "utf8");
+  const hours = [...unit.matchAll(/^OnCalendar=\*-\*-\* (\d\d):00:00 UTC\s*$/gm)].map((m) => Number(m[1])).sort((a, b) => a - b);
+  assert.deepEqual(hours, [...SETTLEMENT_SLOTS_UTC], `${CONFIG.settlement.unit} fires at ${hours} UTC; the probe expects ${SETTLEMENT_SLOTS_UTC}`);
+  assert.equal(newestSettlementSlot(at("2026-10-11T19:14:00Z")), at("2026-10-11T18:00:00Z"));
+  assert.equal(newestSettlementSlot(at("2026-10-11T05:59:00Z")), at("2026-10-10T18:00:00Z"), "before 06:00 the newest slot is yesterday's 18:00");
+  assert.equal(newestSettlementSlot(at("2026-10-11T06:00:00Z")), at("2026-10-11T06:00:00Z"));
+});
+
+test("§11 REAL CASE 10-11 18:00Z: published 5d878f3c, newest still S102, 74 min on — DOWN, and the reason says what to do", () => {
+  const r = classifySettlement({
+    receipt: RECEIPT(), newestTag: S102, covered: false,
+    nowMs: at("2026-10-11T19:14:00Z"), writtenAtMs: at("2026-10-11T18:01:30Z"),
+  });
+  assert.equal(r.verdict, "DOWN");
+  assert.equal(r.reason, "the 18:00Z sweep published 5d878f3c at 18:01Z and no settlement tag covers it after 74 min (newest is S102 on 0cca7f2b): blocked, ours to unblock (postmark-telemetry SHIPPING.md § 9)");
+  assert.equal(r.detail.newest_tag, "S102");
+  assert.equal(r.detail.covered, false);
+  assert.ok(_BAD.has(r.verdict), "DOWN alarms, and /fleet barks on it");
+});
+
+test("§11 the same sweep inside the hour is OK: awaiting the blessing, with the minute it will bark", () => {
+  const r = classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: false, nowMs: at("2026-10-11T18:40:00Z") });
+  assert.equal(r.verdict, "OK");
+  assert.match(r.reason, /awaiting the blessing, 40 min since the sweep \(newest is S102 on 0cca7f2b; it barks at 19:00Z\)/);
+  // the hour exactly is still inside; a minute past is not
+  assert.equal(classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: false, nowMs: at("2026-10-11T19:00:00Z") }).verdict, "OK");
+  assert.equal(classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: false, nowMs: at("2026-10-11T19:01:00Z") }).verdict, "DOWN");
+});
+
+test("§11 REAL CASE 10-10 18:00Z: 33306f30 uncovered by S101 is DOWN overnight; S102 on a descendant covers it", () => {
+  const receipt = RECEIPT({ at: "2026-10-10T18:00:00Z", world_to: W_1010 });
+  const night = classifySettlement({ receipt, newestTag: S101, covered: false, nowMs: at("2026-10-10T23:00:00Z") });
+  assert.equal(night.verdict, "DOWN");
+  assert.match(night.reason, /published 33306f30 and no settlement tag covers it after 5h \(newest is S101 on 53b918de\)/);
+
+  // the tag is NOT the world's own commit — covered by descent (compare: ahead)
+  const morning = classifySettlement({ receipt, newestTag: S102, covered: true, nowMs: at("2026-10-11T05:59:00Z") });
+  assert.equal(morning.verdict, "OK");
+  assert.equal(morning.reason, "S102 covers the 18:00Z sweep (33306f30)");
+});
+
+test("§11 a tag ON the world covers it with no question asked — `covered` unread does not matter", () => {
+  const r = classifySettlement({ receipt: RECEIPT(), newestTag: { n: 103, sha: W_1011 }, covered: null, nowMs: at("2026-10-11T19:30:00Z") });
+  assert.equal(r.verdict, "OK");
+  assert.equal(r.reason, "S103 covers the 18:00Z sweep (5d878f3c)");
+  assert.equal(r.detail.covered, true);
+});
+
+test("§11 a refused, raced or starving sweep is DOWN an hour on, naming the slot, the status and the refusal's first line", () => {
+  const refused = RECEIPT({
+    status: "refused", world_to: "",
+    refusal: { cause: "lint: 2 errors in marks/foo.md\nsecond line never shown" },
+    detail: "sweep tripped: lint …",
+  });
+  const r = classifySettlement({ receipt: refused, newestTag: S102, covered: null, nowMs: at("2026-10-11T19:05:00Z") });
+  assert.equal(r.verdict, "DOWN");
+  assert.equal(r.reason, `the 18:00Z sweep ended "refused" and nothing has settled after 65 min: lint: 2 errors in marks/foo.md; blocked, ours to unblock (postmark-telemetry SHIPPING.md § 9)`);
+  assert.doesNotMatch(r.reason, /second line/);
+
+  // no classifier verdict: the report's own detail is the line
+  const race = classifySettlement({ receipt: RECEIPT({ status: "race", detail: "world main moved underneath the sweep — rerun" }), newestTag: S102, nowMs: at("2026-10-11T19:05:00Z") });
+  assert.equal(race.verdict, "DOWN");
+  assert.match(race.reason, /ended "race" .*: world main moved underneath the sweep — rerun;/);
+  assert.equal(classifySettlement({ receipt: RECEIPT({ status: "starving" }), newestTag: S102, nowMs: at("2026-10-11T19:05:00Z") }).verdict, "DOWN");
+
+  // a status nobody knows is not clean — it cannot answer "did it settle" yes
+  assert.equal(classifySettlement({ receipt: RECEIPT({ status: "weird" }), newestTag: S102, covered: true, nowMs: at("2026-10-11T19:05:00Z") }).verdict, "DOWN");
+
+  // inside the hour a refusal still has its rerun window
+  const early = classifySettlement({ receipt: refused, newestTag: S102, nowMs: at("2026-10-11T18:20:00Z") });
+  assert.equal(early.verdict, "OK");
+  assert.match(early.reason, /ended "refused" 20 min ago \(lint: 2 errors in marks\/foo\.md\); inside the 1h window for a rerun/);
+});
+
+// THE REAL SHAPE OF A QUIET SWEEP. The keeper tags publications, never quiet
+// crossings, and main always moves between sweeps — so a quiet sweep's world is
+// a DESCENDANT of the newest tag. Copied in shape from postmark-world between
+// S102 (0cca7f2b, `settlement: sweep 11 published`) and 5d878f3c: a crossing-
+// save, a PR merge, the registry re-derive. (The first version of this test
+// stood the quiet sweep ON the tag's own commit, which the world never does,
+// and so hid a probe that paged on every quiet sweep.)
+const commit = (sha, message) => ({ sha, commit: { message } });
+const PAST_S102 = [
+  commit("63114299aaaa", "crossing-save 243: 152 entities, 189 events"),
+  commit("b0db90f0aaaa", "Merge pull request #185 from postmark-town/w43/conflict-matrix\n\nconsent: …"),
+  commit("532655adaaaa", "settlement: household registry re-derived from the town at dcb5dbc89"),
+];
+const QUIET_HEAD = "532655adaaaa";
+const QUIET = (over = {}) => RECEIPT({ at: "2026-10-12T06:00:00Z", status: "quiet", world_from: "6cd9ef91aaaa", world_to: QUIET_HEAD, detail: "nothing eligible; the household registry was refreshed and published", ...over });
+
+test("§11 judgeQuietRange: a range of saves, merges and registry commits is covered; a sweep publication in it is held", () => {
+  assert.deepEqual(judgeQuietRange({ status: "ahead", total_commits: 3, commits: PAST_S102 }), { covered: true, held: null, error: null });
+  const withPub = [...PAST_S102.slice(0, 2), commit("5d878f3c55bf", "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed"), PAST_S102[2]];
+  assert.deepEqual(judgeQuietRange({ status: "ahead", total_commits: 4, commits: withPub }),
+    { covered: false, held: { sha: "5d878f3c55bf", subject: "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed" }, error: null });
+  assert.deepEqual(judgeQuietRange({ status: "identical" }), { covered: true, held: null, error: null });
+  assert.deepEqual(judgeQuietRange({ status: "behind", commits: [] }), { covered: true, held: null, error: null }, "a world behind the tag is blessed by it");
+  // unread is never a guess
+  assert.equal(judgeQuietRange({ status: "ahead", total_commits: 256, commits: PAST_S102 }).covered, null);
+  assert.match(judgeQuietRange({ status: "ahead", total_commits: 256, commits: PAST_S102 }).error, /256 commits lie past the tag and GitHub lists only 3/);
+  assert.equal(judgeQuietRange({ status: "ahead" }).covered, null);
+  assert.equal(judgeQuietRange(null).covered, null);
+  // what counts as a publication: the sweep's own subject with a nonzero count
+  assert.equal(isSweepPublication("settlement: sweep 6 published, 0 unpublished, 0 left drafted"), true);
+  assert.equal(isSweepPublication("settlement: sweep 0 published, 2 unpublished, 0 left drafted"), true, "an unpublication moves the record too");
+  assert.equal(isSweepPublication("settlement: household registry re-derived from the town at dcb5dbc89"), false);
+  assert.equal(isSweepPublication("crossing-save 243: 152 entities, 189 events"), false);
+});
+
+test("§11 a QUIET sweep on a world past the tag, with no publication in between, is OK — never a page", () => {
+  const { covered, held } = judgeQuietRange({ status: "ahead", total_commits: 3, commits: PAST_S102 });
+  const r = classifySettlement({ receipt: QUIET(), newestTag: S102, covered, held, nowMs: at("2026-10-12T09:00:00Z") });
+  assert.equal(r.verdict, "OK");
+  assert.equal(r.reason, "the 06:00Z sweep had nothing to publish, and no publication since S102 is unblessed (world at 532655ad)");
+  // and standing ON the tag is OK with no question asked
+  assert.equal(classifySettlement({ receipt: QUIET({ world_to: S102.sha }), newestTag: S102, nowMs: at("2026-10-12T09:00:00Z") }).verdict, "OK");
+});
+
+test("§11 a quiet morning does not clear a held night: a sweep publication past the tag is DOWN an hour on", () => {
+  const range = [...PAST_S102.slice(0, 2), commit("5d878f3c55bf", "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed"), PAST_S102[2]];
+  const { covered, held } = judgeQuietRange({ status: "ahead", total_commits: 4, commits: range });
+  const r = classifySettlement({ receipt: QUIET(), newestTag: S102, covered, held, nowMs: at("2026-10-12T07:10:00Z") });
+  assert.equal(r.verdict, "DOWN");
+  assert.equal(r.reason, `the 06:00Z sweep was quiet, standing on 532655ad, and 5d878f3c "settlement: sweep 3 published, 0 unpublished, 0 left drafted, 0 withdrawn, 0 quarantined, 0 dropped, 0 re-framed" still has no settlement tag after 70 min (newest is S102 on 0cca7f2b): an earlier sweep's publication is still unblessed: blocked, ours to unblock (postmark-telemetry SHIPPING.md § 9)`);
+  assert.equal(r.detail.held.sha, "5d878f3c55bf");
+  // inside the hour it waits, naming what it waits on
+  const early = classifySettlement({ receipt: QUIET(), newestTag: S102, covered, held, nowMs: at("2026-10-12T06:30:00Z") });
+  assert.equal(early.verdict, "OK");
+  assert.match(early.reason, /5d878f3c "settlement: sweep 3 published.*" since S102 is awaiting the blessing, 30 min since the sweep \(it barks at 07:00Z\)/);
+  // a range GitHub will not list in full is unread: STALE past the hour
+  const long = judgeQuietRange({ status: "ahead", total_commits: 256, commits: range });
+  const s = classifySettlement({ receipt: QUIET(), newestTag: S102, covered: long.covered, coverError: long.error, nowMs: at("2026-10-12T07:10:00Z") });
+  assert.equal(s.verdict, "STALE");
+  assert.match(s.reason, /cannot verify the 06:00Z sweep's blessing for 70 min: .*did not list what lies between S102 \(0cca7f2b\) and it \(256 commits lie past the tag/);
+});
+
+test("§11 wired, quiet: the compare is asked base=tag head=world, unpaginated, once; a held publication pages", async () => {
+  const dir = tempDir("sentinel-settle-quiet-");
+  const receipt = join(dir, "settlement-auto.json");
+  _wf(receipt, JSON.stringify(QUIET({ at: "2026-08-25T06:00:01Z" })));
+  const cfg = { ...FIXTURE_CONFIG, settlement: { ...CONFIG.settlement, receipt } };
+  const urls = [];
+  const clean = stubFetch({ ...GREEN_TABLE, [`https://api.github.com/repos/postmark-town/postmark-world/compare/worldtip0000...${QUIET_HEAD}`]: { status: 200, body: JSON.stringify({ status: "ahead", total_commits: 3, commits: PAST_S102 }) } });
+  const t1 = await tick({ fetchImpl: async (u, o) => { urls.push(String(u)); return clean(u, o); }, exec: stubExec(), state: {}, nowMs: T0, config: cfg, readDisk: GREEN_DISK });
+  assert.equal(t1.probes.find((p) => p.key === "settlement").verdict, "OK");
+  assert.deepEqual(t1.alerts, [], "a quiet sweep on a moved, clean world says nothing");
+  assert.deepEqual(urls.filter((u) => u.includes("/compare/")), [`https://api.github.com/repos/postmark-town/postmark-world/compare/worldtip0000...${QUIET_HEAD}`]);
+  assert.deepEqual(t1.nextState.stamps.settlement, { world: QUIET_HEAD, tag_sha: "worldtip0000", mode: "quiet", covered: true });
+
+  const range = [commit("5d878f3c55bf", "settlement: sweep 3 published, 0 unpublished"), ...PAST_S102];
+  const heldBase = stubFetch({ ...GREEN_TABLE, [`https://api.github.com/repos/postmark-town/postmark-world/compare/worldtip0000...${QUIET_HEAD}`]: { status: 200, body: JSON.stringify({ status: "ahead", total_commits: 4, commits: range }) } });
+  let compares = 0;
+  const heldFetch = async (u, o) => { if (String(u).includes("/compare/")) compares++; return heldBase(u, o); };
+  const t2 = await tick({ fetchImpl: heldFetch, exec: stubExec(), state: {}, nowMs: T0, config: cfg, readDisk: GREEN_DISK });
+  const p2 = t2.probes.find((p) => p.key === "settlement");
+  assert.equal(p2.verdict, "DOWN");
+  assert.match(p2.reason, /5d878f3c "settlement: sweep 3 published, 0 unpublished" still has no settlement tag/);
+  assert.deepEqual(t2.alerts.map((a) => a.key), ["settlement"]);
+  // remembered WITH its held publication: the next tick names it without asking again
+  const t3 = await tick({ fetchImpl: heldFetch, exec: stubExec(), state: t2.nextState, nowMs: T0 + 10 * MINUTE, config: cfg, readDisk: GREEN_DISK });
+  assert.equal(compares, 1);
+  assert.match(t3.probes.find((p) => p.key === "settlement").reason, /5d878f3c "settlement: sweep 3 published/);
+  assert.deepEqual(t3.alerts, []);
+});
+
+test("§11 a slot with no receipt an hour on is DOWN; inside the hour the previous receipt still speaks", () => {
+  const morning = RECEIPT({ at: "2026-10-11T06:00:00Z", world_to: S102.sha });
+  const r = classifySettlement({ receipt: morning, newestTag: S102, covered: null, nowMs: at("2026-10-11T19:14:00Z") });
+  assert.equal(r.verdict, "DOWN");
+  assert.match(r.reason, /^no sweep receipt for the 18:00Z slot after 74 min: the newest receipt is still the 2026-10-11T06:00:00Z sweep \(published\)/);
+  assert.match(r.reason, /ours to unblock/);
+
+  const inside = classifySettlement({ receipt: morning, newestTag: S102, covered: null, nowMs: at("2026-10-11T18:30:00Z") });
+  assert.equal(inside.verdict, "OK", "the 18:00 sweep may still be running; the 06:00 one is covered");
+  assert.match(inside.reason, /S102 covers the 06:00Z sweep/);
+});
+
+test("§11 INSIDE the hour, unread is UNKNOWN and never OK: no receipt, no `at`, no tags, no world, or coverage GitHub would not answer", () => {
+  const now = at("2026-10-11T18:30:00Z");
+  const none = classifySettlement({ receipt: null, readError: "ENOENT", nowMs: now, path: "/srv/postmark-harbor/settlement-auto.json" });
+  assert.equal(none.verdict, "UNKNOWN");
+  assert.match(none.reason, /could not read \/srv\/postmark-harbor\/settlement-auto\.json \(ENOENT\)/);
+  assert.equal(classifySettlement({ receipt: RECEIPT({ at: "not a time" }), newestTag: S102, nowMs: now }).verdict, "UNKNOWN");
+  assert.equal(classifySettlement({ receipt: RECEIPT(), newestTag: null, tagError: "git ls-remote failed: timeout", nowMs: now }).verdict, "UNKNOWN");
+  assert.equal(classifySettlement({ receipt: RECEIPT({ world_to: "", world_from: "" }), newestTag: S102, nowMs: now }).verdict, "UNKNOWN");
+  const unasked = classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: null, coverError: "GET /compare -> HTTP 502", nowMs: now });
+  assert.equal(unasked.verdict, "UNKNOWN");
+  assert.match(unasked.reason, /cannot verify the 18:00Z sweep's blessing yet: .*GitHub did not say whether S102 \(0cca7f2b\) descends from it \(GET \/compare -> HTTP 502\)/);
+});
+
+test("§11 PAST the hour, silence is not possible: a missing or unreadable receipt is DOWN as the missing slot", () => {
+  const now = at("2026-10-11T19:14:00Z");
+  for (const [receipt, readError, why] of [
+    [null, "ENOENT", /could not read \/srv\/postmark-harbor\/settlement-auto\.json \(ENOENT\)/],
+    [null, "Unexpected token } in JSON", /\(Unexpected token \} in JSON\)/],
+    [RECEIPT({ at: "not a time" }), null, /carries no readable `at`/],
+  ]) {
+    const r = classifySettlement({ receipt, readError, newestTag: S102, nowMs: now, path: "/srv/postmark-harbor/settlement-auto.json" });
+    assert.equal(r.verdict, "DOWN", String(why));
+    assert.match(r.reason, /^no sweep receipt for the 18:00Z slot after 74 min: /);
+    assert.match(r.reason, why);
+    assert.match(r.reason, /ours to unblock/);
+    assert.ok(_BAD.has(r.verdict));
+  }
+  // the hour is the newest SLOT's: at 18:59 the 18:00 slot is still inside it
+  assert.equal(classifySettlement({ receipt: null, readError: "ENOENT", nowMs: at("2026-10-11T18:59:00Z") }).verdict, "UNKNOWN");
+});
+
+test("§11 PAST the hour, a sweep we cannot verify is STALE and names the error: tags unlisted, compare failed, no world", () => {
+  const now = at("2026-10-11T19:14:00Z");
+  const tags = classifySettlement({ receipt: RECEIPT(), newestTag: null, tagError: "git ls-remote failed: Could not resolve host: github.com", nowMs: now });
+  assert.equal(tags.verdict, "STALE");
+  assert.equal(tags.reason, "cannot verify the 18:00Z sweep's blessing for 74 min: could not list the world's settlement/S<n> tags (git ls-remote failed: Could not resolve host: github.com) to say whether anything covers 5d878f3c");
+
+  const cmp = classifySettlement({ receipt: RECEIPT(), newestTag: S102, covered: null, coverError: "GET /repos/postmark-town/postmark-world/compare/x...y -> HTTP 502", nowMs: now });
+  assert.equal(cmp.verdict, "STALE");
+  assert.match(cmp.reason, /^cannot verify the 18:00Z sweep's blessing for 74 min: the 18:00Z sweep published 5d878f3c, and GitHub did not say whether S102 \(0cca7f2b\) descends from it \(GET .* -> HTTP 502\)$/);
+
+  const noWorld = classifySettlement({ receipt: RECEIPT({ world_to: "", world_from: "" }), newestTag: S102, nowMs: now });
+  assert.equal(noWorld.verdict, "STALE");
+  assert.match(noWorld.reason, /names no world_to/);
+  for (const r of [tags, cmp, noWorld]) assert.ok(_BAD.has(r.verdict), "STALE alarms, and /fleet barks on it");
+});
+
+test("§11 wired: a dead remote past the hour reaches the board STALE with git's own error, and a missing receipt DOWN", async () => {
+  const dir = tempDir("sentinel-settle-dead-");
+  const receipt = join(dir, "settlement-auto.json");
+  _wf(receipt, JSON.stringify(RECEIPT({ at: "2026-08-25T06:00:01Z", world_to: "heldworld00" })));
+  const deadWorld = (bin, args) => {
+    if (args.some((a) => String(a).includes("postmark-world"))) throw new Error("fatal: unable to access 'https://github.com/postmark-town/postmark-world.git/': Could not resolve host");
+    return stubExec()(bin, args);
+  };
+  const t1 = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: deadWorld, state: {}, nowMs: T0, config: { ...FIXTURE_CONFIG, settlement: { ...CONFIG.settlement, receipt } }, readDisk: GREEN_DISK });
+  const p1 = t1.probes.find((p) => p.key === "settlement");
+  assert.equal(p1.verdict, "STALE");
+  assert.match(p1.reason, /cannot verify the 06:00Z sweep's blessing for 5h59m: could not list .*git ls-remote failed: fatal: unable to access .*Could not resolve host/);
+  assert.deepEqual(t1.alerts.map((a) => a.key), ["settlement"]);
+
+  const t2 = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config: { ...FIXTURE_CONFIG, settlement: { ...CONFIG.settlement, receipt: join(dir, "never-written.json") } }, readDisk: GREEN_DISK });
+  const p2 = t2.probes.find((p) => p.key === "settlement");
+  assert.equal(p2.verdict, "DOWN");
+  assert.match(p2.reason, /^no sweep receipt for the 06:00Z slot after 6h: could not read .*never-written\.json \(ENOENT\)/);
+  assert.deepEqual(t2.alerts.map((a) => a.key), ["settlement"]);
+});
+
+test("§11 newestSettlementTag: newest by NUMBER, peeled, and null rather than throwing", () => {
+  const wire = () => [
+    "t99\trefs/tags/settlement/S99", "c99\trefs/tags/settlement/S99^{}",
+    "c102\trefs/tags/settlement/S102^{}", "t102\trefs/tags/settlement/S102",
+    "t10\trefs/tags/settlement/S10", "c10\trefs/tags/settlement/S10^{}",
+    "x\trefs/tags/settlement/S7-draft",
+  ].join("\n") + "\n";
+  assert.deepEqual(newestSettlementTag("https://x/w.git", { exec: wire }), { n: 102, tag: "settlement/S102", sha: "c102" },
+    "S102 beats S99 and S10 (text order would pick S99), and the peeled line wins even when it lists first");
+  assert.deepEqual(newestSettlementTag("https://x/w.git", { exec: () => "light\trefs/tags/settlement/S3\n" }), { n: 3, tag: "settlement/S3", sha: "light" }, "a lightweight tag's sha is its commit");
+  assert.equal(newestSettlementTag("https://x/w.git", { exec: () => "" }), null);
+  assert.equal(newestSettlementTag("https://x/w.git", { exec: () => { throw new Error("no network"); } }), null);
+});
+
+test("§11 wired: a held sweep reaches the board as `settlement`, asks GitHub ONCE per (world, tag) pair, and the bark says why", async () => {
+  const dir = tempDir("sentinel-settle-");
+  const receipt = join(dir, "settlement-auto.json");
+  // T0 is 2026-08-25T12:00Z; the 06:00Z sweep published a world S50 is behind.
+  _wf(receipt, JSON.stringify(RECEIPT({ at: "2026-08-25T06:00:01Z", world_to: "heldworld00" })));
+  const cfg = { ...FIXTURE_CONFIG, settlement: { ...CONFIG.settlement, receipt } };
+  let compares = 0;
+  const table = {
+    ...GREEN_TABLE,
+    "https://api.github.com/repos/postmark-town/postmark-world/compare/heldworld00...worldtip0000": { status: 200, body: JSON.stringify({ status: "behind" }) },
+  };
+  const base = stubFetch(table);
+  const fetchImpl = async (url, o) => { if (String(url).includes("/compare/")) compares++; return base(url, o); };
+
+  const t1 = await tick({ fetchImpl, exec: stubExec(), state: {}, nowMs: T0, config: cfg, readDisk: GREEN_DISK });
+  const probe = t1.probes.find((p) => p.key === "settlement");
+  assert.equal(probe.verdict, "DOWN");
+  assert.equal(probe.kind, "settlement");
+  assert.match(probe.reason, /the 06:00Z sweep published heldworl at \d\d:\d\dZ and no settlement tag covers it after 5h59m \(newest is S50 on worldtip\)/);
+  assert.deepEqual(t1.alerts.map((a) => a.key), ["settlement"], "a held settlement on an otherwise green town alerts, and nothing else does");
+  assert.deepEqual(t1.nextState.stamps.settlement, { world: "heldworld00", tag_sha: "worldtip0000", mode: "published", covered: false });
+  const board = composeBoard({ probes: t1.probes, nowIso: t1.nowIso, alerting: {} });
+  assert.equal(board.status, "DOWN");
+  assert.match(composeMessage({ alerts: t1.alerts, board, nowIso: t1.nowIso }), /DOWN — the settlement: the 06:00Z sweep published heldworl/);
+
+  // ten minutes on: same pair, remembered — no second compare, no second bark
+  const t2 = await tick({ fetchImpl, exec: stubExec(), state: t1.nextState, nowMs: T0 + 10 * MINUTE, config: cfg, readDisk: GREEN_DISK });
+  assert.equal(compares, 1, "whether a commit descends from another never changes; ask once");
+  assert.deepEqual(t2.alerts, []);
+
+  // the keeper blesses ON the world: covered by equality, recovered, still one compare
+  const t3 = await tick({ fetchImpl, exec: stubExec({ settleSha: "heldworld00" }), state: t2.nextState, nowMs: T0 + 20 * MINUTE, config: cfg, readDisk: GREEN_DISK });
+  assert.equal(t3.probes.find((p) => p.key === "settlement").reason, "S50 covers the 06:00Z sweep (heldworl)");
+  assert.deepEqual(t3.alerts.map((a) => `${a.key}:${a.alert.kind}`), ["settlement:recovered"]);
+  assert.equal(compares, 1);
+});
+
+// ── §12: the law pen (POS-619, Wright 2026-10-14) ───────────────────────────
+//
+// The state is the one deploy/world2-ingest.sh writes at every law fire. A
+// refusal holds EVERY law update until the mark is fixed, so it pages with
+// the lint's own sentence (test/world2-ingest-modes.test.mjs pins the field).
+
+const LAW_REFUSAL = [
+  `REFUSED: the law at ${"b".repeat(40)} carries 1 mark(s) with a value the parser would silently lose, so law_projection would hold less than the law says. Nothing was written; the law stays where it was (POS-619).`,
+  '  WORLD/marks/the-keeping-works/candy/mark.md: dials: { stolen: true, clue: "No such thing as candy exists" } is not strict JSON, so the record keeps only its number pairs and silently drops stolen, clue (it reads as {}) — write it as strict JSON, every key quoted: dials: { "stolen": true, "clue": "No such thing as candy exists" }',
+].join("\n");
+const LAW_STATE = (over = {}) => JSON.stringify({ at: new Date(T0 - 2 * MINUTE).toISOString(), mode: "law", status: "ok", law: { exit: 0, sha: "a".repeat(40) }, detail: "law: ingested law", ...over });
+
+test("§12 an ok run is OK", () => {
+  assert.equal(CONFIG.lawPen.path, "/srv/world2-lab/state/ingest-law.json");
+  const r = classifyLawPen({ raw: LAW_STATE(), nowMs: T0, staleAfterMs: CONFIG.lawPen.staleAfterMs });
+  assert.equal(r.verdict, "OK");
+  assert.match(r.reason, /^ingested the law at aaaaaaaaa/);
+});
+
+test("§12 a REFUSED law is DOWN, and the reason carries the refusal and the lint's sentence", () => {
+  const r = classifyLawPen({ raw: LAW_STATE({ status: "law-failed", law: { exit: 1, sha: "b".repeat(40) }, refusal: LAW_REFUSAL }), nowMs: T0 });
+  assert.equal(r.verdict, "DOWN");
+  assert.match(r.reason, /^the law pen REFUSED the law, and every law update waits until the mark is fixed: REFUSED: the law at b{40} carries 1 mark/);
+  assert.ok(r.reason.includes('WORLD/marks/the-keeping-works/candy/mark.md: dials: { stolen: true, clue: "No such thing as candy exists" } is not strict JSON'), r.reason);
+});
+
+test("§12 any other failed run is DOWN with its status; a 46-minute-old state is STALE; none is STALE, never UNKNOWN", () => {
+  const failed = classifyLawPen({ raw: LAW_STATE({ status: "law-failed", law: { exit: 2, sha: "" }, detail: "law: checkout refresh failed: no clone" }), nowMs: T0 });
+  assert.equal(failed.verdict, "DOWN");
+  assert.match(failed.reason, /reads "law-failed" \(exit 2\) — the store's law did not advance: law: checkout refresh failed/);
+  assert.equal(CONFIG.lawPen.staleAfterMs, 45 * MINUTE);
+  assert.equal(classifyLawPen({ raw: LAW_STATE({ at: new Date(T0 - 46 * MINUTE).toISOString() }), nowMs: T0, staleAfterMs: CONFIG.lawPen.staleAfterMs }).verdict, "STALE");
+  assert.equal(classifyLawPen({ raw: LAW_STATE({ at: new Date(T0 - 44 * MINUTE).toISOString() }), nowMs: T0, staleAfterMs: CONFIG.lawPen.staleAfterMs }).verdict, "OK");
+  const missing = classifyLawPen({ raw: null, readError: "ENOENT", nowMs: T0, path: CONFIG.lawPen.path });
+  assert.equal(missing.verdict, "STALE");
+  assert.match(missing.reason, /no law pen state at \/srv\/world2-lab\/state\/ingest-law\.json \(ENOENT\)/);
+  assert.equal(classifyLawPen({ raw: "{ half", nowMs: T0 }).verdict, "STALE");
+});
+
+test("§12 THE TICK: a refused law on the box pages through the one route, alone", async () => {
+  const dir = tempDir("sentinel-lawpen-");
+  const refused = join(dir, "ingest-law.json");
+  _wf(refused, LAW_STATE({ status: "law-failed", law: { exit: 1, sha: "b".repeat(40) }, refusal: LAW_REFUSAL }));
+  const config = { ...FIXTURE_CONFIG, lawPen: { ...FIXTURE_CONFIG.lawPen, path: refused } };
+  const { probes, alerts } = await tick({ fetchImpl: stubFetch(GREEN_TABLE), exec: stubExec(), state: {}, nowMs: T0, config, readDisk: GREEN_DISK });
+  assert.equal(probes.find((p) => p.key === "law_pen").verdict, "DOWN");
+  assert.deepEqual(alerts.map((a) => a.key), ["law_pen"], "the held law alerts, and nothing else does");
 });

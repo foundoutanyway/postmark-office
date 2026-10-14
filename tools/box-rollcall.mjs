@@ -74,10 +74,11 @@
 //    (something we swore would run, does not). A unit with no manifest row is the
 //    OTHER failure, and it is the one that grows silently: every unit installed
 //    after this file was written is invisible to the roll-call until someone adds
-//    it. So the collector globs the box for every postmark-* timer and every
-//    ENABLED postmark-* service, and anything it finds that the manifest does not
-//    name is ALARM-unmanifested. That is what keeps the roll-call from decaying
-//    into a snapshot of 2026-08-27.
+//    it. So the collector globs the box for every postmark-* timer, every
+//    ENABLED postmark-* service, and every live instance of a template (the read
+//    pool's, POS-522), and anything it finds that the manifest does not name is
+//    ALARM-unmanifested. That is what keeps the roll-call from decaying into a
+//    snapshot of 2026-08-27.
 //
 // ── WHAT IT WILL NOT DO ─────────────────────────────────────────────────────
 //
@@ -97,8 +98,9 @@
 //
 // ── SHAPE ───────────────────────────────────────────────────────────────────
 //
-// `collect()` is the only impure part: it shells out to systemctl and stat. Every
-// judgment lives in `rollcall()`, which is a pure function of (manifest, snapshot,
+// `collect()` is the only impure part: it shells out to systemctl, stat and (§3f,
+// key names only) `sudo -n grep`. Every judgment lives in `rollcall()`, which
+// is a pure function of (manifest, snapshot,
 // now) — so the falsifiers plant a healthy snapshot as a fixture, break exactly
 // one thing, and watch exactly one row go red.
 //
@@ -136,6 +138,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // A HAND-CARRY OF THIS FILE ALONE could still ship a reader older than what it
 // imports; the hand-carry recipe in deploy/DEPLOY.md is where that is answered.
 import { readHistory, recurringUnsettled, scheduledRuns } from "../deploy/settlement-history.mjs";
+import { judgeKeep, SOFT_STEPS } from "../deploy/keep-history.mjs";
 // The clone reader is the sentinel's own (§8 there, §3d/§5e here), so the loud
 // eye and the morning board cannot disagree about what "dirty" means.
 import { DIRTY_GRACE_MS, readCloneState, judgeDirt, nameFiles } from "./clone-state.mjs";
@@ -191,6 +194,12 @@ export const ALARM_DIRTY_CLONE = "ALARM-dirty-clone";
 // produced, and no rail blesses. 2026-09-27 → 09-29: the box published three
 // crossings, nothing was blessed, and nothing rang (smalls-0930 D).
 export const ALARM_UNBLESSED = "ALARM-unblessed";
+// A unit whose environment holds the store's URL without its switch, or the
+// switch without the URL, or whose env files could not be read. Its own class
+// because the repair is an env file (a line added or quoted, then a
+// daemon-reload or restart), not systemctl, chown, a drop-in, a commit or a
+// keeper's judgment. POS-581, 2026-10-14: the w42 usdc-watch had the URL alone.
+export const ALARM_ENV = "ALARM-env";
 
 export function isAlarm(verdict) {
   return String(verdict).startsWith("ALARM");
@@ -219,6 +228,17 @@ export function loadManifest(path = DEFAULT_MANIFEST) {
       // The law's third clause is not decorative. A row that cannot say who
       // decided it runs is a row nobody will fix when it goes red.
       throw new Error(`manifest row ${row.unit} names no activation_owner`);
+    }
+    // A unit whose file lives only on the box says where, and why it is not in
+    // deploy/ (POS-522): a row nobody can read the unit of is a row nobody can
+    // rebuild the box from. Which rows need it is the repo's check
+    // (test/box-rollcall.test.mjs reads deploy/); the box has no deploy/ to ask.
+    if (row.box_only !== undefined) {
+      const b = row.box_only;
+      if (!b || typeof b.path !== "string" || !b.path.startsWith("/"))
+        throw new Error(`manifest row ${row.unit} is box_only and names no absolute path for its unit file`);
+      if (typeof b.why !== "string" || !b.why.trim())
+        throw new Error(`manifest row ${row.unit} is box_only and does not say why its unit file is not in deploy/`);
     }
   }
   // §2b, the custody rows. Optional as a block, strict inside it: the same
@@ -286,7 +306,22 @@ export function loadManifest(path = DEFAULT_MANIFEST) {
   for (const row of m.units) {
     if (!row.outcome) continue;
     if (!row.outcome.history_path) throw new Error(`${row.unit} declares an outcome with no history_path`);
-    if (!Number.isFinite(Number(row.outcome.unsettled_runs))) throw new Error(`${row.unit} declares an outcome with no unsettled_runs — a refusal that keeps returning would read green`);
+    // THE KEEP OUTCOME (POS-524) is judged per step from its own receipts
+    // (deploy/keep-history.mjs § judgeKeep), not by the crossing's status
+    // rules, so it is validated on its own fields and carries no unsettled_runs.
+    if (Object.hasOwn(row.outcome, "kind") && row.outcome.kind !== "keep_steps")
+      throw new Error(`${row.unit} declares an outcome kind "${row.outcome.kind}" this roll-call does not know`);
+    if (row.outcome.kind === "keep_steps") {
+      const o = row.outcome;
+      if (!Array.isArray(o.steps) || !o.steps.length || o.steps.some((x) => !SOFT_STEPS.includes(x)))
+        throw new Error(`${row.unit} declares a keep outcome whose steps are not a non-empty list of the tick's soft steps (${SOFT_STEPS.join(", ")})`);
+      if (!Number.isInteger(o.step_refused_runs) || o.step_refused_runs < 1)
+        throw new Error(`${row.unit} declares a keep outcome with no positive integer step_refused_runs — a step refused forever would read green`);
+      if (!(Number.isFinite(o.stale_after_minutes) && o.stale_after_minutes > 0))
+        throw new Error(`${row.unit} declares a keep outcome with no positive stale_after_minutes — an old receipt would read as today's`);
+      if (Object.hasOwn(o, "unsettled_runs"))
+        throw new Error(`${row.unit} declares unsettled_runs on a keep outcome — it judges steps, not crossing statuses`);
+    } else if (!Number.isFinite(Number(row.outcome.unsettled_runs))) throw new Error(`${row.unit} declares an outcome with no unsettled_runs — a refusal that keeps returning would read green`);
     if (!row.outcome.means) throw new Error(`${row.unit} declares an outcome with no means — nothing to print on the alarm line`);
     if (!row.outcome.why) throw new Error(`${row.unit} declares an outcome with no why — its thresholds are numbers nobody can review`);
     // A list-alarm names the fields it watches, and an empty declaration is the
@@ -420,22 +455,45 @@ function readUnit(name) {
   return u;
 }
 
-function discoverUnits() {
-  // RULE 4's scope, and the scoping is deliberate. Every postmark-* TIMER is in
-  // scope because a timer is by definition a thing someone decided should run on
-  // a clock. Only ENABLED postmark-* services are in scope, because a `static`
-  // service is the body a timer triggers — it has no independent existence to
-  // roll-call, and listing all of them would double every row for no signal.
-  const out = systemctl(["list-unit-files", "postmark*", "--no-pager", "--no-legend", "--plain"]);
-  const found = [];
-  for (const line of out.split("\n")) {
+// RULE 4's scope, and the scoping is deliberate. Every postmark-* TIMER is in
+// scope because a timer is by definition a thing someone decided should run on
+// a clock. Only ENABLED postmark-* services are in scope, because a `static`
+// service is the body a timer triggers — it has no independent existence to
+// roll-call, and listing all of them would double every row for no signal.
+//
+// ⚑ A TEMPLATE'S INSTANCES ARE NOT FILES (POS-522, postmark-office#354).
+// `list-unit-files` lists unit FILES, so the read pool's template is one line,
+// `postmark-office-read@.service`, however many instances run, and the instance
+// names that a row can watch (`postmark-office-read@4391.service`) never appear
+// there. Until 2026-10-09 a dead read worker raised no alarm in either
+// direction. So the units systemd has LOADED and live (`list-units`: active,
+// activating, failed) are read too, and every INSTANCE among them is in scope.
+// A non-instance service there is a timer's body mid-run, or an enabled service
+// the file listing already found, so it adds nothing but a flake. The template
+// line itself is never a unit: `systemctl show` on it answers for no process.
+export function parseDiscovery(unitFilesText, liveUnitsText = "") {
+  const found = new Set();
+  for (const line of String(unitFilesText).split("\n")) {
     const parts = line.trim().split(/\s+/);
     if (parts.length < 2) continue;
     const [name, state] = parts;
-    if (name.endsWith(".timer")) found.push(name);
-    else if (name.endsWith(".service") && state === "enabled") found.push(name);
+    if (/@\.(service|timer)$/.test(name)) continue;
+    if (name.endsWith(".timer")) found.add(name);
+    else if (name.endsWith(".service") && state === "enabled") found.add(name);
   }
-  return found.sort();
+  for (const line of String(liveUnitsText).split("\n")) {
+    // A failed unit's line can lead with a "●"; the name is the first postmark token.
+    const name = line.trim().split(/\s+/).find((t) => t.startsWith("postmark"));
+    if (name && /@[^.@]+\.(service|timer)$/.test(name)) found.add(name);
+  }
+  return [...found].sort();
+}
+
+function discoverUnits() {
+  return parseDiscovery(
+    systemctl(["list-unit-files", "postmark*", "--no-pager", "--no-legend", "--plain"]),
+    systemctl(["list-units", "postmark*", "--type=service,timer", "--no-pager", "--no-legend", "--plain"]),
+  );
 }
 
 function readFile(path) {
@@ -536,7 +594,20 @@ export function scanCustody(root, expectUid, { cap = CUSTODY_SCAN_CAP, readdir =
 export function pickEnv(raw, keys) {
   const want = new Set(keys || []);
   const out = Object.create(null);
-  if (typeof raw !== "string" || !raw.length || !want.size) return out;
+  if (!want.size) return out;
+  for (const [k, v] of envPairs(raw)) if (want.has(k)) out[k] = v;
+  return out;
+}
+
+/** The KEY NAMES in systemd's `Environment=` value, and nothing else (§3f). */
+export function envKeyNames(raw) {
+  return [...new Set([...envPairs(raw)].map(([k]) => k))];
+}
+
+// The one tokenizer for systemd's `Environment=` value. Its callers keep what
+// they whitelist and drop the rest at once.
+function* envPairs(raw) {
+  if (typeof raw !== "string" || !raw.length) return;
   let i = 0;
   while (i < raw.length) {
     while (i < raw.length && /\s/.test(raw[i])) i += 1;
@@ -552,12 +623,8 @@ export function pickEnv(raw, keys) {
       tok += c; i += 1;
     }
     const eq = tok.indexOf("=");
-    if (eq > 0) {
-      const k = tok.slice(0, eq);
-      if (want.has(k)) out[k] = tok.slice(eq + 1);
-    }
+    if (eq > 0) yield [tok.slice(0, eq), tok.slice(eq + 1)];
   }
-  return out;
 }
 
 /** The deploy stamp the release workflow ships beside the code it ships. */
@@ -666,6 +733,111 @@ export function collectTrees(manifest, {
   return { tree_sources, tree_realpath, releases, file_copies };
 }
 
+// ── §3f env collection: KEY NAMES, never a value ───────────────────────────
+//
+// WHY THIS EXISTS (POS-581, the w42 ship, 2026-10-11). The w42 usdc-watch reads
+// the store, and the office's code reads the store only when BOTH
+// `WORLD2_PG=1` and `WORLD2_PG_URL` are set (src/world2-acts.mjs § world2Enabled).
+// The unit's own header said its env file "holds WORLD2_PG_URL and nothing
+// else", and the file was not on the box at all. Nothing on the board could see
+// either fact: `systemctl show -p Environment` prints the unit's Environment=
+// lines and leaves the EnvironmentFile= contents out, so the roll-call had never
+// read an env file.
+//
+// ⚑ THE FILES ARE ROOT'S. Measured 2026-10-14: 7 of the box's 10
+//   /etc/postmark-*.env files are root 0600, and the roll-call runs as meepo.
+//   So the collector reads them through `sudo -n grep` (Wright's G1 ruling,
+//   2026-10-14), and grep is the whole instrument. `-o` on a pattern that ends
+//   at the `=` prints key names, and `-c` prints a count of whole lines equal
+//   to the switch. No value is ever read into this process. A refused sudo is
+//   recorded as UNCHECKED and judged as an alarm. An unread file is not a clean
+//   one (§3b's rule, one layer over).
+export const STORE_URL_KEY = "WORLD2_PG_URL";
+export const STORE_SWITCH_KEY = "WORLD2_PG";
+const KEY_NAMES_RE = "^[A-Z_][A-Z0-9_]*=";
+// systemd strips one pair of quotes, so a quoted 1 is the switch on too.
+const SWITCH_ON_RE = `${STORE_SWITCH_KEY}=(1|"1"|'1')`;
+
+/** `systemctl show -p EnvironmentFiles` prints ONE LINE PER FILE, in the order
+ *  systemd reads them; showProps keeps only the last line of a key, so this
+ *  reads the raw text. `ignore_errors=yes` is the unit's `-` prefix. */
+export function parseEnvironmentFiles(text) {
+  const out = [];
+  for (const line of String(text ?? "").split("\n")) {
+    const m = /^EnvironmentFiles=(\S+)(?:\s+\(ignore_errors=(yes|no)\))?/.exec(line.trim());
+    if (m) out.push({ path: m[1], optional: m[2] === "yes" });
+  }
+  return out;
+}
+
+/** grep under `sudo -n`, answering { code, out } and never throwing: grep's 1 is "no
+ *  match", 2 is "could not read", and both are answers rather than errors here. */
+function sudoGrep(args) {
+  try {
+    return { code: 0, out: execFileSync("sudo", ["-n", "grep", ...args], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }) };
+  } catch (err) {
+    return { code: Number.isInteger(err?.status) ? err.status : 2, out: String(err?.stdout ?? "") };
+  }
+}
+
+/** Can this user run `sudo -n` at all? A refusal and grep's "no match" share exit 1, so
+ *  this is asked once, before any file. */
+function sudoAnswers() {
+  try {
+    execFileSync("sudo", ["-n", "true"], { timeout: 10_000, stdio: ["ignore", "ignore", "pipe"] });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err?.stderr || err?.message || err).trim().slice(0, 160) };
+  }
+}
+
+/** One env file read as names and two counts. */
+export function readEnvFileKeys(path, { grep = sudoGrep } = {}) {
+  const names = grep(["-oE", KEY_NAMES_RE, path]);
+  if (names.code > 1) return { readable: false };
+  const keys = [...new Set(names.out.split("\n").map((l) => l.replace(/=$/, "")).filter(Boolean))];
+  if (!keys.includes(STORE_SWITCH_KEY)) return { readable: true, keys };
+  const count = (args) => { const r = grep(args); return r.code > 1 ? null : Number.parseInt(r.out, 10) || 0; };
+  const switchLines = count(["-cE", `^${STORE_SWITCH_KEY}=`, path]);
+  const switchOnLines = count(["-cxE", SWITCH_ON_RE, path]);
+  if (switchLines == null || switchOnLines == null) return { readable: false };
+  return { readable: true, keys, switch_lines: switchLines, switch_on_lines: switchOnLines };
+}
+
+export function collectEnv(manifest, {
+  show = (svc) => systemctl(["show", svc, "-pEnvironmentFiles", "-pEnvironment"]),
+  grep = sudoGrep, sudo = sudoAnswers, exists = existsSync,
+} = {}) {
+  const env_sources = Object.create(null);
+  let sudoState = null;
+  for (const row of manifest.units) {
+    if (row.stage === "parked") continue;
+    const svc = serviceOf(row.unit);
+    if (svc in env_sources) continue;
+    const text = show(svc);
+    const envLine = String(text).split("\n").find((l) => l.startsWith("Environment=")) ?? "";
+    const raw = envLine.slice("Environment=".length);
+    const envKeys = envKeyNames(raw);
+    const src = {
+      env_keys: envKeys,
+      // A boolean, so the switch's value is never stored either.
+      env_switch_on: envKeys.includes(STORE_SWITCH_KEY) ? pickEnv(raw, [STORE_SWITCH_KEY])[STORE_SWITCH_KEY] === "1" : null,
+      files: [],
+      unchecked: null,
+    };
+    for (const f of parseEnvironmentFiles(text)) {
+      if (!exists(f.path)) { src.files.push({ ...f, exists: false }); continue; }
+      sudoState ??= sudo();
+      if (!sudoState.ok) { src.files.push({ ...f, exists: true, readable: false }); src.unchecked = `sudo -n refused (${sudoState.error || "no reason given"})`; continue; }
+      const read = readEnvFileKeys(f.path, { grep });
+      src.files.push({ ...f, exists: true, ...read });
+      if (!read.readable) src.unchecked ??= `sudo -n grep could not read ${f.path}`;
+    }
+    env_sources[svc] = src;
+  }
+  return { env_sources };
+}
+
 export function collect(manifest, { now = Date.now() } = {}) {
   const units = Object.create(null);
   const services = Object.create(null);
@@ -735,6 +907,7 @@ export function collect(manifest, { now = Date.now() } = {}) {
     clones,
     blessings,
     ...collectTrees(manifest),
+    ...collectEnv(manifest),
   };
 }
 
@@ -836,17 +1009,21 @@ export function classifyRow(row, snapshot, now) {
   const label = row.label || row.unit;
 
   // ── parked rows. Reported forever, alarmed on only when the box disagrees
-  // with the manifest about whether the rail is inert.
+  // with the manifest about whether the rail is inert. FAILED counts (#471
+  // review): a parked unit started by hand that then died is disabled and
+  // failed, and a parked rail that RAN is not inert, whatever its enable word.
   if (row.stage === "parked") {
-    if (unitIsPresent(u) && (unitIsEnabled(u) || u.active_state === "active" || u.active_state === "activating")) {
+    const failed = !!u && u.active_state === "failed";
+    if (unitIsPresent(u) && (unitIsEnabled(u) || failed || u.active_state === "active" || u.active_state === "activating")) {
       return {
         unit: row.unit,
         label,
         verdict: ALARM_UNPARKED,
         reason:
           `${label} is recorded PARKED in the manifest but the box has it ` +
-          `${u.unit_file_state || u.active_state} — either it was adopted and the roll-call was not told, ` +
-          `or it was enabled by accident. Adoption owner: ${row.activation_owner}`,
+          `${failed ? `failed (${u.unit_file_state || "no enable state"}): it ran and died` : u.unit_file_state || u.active_state} — ` +
+          `either it was adopted and the roll-call was not told, ` +
+          `or it was enabled or started by accident. Adoption owner: ${row.activation_owner}`,
       };
     }
     return {
@@ -977,7 +1154,7 @@ export function classifyRow(row, snapshot, now) {
   // Judged last, and that ordering is the point: staleness says the work did
   // not happen, and this says it happened and was wrong. A stale row must not
   // be relabelled by its own stale contents.
-  const outcome = judgeOutcome(row, snapshot);
+  const outcome = judgeOutcome(row, snapshot, now);
   // The count line rides on BOTH verdicts below — beside an alarm it is the
   // context on the finding, beside a green tick it is the whole of what the
   // rail had to say — and on neither is it a verdict (postmark#2935).
@@ -1027,9 +1204,17 @@ export function outcomeHistory(row, snapshot) {
 }
 
 /** The sentence to alarm with, or null when the output is fine. */
-export function judgeOutcome(row, snapshot) {
+export function judgeOutcome(row, snapshot, now = Date.now()) {
   const spec = row.outcome;
   if (!spec) return null;
+  // THE KEEP OUTCOME (POS-524): the receipt log's own judgement, over the RAW
+  // text the snapshot holds (a torn newest line is a finding, never skipped).
+  if (spec.kind === "keep_steps") {
+    const f = (snapshot.files || {})[spec.history_path];
+    const text = f && f.exists && typeof f.text === "string" ? f.text : "";
+    const alarms = judgeKeep(text, { steps: spec.steps, n: spec.step_refused_runs, staleMinutes: spec.stale_after_minutes, now });
+    return alarms.length ? `${alarms.join("; ")}.${spec.means ? ` ${spec.means}` : ""}` : null;
+  }
   const history = outcomeHistory(row, snapshot);
   // `means` is the sentence the operator reads at 8am and `why` is the paragraph
   // a reviewer reads once, in the manifest, beside the thresholds it argues for.
@@ -1203,10 +1388,14 @@ export function judgeOutcome(row, snapshot) {
       sentences.push(`declares an alarm on ${lists.join(", ")} and its latest line at ${latest.at ?? "?"} carries none of them — ` +
         `the instrument and this judge disagree about the shape, so nothing is being judged.${mine}`);
     } else if (found.length) {
-      const n = found.reduce((t, r) => t + r.items.length, 0);
+      // WHAT THE LIST MEANS IS THE ROW'S OWN `list_means`, AND ONLY THAT (POS-339).
+      // This used to say "The store and canon disagree about marks that stand in
+      // the register today." before every row's words: the notary's sentence,
+      // false of the household-keys row (a house minting under two keys) and of
+      // the notary's own `escrow_unbacked`. loadManifest refuses a list row with
+      // no `list_means`, so every list alarm has words of its own to print.
       sentences.push(`last read at ${latest.at ?? "?"} found ${found.map((r) => `${r.items.length} ${r.field}`).join(" and ")} — ` +
-        `${found.map((r) => r.items.join(", ")).join(" · ")}. ` +
-        `The store and canon disagree about ${n === 1 ? "a mark that stands" : "marks that stand"} in the register today.${mine}`);
+        `${found.map((r) => r.items.join(", ")).join(" · ")}.${mine}`);
     }
   }
 
@@ -1620,6 +1809,84 @@ export function unrowedTrees(manifest, snapshot) {
   return out;
 }
 
+// ── §5f judging a unit's environment: the store's URL and switch ────────────
+//
+// BOTH OR NEITHER, over every live manifest unit (Wright's G2/G3 rulings,
+// 2026-10-14). The rule is the office's own: src/world2-acts.mjs § world2Enabled
+// reads the store only when `WORLD2_PG === "1"` AND `WORLD2_PG_URL` is set, so a
+// unit holding one without the other is a process that will refuse every store
+// read ("not pointed at a record") however healthy its timer looks. It is judged
+// per UNIT, over the merge the process sees, not per file: the paypal and stripe
+// watchers get both keys from /etc/postmark-office.env and none from their own.
+// The other store URLs (WORLD2_CLEARING_URL, WORLD2_INGEST_URL,
+// WORLD2_STANCE_URL) have no switch and stay out of it.
+//
+// systemd's precedence decides which WORLD2_PG wins: Environment= first, then
+// each EnvironmentFile= in order, and a later file overrides an earlier one. A
+// file counts as switching the store on only when EVERY WORLD2_PG line in it
+// says 1, because names and counts cannot say which line is last, and a file
+// that says two different things is a finding on its own. Names cannot see an
+// EMPTY URL (`WORLD2_PG_URL=`) either; that one is the unit's own refusal to
+// report, through ALARM-failed.
+export function storeSwitchOf(src) {
+  const where = [];
+  let on = null;
+  if (src.env_keys?.includes(STORE_SWITCH_KEY)) { on = src.env_switch_on === true; where.push("the unit's Environment="); }
+  for (const f of src.files ?? []) {
+    if (!f.keys?.includes(STORE_SWITCH_KEY)) continue;
+    on = f.switch_lines > 0 && f.switch_on_lines === f.switch_lines;
+    where.push(f.path);
+  }
+  const urlIn = [
+    ...(src.env_keys?.includes(STORE_URL_KEY) ? ["the unit's Environment="] : []),
+    ...(src.files ?? []).filter((f) => f.keys?.includes(STORE_URL_KEY)).map((f) => f.path),
+  ];
+  return { url: urlIn.length > 0, url_in: urlIn, switch_on: on === true, switch_set: on !== null, switch_in: where };
+}
+
+export function classifyEnv(manifest, snapshot) {
+  const unit = "env:store-switch";
+  const label = "the store's URL and switch, both or neither";
+  const sources = snapshot.env_sources;
+  if (!sources) {
+    return [{ unit, label, verdict: ALARM_ENV, reason: `${label} — this snapshot carries no env reading (collected before §3f, or by a collector that skipped it), so no unit's environment was checked` }];
+  }
+  const out = [];
+  let checked = 0;
+  let holding = 0;
+  const seen = new Set();
+  for (const row of manifest.units) {
+    if (row.stage === "parked") continue;
+    const svc = serviceOf(row.unit);
+    if (seen.has(svc)) continue;
+    seen.add(svc);
+    const src = sources[svc];
+    const alarm = (what) => out.push({ unit: `env:${svc}`, label: svc, verdict: ALARM_ENV, reason: `${svc} — ${what}` });
+    if (!src) { alarm("no env reading for this unit, so whether it holds the store's switch is unchecked"); continue; }
+    if (src.unchecked) { alarm(`UNCHECKED: ${src.unchecked}. An unread env file is not a clean one`); continue; }
+    const missing = (src.files ?? []).filter((f) => f.exists === false && !f.optional).map((f) => f.path);
+    if (missing.length) { alarm(`EnvironmentFile=${missing.join(", ")} is not on the box, and without the "-" prefix systemd refuses to start the unit. Create it (mode 600), then daemon-reload`); continue; }
+    checked += 1;
+    const s = storeSwitchOf(src);
+    if (s.url && !s.switch_on) {
+      alarm(`holds ${STORE_URL_KEY} (in ${s.url_in.join(", ")}) but ${STORE_SWITCH_KEY} is ${s.switch_set ? `not 1 (set in ${s.switch_in.join(", ")})` : "set nowhere"}, ` +
+        `so every store read refuses with "not pointed at a record" (src/world2-acts.mjs § world2Enabled needs both). ` +
+        `Repair: add ${STORE_SWITCH_KEY}=1 to ${s.url_in.at(-1)}, then restart the unit (a timer's service picks it up on its next run)`);
+      continue;
+    }
+    if (s.switch_on && !s.url) {
+      alarm(`sets ${STORE_SWITCH_KEY}=1 (in ${s.switch_in.join(", ")}) and holds no ${STORE_URL_KEY}, so the store is switched on and pointed at nothing. ` +
+        `Repair: add the URL beside the switch, or take the switch out`);
+      continue;
+    }
+    if (s.url) holding += 1;
+  }
+  if (!out.length) {
+    out.push({ unit, label, verdict: OK, reason: `${label} — ${checked} live unit(s) read; ${holding} hold the store with its switch on, and the rest hold neither key` });
+  }
+  return out;
+}
+
 export function rollcall(manifest, snapshot, now = Date.now()) {
   const rows = manifest.units.map((row) => classifyRow(row, snapshot, now));
   for (const row of manifest.custody ?? []) rows.push(classifyCustody(row, snapshot));
@@ -1627,6 +1894,7 @@ export function rollcall(manifest, snapshot, now = Date.now()) {
   for (const row of manifest.blessings ?? []) rows.push(classifyBlessing(row, snapshot, now));
   for (const row of manifest.trees?.rows ?? []) rows.push(classifyTree(row, manifest, snapshot));
   rows.push(...unrowedTrees(manifest, snapshot));
+  rows.push(...classifyEnv(manifest, snapshot));
 
   // RULE 4, the other direction. Anything the box carries that the manifest does
   // not name. Without this the roll-call silently becomes a snapshot of the day

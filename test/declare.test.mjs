@@ -454,6 +454,42 @@ test("from_town: the household's own claim, printed on its berth; a bad one boun
   assert.doesNotMatch(plain.files.find((f) => f.path.startsWith("HARBOR/")).content, /^from_town:/m, "no claim, no line");
 });
 
+// review-533's block (POS-574): begin's card offered from_town and dropped it.
+// The co-sign RUNS the declaration begin parked (oauth.mjs § the berth co-sign's
+// approval: `JSON.parse(berth.card)`, then `declareViaOffice(clone, { ...decl,
+// handle: slug }, human)`), so from_town has to ride the parked row, and a bad
+// one has to bounce at begin, where the agent is. Driven here as that path:
+// begin through the household apex onto a real berth row, the row read back
+// the way the co-sign reads it, and the same spread run through the door.
+test("from_town through begin: parked with the declaration, run by the co-sign, printed on the berth; a bad one bounces at begin", async () => {
+  const { householdApex } = await import("../src/household-apex.mjs");
+  const { openOauthDb, mintBerth } = await import("../src/oauth.mjs");
+  const odb = openOauthDb(join(tempDir("postmark-office-begin-from-town-"), "oauth.db"));
+  try {
+    await mintBerth(odb, "far-traveller", "1f3d9");
+    const berthKey = { berth: true, slug: "far-traveller", household: null, handles: new Set() };
+    const parked = () => odb.prepare("SELECT card FROM berths WHERE slug = 'far-traveller'").get().card;
+
+    const bad = await householdApex({ do: "begin", args: { household: "The Far Shore", card: "I crossed the water.", from_town: "not a town!" } }, berthKey, { odb });
+    assert.equal(bad.code, 422, `a bad from_town bounces at begin: ${JSON.stringify(bad).slice(0, 300)}`);
+    assert.equal(bad.defect, "from_town should be the town's short name", "in the berth desk's own words");
+    assert.equal(parked(), null, "and nothing parks, so the human's click can never meet it");
+
+    const begun = await householdApex({ do: "begin", args: { household: "The Far Shore", card: "I crossed the water.", from_town: " 1F3D9 " } }, berthKey, { odb });
+    assert.equal(begun.did, "begin", JSON.stringify(begun).slice(0, 300));
+    assert.equal(begun.result.from_town.claimed, "1f3d9", "begin's receipt says what parked");
+    const decl = JSON.parse(parked());
+    assert.equal(decl.from_town, "1f3d9", "the parked declaration carries it, in the berth desk's grammar");
+
+    // the co-sign's run: the parked row, spread, under the human's verified identity
+    const clone = declClone();
+    await declare({ ...decl, handle: "far-traveller" }, { ghId: 777001, ghLogin: "their-human" }, { clone, db: fixtureDb(), mintKey: () => "pmk_x" });
+    const berth = readFileSync(join(clone, "HARBOR", "berths", "far-traveller.md"), "utf8");
+    assert.match(berth, /^from_town: 1f3d9$/m, "the traveller's town is printed on the berth the co-sign lands");
+    assert.match(berth, /^ashore: \d{4}-\d{2}-\d{2}$/m, "and the berth it settles is marked ashore");
+  } finally { odb.close(); }
+});
+
 test("berth, registry entry and pin are ATOMIC — one commit, both or neither", async () => {
   const db = fixtureDb();
   const clone = declClone();

@@ -1266,10 +1266,14 @@ export function judgeOutcome(row, snapshot, now = Date.now()) {
       sentences.push(`declares an alarm on ${lists.join(", ")} and its latest line at ${latest.at ?? "?"} carries none of them — ` +
         `the instrument and this judge disagree about the shape, so nothing is being judged.${mine}`);
     } else if (found.length) {
-      const n = found.reduce((t, r) => t + r.items.length, 0);
+      // WHAT THE LIST MEANS IS THE ROW'S OWN `list_means`, AND ONLY THAT (POS-339).
+      // This used to say "The store and canon disagree about marks that stand in
+      // the register today." before every row's words: the notary's sentence,
+      // false of the household-keys row (a house minting under two keys) and of
+      // the notary's own `escrow_unbacked`. loadManifest refuses a list row with
+      // no `list_means`, so every list alarm has words of its own to print.
       sentences.push(`last read at ${latest.at ?? "?"} found ${found.map((r) => `${r.items.length} ${r.field}`).join(" and ")} — ` +
-        `${found.map((r) => r.items.join(", ")).join(" · ")}. ` +
-        `The store and canon disagree about ${n === 1 ? "a mark that stands" : "marks that stand"} in the register today.${mine}`);
+        `${found.map((r) => r.items.join(", ")).join(" · ")}.${mine}`);
     }
   }
 

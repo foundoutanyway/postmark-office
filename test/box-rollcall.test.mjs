@@ -2327,6 +2327,27 @@ test("household keys: a split house on the latest line alarms, naming the house"
   assert.match(said, /two daily caps/, "the row's own list_means prints");
 });
 
+// EACH LIST ALARM PRINTS ITS OWN WORDS (POS-339). The judge used to put the
+// notary's "The store and canon disagree about marks that stand in the register
+// today." in front of every list row's list_means, so the household-keys alarm
+// opened with a sentence about marks. Both SHIPPED rows, with their SHIPPED
+// list_means: each alarm carries its own words and never the other row's.
+// THE CAN-FAIL FLIP: put the hard-coded sentence back; the first assertion reds.
+test("POS-339: each list alarm prints its own list_means, and never the notary's sentence", () => {
+  const notary = manifest().units.find((u) => u.unit === "postmark-world2-notary.timer");
+  const notaryLog = (o) => ({ files: { [notary.outcome.history_path]: { exists: true, text: JSON.stringify({
+    at: "2026-10-13T12:00:00Z", canon_absent: [], unmaterialized: [], escrow_unbacked: [], escrow_checked: true, ...o }) + "\n" } } });
+  const hk = judgeOutcome(HK_ROW, hkLog({ ...HK_CLEAN, split_households: ["house-of-many-doors"] }));
+  assert.doesNotMatch(hk ?? "", /store and canon/, "a house on two keys is not a store-and-canon disagreement");
+  assert.ok(hk.includes(HK_ROW.outcome.list_means), "the household-keys row prints its own list_means, whole");
+  for (const field of ["canon_absent", "escrow_unbacked"]) {
+    const said = judgeOutcome(notary, notaryLog({ [field]: ["lupi/the-drift-room"] }));
+    assert.match(said ?? "", /lupi\/the-drift-room/, `${field}: the slug is named`);
+    assert.ok(said.includes(notary.outcome.list_means), `${field}: the notary row prints its own list_means, whole`);
+    assert.doesNotMatch(said, /two daily caps/, `${field}: and not the household-keys row's`);
+  }
+});
+
 test("household keys: a key across two houses alarms too", () => {
   const said = judgeOutcome(HK_ROW, hkLog({ ...HK_CLEAN, shared_keys: ["gh:9"] }));
   assert.match(said ?? "", /gh:9/);

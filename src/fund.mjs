@@ -59,6 +59,7 @@ import { isResidentHandle } from "./residency.mjs";
 // the single home exists to prevent, on the surface that can least afford it.
 import { HOLO_CAPTION, WHAT_THIS_BUYS } from "./funding.mjs";
 import { TREASURY_POT, classifyFundingRow } from "./funding.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 export const POT_RE = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -373,7 +374,7 @@ export function penRecorder(clone, { execUnderTownLock, lockTimedOut, LOCK_BUSY,
       out = await execUnderTownLock(execPath, payload, { ...process.env, TOWN_CLONE: clone });
     } catch (e) {
       if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-      throw bounce(500, "the receipt pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+      throw bounce(500, "the receipt pass tripped", faultLogged("the receipt pass tripped", e)); // its stderr goes to the log (POS-578)
     }
     const result = JSON.parse(out.trim().split("\n").at(-1));
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);

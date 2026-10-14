@@ -91,12 +91,13 @@ async function readersOf(lawRepo) {
     import(toolUrl(lawRepo, "marks-fold.mjs")),
     entryLawReader(),
   ]);
-  return { loadMarks: fold.loadMarks, termsAt: enterExit.termsAt, entryLawOf: enterExit.entryLawOf };
+  return { loadMarks: fold.loadMarks, termsAt: enterExit.termsAt, entryLawOf: enterExit.entryLawOf,
+    lossyValues: fold.lossyValues, lossyMessage: fold.lossyMessage };
 }
 
 // ── the ONE vendored predicate ───────────────────────────────────────────────
 //
-// VENDOR SHIM. Source: keeminlee/postmark-world `tools/mark-lint.mjs` lines
+// VENDOR SHIM. Source: postmark-town/postmark-world `tools/mark-lint.mjs` lines
 // 114–124 at world commit c701988f9ff937661297a8acc87a48925ba3b37f (blob
 // 68b1e35a67522cb03488cd8d8b940231d769f0c5), where it is `standsInTheWorks` +
 // `isClassDeclaration`. The world does not export it — it is a `const` inside a
@@ -228,7 +229,7 @@ const jsonSafe = (v) => JSON.parse(JSON.stringify(v ?? null));
  */
 export async function deriveLaw({ lawRepo }) {
   const repo = resolve(lawRepo);
-  const { loadMarks, termsAt } = await readersOf(repo);
+  const { loadMarks, termsAt, lossyValues, lossyMessage } = await readersOf(repo);
 
   const marksDir = join(repo, "WORLD", "marks");
   if (!existsSync(marksDir)) throw new Error(`no WORLD/marks under ${repo} — is this a world-law checkout?`);
@@ -386,8 +387,37 @@ export async function deriveLaw({ lawRepo }) {
   rows.sort((a, b) => (a.kind === b.kind ? (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
     : (a.kind < b.kind ? -1 : 1)));
   assertUniqueKeys(rows);
-  return { rows };
+
+  // ── A LAW THE PARSER WOULD READ DIMINISHED (POS-619) ──────────────────────
+  // The class marks are LAW, so a dial reaches the store here and nowhere else
+  // (marks-ingest skips them). The world's parser keeps what it can read and
+  // drops the rest without a word, so `dials: { stolen: true, clue: "…" }`
+  // (bare keys) would project as {} and the class would read as untouched. Every
+  // mark.md a row was derived from is read raw and asked with the checkout's
+  // OWN helper (marks-fold.mjs § lossyValues, § lossyMessage: the lint's words).
+  // A snapshot cannot hold one class back, so a hit refuses the WHOLE sha
+  // (`lossyRefusal`, main below): nothing is written and the law stays where
+  // it was (Wright 2026-10-14, G1). A checkout before world #204 has no helper,
+  // and `lossyChecked` says so.
+  const lossyChecked = typeof lossyValues === "function" && typeof lossyMessage === "function";
+  const lossy = [];
+  if (lossyChecked) {
+    for (const path of [...new Set(rows.map((r) => r.path).filter((x) => x?.endsWith("/mark.md")))].sort()) {
+      const found = lossyValues(readFileSync(join(repo, path), "utf8"));
+      if (found.length) lossy.push({ path, sentences: found.map((l) => lossyMessage(l)) });
+    }
+  }
+  return { rows, lossy, lossyChecked };
 }
+
+/** The refusal for a law with a value the parser would lose, or null. PURE. */
+export function lossyRefusal(lawSha, lossy) {
+  if (!lossy?.length) return null;
+  return [`REFUSED: the law at ${lawSha} carries ${lossy.length} mark(s) with a value the parser would silently lose, ` +
+    "so law_projection would hold less than the law says. Nothing was written; the law stays where it was (POS-619).",
+  ...lossy.flatMap(({ path, sentences }) => sentences.map((t) => `  ${path}: ${t}`))].join("\n");
+}
+export const LAW_LOSSY_NOT_CHECKED = "[law-ingest] lossy values: NOT CHECKED — this checkout's marks-fold predates world #204 (no lossyValues/lossyMessage) (POS-619)";
 
 /**
  * `law_projection`'s primary key is (law_sha, kind, key), so two derived rows
@@ -550,7 +580,14 @@ async function main() {
     process.exit(2);
   }
   const lawSha = assertSha(lawRepo, declared);
-  const { rows } = await deriveLaw({ lawRepo });
+  const { rows, lossy, lossyChecked } = await deriveLaw({ lawRepo });
+  if (!lossyChecked) console.error(LAW_LOSSY_NOT_CHECKED);
+  const refusal = lossyRefusal(lawSha, lossy);
+  if (refusal) {
+    console.error(refusal);
+    process.exitCode = 1;
+    return;
+  }
   const census = censusOf(rows);
   const blessed = flag("--blessed");
   const summary = blessed

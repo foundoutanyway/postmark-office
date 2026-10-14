@@ -768,6 +768,29 @@ async function spokenOn(voice, spokenMs, worldState, { repo, service, mod, carri
 // ── the walk answer's boundary terms ─────────────────────────────────────────
 
 /**
+ * THE WALK INSIDE A DUNGEON IS FENCED TO THE ROOM YOU ENTERED (WLD-5, G4,
+ * Darko 2026-10-13 20:31). The fence is the world tools' answer
+ * (world-verbs.mjs § walkFence, the room you hold innermost inside a dungeon);
+ * a step whose destination leaves it is refused, and the refusal names the
+ * room's portals, because the way to another room is a portal. Null when you
+ * stand inside no dungeon, or when the clone predates the fence.
+ *
+ * Pure over (stack, toward, marks, verbs): the walk door hands it the
+ * occupancy, the destination and the clone's own verbs.
+ */
+export function walkFenceRefusal({ stack = [], toward = null, marks = [], verbs = {} } = {}) {
+  if (typeof verbs.walkFence !== "function" || !toward) return null;
+  const fence = verbs.walkFence(stack, marks);
+  if (!fence || verbs.pointWithinMark(toward, fence)) return null;
+  const ways = typeof verbs.portalsIn === "function" ? verbs.portalsIn(fence.id, marks).map((p) => p.id) : [];
+  return {
+    defect: `inside a dungeon your walk is fenced to the room you entered, ${fence.id}, and (${toward.x}, ${toward.y}) is outside it`,
+    hint: `walk anywhere inside ${fence.id}; to go on, walk to one of its portals and enter it${ways.length ? `: ${ways.join(", ")}` : ""}. Nothing was recorded.`,
+    fields: { law: "the-town/dungeon (WLD-5)", fence: fence.id, portals: ways },
+  };
+}
+
+/**
  * What a proposed leg crosses, and what binds there — for the walk answer,
  * before the step. Plus the gunwale warning when the step leaves a moving
  * carrier. Both are DISCLOSURE, never refusal: v0 water does not block.

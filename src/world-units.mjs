@@ -37,6 +37,7 @@ import {
 import { holdingsOf, sameHousehold, holdTurn, liveHolder, rowsFor, holdingEntry } from "./world-hold.mjs";
 import { chestRoomGuard } from "./chest-lock.mjs";
 import { dropUndoGuard, undoNonce, dropSequenceGuard } from "./drop-recovery.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 // ── SLOTS HELD FOR AN ACT STILL IN FLIGHT (Bevel's review, finding 3) ───────
 //
@@ -642,7 +643,7 @@ export async function droppedUnitOnGitLane({ mark, by, household }, deps = null)
     try { unit = await d.droppedUnit({ mark, by, household }, (await import("./drop-recovery.mjs")).droppedUnitOf); }
     catch (e) {
       return { code: 503, reason: STORE_ONLY, defect: `the store could not say whether "${mark}" is a set-down unit's mark`,
-        hint: `a set-down unit's mark is withdrawn only on the store's path, and this lane cannot tell without asking it; nothing was written — try again (${String(e?.message ?? e).slice(0, 120)})` };
+        hint: `a set-down unit's mark is withdrawn only on the store's path, and this lane cannot tell without asking it; nothing was written — try again; ${faultLogged(`the store could not say whether "${mark}" is a set-down unit's mark`, e)}` };
     }
     if (unit) return refusal("Its claim names the set-down it is.");
   }

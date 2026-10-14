@@ -1011,6 +1011,7 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   // its old origin/main and shows no move, which red this lane's first try):
   // against the thirteenth capture, 1063 paths before and after, NONE removed
   // or added, ONE changed, `full.stakes.rule`. The slim skin drops `rule`.
+  // Re-checked at #212's merge, 5d1ef1e4: 0 paths moved.
   //
   //   full  21974 -> 21905 (-69, -0.31%) = stakes.rule -69
   //   slim  19467 -> 19467 (0)

@@ -999,7 +999,7 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   // `full.stakes.rule`. Then at the NEW pin (10da4401, the head of
   // postmark-world#208, blessed S108) against that: 2 changed, both the world's
   // own data at the pin, `stances.stances_awaiting` 62 -> 61 on each skin. The
-  // slim skin drops `rule`.
+  // slim skin drops `rule`. Re-checked at #208's merge, 978a1d34: 0 paths moved.
   //
   //   full  21974 -> 22098 (+124, +0.56%) = stakes.rule +124
   //   slim  19467 -> 19467 (0; stances_awaiting is two digits either way)

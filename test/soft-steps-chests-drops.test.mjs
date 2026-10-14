@@ -92,7 +92,7 @@ test("chests: the step's own lines, from its own functions, read as ruled", asyn
  * designed `defect`: undecided, asked again). Act 20's undo INSERT is refused
  * by the store as a raw error (`permission denied`) when `rawFails` is set.
  */
-function dropsStore({ acts = ["10"], rawFails = false } = {}) {
+function dropsStore({ acts = ["10"], rawFails = false, filed = null, resolutionFails = false } = {}) {
   const at = new Date(Date.now() - 60 * 60e3).toISOString();
   return {
     query: async (sql, params = []) => {
@@ -102,8 +102,11 @@ function dropsStore({ acts = ["10"], rawFails = false } = {}) {
       if (params.length === 5) return { rows: acts.map((id) => ({ id, actor: "keith", at, household: "hh:keith", payload: { label: "lantern" }, undone: null, resolved: null })) };
       if (/INSERT INTO acts/i.test(q)) {
         if (rawFails && String(params[3] ?? "").includes('"undoes"')) throw new Error("permission denied for table acts");
+        if (resolutionFails && String(params[3] ?? "").includes('"resolves"')) throw new Error("permission denied for table acts");
         return { rows: [{ id: "99" }] };
       }
+      // a filed drop: its claim names it (act:<filed>), so the guard bounces it as FILED
+      if (/data->>'dropped'/.test(q)) return { rows: filed && params[0] === `act:${filed}` ? [{ id: "c1", slug: "keith/lantern", status: "pending" }] : [] };
       // the drop's own row: act 10's is gone, so the guard bounces it
       if (params.length === 2 && acts.includes(String(params[0]))) return { rows: String(params[0]) === "10" ? [] : [{ actor: "keith", household: "hh:keith", payload: { label: "lantern" } }] };
       return { rows: [] };
@@ -122,6 +125,10 @@ test("drops: undecided (a guard's designed bounce) is ok; a write the store refu
   const raw = await dropsRecoveredOnTick(dropsStore({ acts: ["10", "20"], rawFails: true }), { crossing: () => 0 });
   assert.match(raw.line, / · 1 undecided, asked again next tick \(act 10: act 10 is not a set-down\) · 1 failed \(act 20: permission denied for table acts\)$/);
   assert.equal(softStepStatus(raw.line, "drops"), "refused write-failed", "a write that fails every tick must alarm");
+  // a filed drop whose resolution the store would not record (every e2): failed too
+  const unresolved = await dropsRecoveredOnTick(dropsStore({ acts: ["20"], filed: "20", resolutionFails: true }), { crossing: () => 0 });
+  assert.match(unresolved.line, / · 1 failed \(act 20: filed, but its resolution could not be recorded: permission denied for table acts\)$/);
+  assert.equal(softStepStatus(unresolved.line, "drops"), "refused write-failed");
   // the whole step throwing is refused too
   const threw = await dropsRecoveredOnTick(null, { recover: async () => { throw new Error("boom"); }, crossing: () => 0 });
   assert.equal(threw.line, "drops: NOT reconciled (non-fatal) — boom");

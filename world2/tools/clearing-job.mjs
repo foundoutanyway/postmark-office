@@ -418,62 +418,90 @@ try {
   //     silent: the crossing prints it and the nightly read carries the class.
   //     (If the conductor would rather the crossing REFUSE while it cannot check,
   //     that is this block's `if (escrow.unchecked.length)` arm and one throw.)
+  //
+  //     IT JUDGES AGAINST THE WINDOW'S RESULT (WLD-51; Darko, 2026-10-14: "the
+  //     settlement's order is always town, then sovereign (parcels), then
+  //     market"). The walk used to be handed the standing rows AND every claim,
+  //     so a claim that MOVES a standing mark stood in it twice, at its old
+  //     place and its new one, and a ✦0 commons claim passed as `home` on
+  //     either: inside a parcel's old rect though the parcel was leaving, or
+  //     inside its new rect though step 5.7 then refused the move. The store
+  //     locked a ✦0 commons mark the world's sweep never publishes (WLD-51's gap
+  //     read, R4). So a claim REPLACES the standing row it continues, and the
+  //     gate runs in two passes around the carry:
+  //
+  //       5.5a · the MOVERS only, before 5.7, because a mover this gate refuses
+  //              carries nothing (5.7's own rule). They are judged against every
+  //              undecided claim laid on the world.
+  //       5.5b · every other claim, after 5.7, against the window as it will
+  //              lock: the moves 5.7 refused are not laid, the ones it kept are,
+  //              and their riders stand where the carry puts them.
   let escrowSeen = null;
-  {
-    const undecidedNamed = pending.filter((c) => !outcomes.has(c.id) && slugOf(c));
-    if (undecidedNamed.length) {
-      const { rows: standingRows } = await q(
-        `SELECT id::text, slug, kind, owner, household, geometry, parent::text, data
-           FROM marks WHERE status = 'standing'`);
-      const candidates = [];
-      for (const c of undecidedNamed) {
-        candidates.push({
-          id: String(c.id), slug: slugOf(c), kind: c.class, owner: c.claimant,
-          household: await ownerHouseholdFor(q, c.claimant),
-          geometry: c.geometry, parent: c.parent, data: c.data,
-        });
-      }
-      //   ONE FULL WALK PER CROSSING, and this is not it. The whole world is
-      //   still resolved — a candidate's standing depends on ground it does not
-      //   own — but the ANSWERS this gate needs are the candidates' and nothing
-      //   else: `escrowAbsentAmong` reads `tiers.get(c.slug)` for exactly the
-      //   claims handed to it three lines below. Naming that set turns the walk
-      //   from a pass over the register into a climb up the candidates' own
-      //   ancestry, and leaves `recomputeStanding` at step 7 as the crossing's
-      //   single all-marks walk (standing.mjs § `only`).
-      //
-      //   The slug set is `candidates`' own, which is `undecidedNamed` mapped
-      //   through the same `slugOf` — one derivation, so the two cannot drift
-      //   into a gate that quietly checks nothing.
-      //
-      //   The containment candidates come from the store's own GiST
-      //   (standing.mjs § the spatial index). The CLAIMS in this set are not in
-      //   `marks` and no index has seen them, which is not a gap: the reader
-      //   hands back the set it can speak for, and the walk keeps scanning the
-      //   long way for everything else — including, deliberately, every one of
-      //   these candidates.
-      const containment = await gistContainment(q);
-      const tiers = computeStanding([...standingRows, ...candidates],
-        { only: new Set(candidates.map((c) => c.slug)), containment, houseOf: await liveHouseOfVia(q) });
-      const escrowByMark = await escrowPresenceAt(q, { townSha });
-      const verdict = escrowAbsentAmong(
-        undecidedNamed.map((c) => ({ id: c.id, slug: slugOf(c) })),
-        { tiers, escrowByMark, townSha });
-      escrowSeen = {
-        commons: verdict.commons.length,
-        refused: verdict.refused.map((r) => r.slug),
-        unchecked: verdict.unchecked.map((c) => c.slug),
-        town_sha: townSha,
-      };
-      for (const r of verdict.refused) decide(r.id, "refused", r.check);
-      // The strings are composed by `escrowLines`, not here, because this file is
-      // a script and a line composed here is watched by nothing — which is how
-      // the first cut of the UNCHECKED line came to print `[object Object]` over
-      // an array of candidate objects while its sibling and the receipt both
-      // mapped to `.slug` correctly.
-      for (const line of escrowLines(verdict, townSha)) console.log(`  ⚑ ${line}`);
+  async function escrowGate(judge, { carried = new Map() } = {}) {
+    const laid = pending.filter((c) => !outcomes.has(c.id) && slugOf(c));
+    const toJudge = laid.filter(judge);
+    if (!toJudge.length) return;
+    const { rows: standing } = await q(
+      `SELECT id::text, slug, kind, owner, household, geometry, parent::text, data
+         FROM marks WHERE status = 'standing'`);
+    const candidates = [];
+    for (const c of laid) {
+      candidates.push({
+        id: String(c.id), slug: slugOf(c), kind: c.class, owner: c.claimant,
+        household: await ownerHouseholdFor(q, c.claimant),
+        geometry: c.geometry, parent: c.parent, data: c.data,
+      });
     }
+    // A claim continues the standing row of its slug: the row leaves the walk
+    // and the claim stands in its place. A rider the carry moves stands where
+    // the carry puts it (carry.mjs § carryPlan's `geometry`).
+    const replaced = new Set(candidates.map((c) => c.slug));
+    const standingRows = standing
+      .filter((row) => !replaced.has(row.slug))
+      .map((row) => (carried.has(row.slug) ? { ...row, geometry: carried.get(row.slug) } : row));
+    //   ONE FULL WALK PER CROSSING, and this is not it. The whole world is
+    //   still resolved — a candidate's standing depends on ground it does not
+    //   own — but the ANSWERS this gate needs are the candidates' and nothing
+    //   else: `escrowAbsentAmong` reads `tiers.get(c.slug)` for exactly the
+    //   claims handed to it below. Naming that set turns the walk from a pass
+    //   over the register into a climb up the candidates' own ancestry, and
+    //   leaves `recomputeStanding` at step 7 as the crossing's single all-marks
+    //   walk (standing.mjs § `only`).
+    //
+    //   The containment candidates come from the store's own GiST
+    //   (standing.mjs § the spatial index). The CLAIMS in this set are not in
+    //   `marks` and no index has seen them, which is not a gap: the reader
+    //   hands back the set it can speak for, and the walk keeps scanning the
+    //   long way for everything else — including, deliberately, every one of
+    //   these candidates. EXCEPT when a claim or a carry moves a standing row:
+    //   the index answers for that slug at the place it is leaving, so the walk
+    //   takes the long way for everything (the scan is the answer the index
+    //   only shortens).
+    const moved = standing.some((row) => replaced.has(row.slug) || carried.has(row.slug));
+    const containment = moved ? null : await gistContainment(q);
+    const tiers = computeStanding([...standingRows, ...candidates],
+      { only: new Set(candidates.map((c) => c.slug)), containment, houseOf: await liveHouseOfVia(q) });
+    const escrowByMark = await escrowPresenceAt(q, { townSha });
+    const verdict = escrowAbsentAmong(
+      toJudge.map((c) => ({ id: c.id, slug: slugOf(c) })),
+      { tiers, escrowByMark, townSha });
+    escrowSeen = {
+      commons: (escrowSeen?.commons ?? 0) + verdict.commons.length,
+      refused: [...(escrowSeen?.refused ?? []), ...verdict.refused.map((r) => r.slug)],
+      unchecked: [...(escrowSeen?.unchecked ?? []), ...verdict.unchecked.map((c) => c.slug)],
+      town_sha: townSha,
+    };
+    for (const r of verdict.refused) decide(r.id, "refused", r.check);
+    // The strings are composed by `escrowLines`, not here, because this file is
+    // a script and a line composed here is watched by nothing — which is how
+    // the first cut of the UNCHECKED line came to print `[object Object]` over
+    // an array of candidate objects while its sibling and the receipt both
+    // mapped to `.slug` correctly.
+    for (const line of escrowLines(verdict, townSha)) console.log(`  ⚑ ${line}`);
   }
+  // The claims 5.7 reads as movers, by the same test it reads them with.
+  const isMover = (c) => amends.has(String(c.id)) && (c.class === "sited" || c.class === "parcel") && Boolean(c.geometry?.at);
+  await escrowGate(isMover);   // 5.5a
 
   // 5.7 · THE CARRY (POS-441, ruled by Darko 2026-10-07: "That should just always
   //     be the default rule"). An amend that MOVES a standing mark carries the
@@ -496,7 +524,7 @@ try {
   const carries = new Map();   // mover claim id -> its plan (carry.mjs § carryPlan)
   {
     const movers = pending
-      .filter((c) => !outcomes.has(c.id) && amends.has(String(c.id)) && (c.class === "sited" || c.class === "parcel") && c.geometry?.at)
+      .filter((c) => !outcomes.has(c.id) && isMover(c))
       .map((c) => ({ claimId: String(c.id), slug: slugOf(c), next: c.geometry }));
     if (movers.length) {
       const { rows: standingRows } = await q(
@@ -531,6 +559,15 @@ try {
       }
       for (const plan of carries.values()) console.log(`  ⚑ carry: ${carrySentence(plan)}`);
     }
+  }
+
+  // 5.5b · THE ESCROW GATE FOR EVERY OTHER CLAIM, now that the window's moves are
+  //     known (see 5.5): a move 5.7 refused lends no ground, and a rider stands
+  //     where its carry puts it.
+  {
+    const carried = new Map();
+    for (const plan of carries.values()) for (const r of plan.riders) carried.set(r.slug, r.geometry);
+    await escrowGate((c) => !isMover(c), { carried });
   }
 
   // 6 · everything still undecided LOCKS and materializes. The materialization

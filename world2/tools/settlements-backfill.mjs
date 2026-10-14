@@ -214,16 +214,25 @@ export async function carriedOnTick(client, repo) {
  *                    `no \`…\` table yet` (absent)     refused prereq:migration
  *   chests           `stocked N …`                     ok
  *                    `not stocked — the law at S<n>
- *                     declares no chest class`         ok prereq:chest_class: nothing to stock
+ *                     declares no chest class —
+ *                     nothing to stock` (a CURRENT
+ *                     law)                             ok prereq:chest_class: nothing to stock
  *                                                      yet; the reason keeps it visible, so the
  *                                                      step reads `stocked N` once the class lands
+ *                    `… declares no chest class, and
+ *                     S<newest>'s law is not ingested
+ *                     yet` (a stalled ingest)          refused prereq:law
  *                    `not stocked — the store holds
  *                     no settlement whose law is
  *                     ingested`                        refused prereq:law
  *                    `not stocked this tick — the
  *                     carried step did not settle`     refused prereq:carried
- *   drops            `restored N …` (undecided drops
- *                     are asked again: the design)     ok
+ *   drops            `… · N failed (…)` (a write the
+ *                     store would not take; it fails
+ *                     again every tick)                refused write-failed
+ *                    `restored N …` (undecided drops,
+ *                     a guard's designed bounces, are
+ *                     asked again: the design)         ok
  *   any step         `NOT recorded/stocked/reconciled`,
  *                    `REFUSED …`, or a line this does
  *                    not know                          refused write-failed
@@ -238,11 +247,12 @@ export const SOFT_STEP_RULES = Object.freeze({
   amends: ROWS_STEP,
   chests: [
     [/^stocked \d+/, "ok"],
-    [/^not stocked — the law at S\d+ declares no chest class/, "ok prereq:chest_class"],
+    [/^not stocked — the law at S\d+ declares no chest class — nothing to stock$/, "ok prereq:chest_class"],
+    [/^not stocked — the law at S\d+ declares no chest class, and S\d+'s law is not ingested yet/, "refused prereq:law"],
     [/^not stocked — the store holds no settlement whose law is ingested/, "refused prereq:law"],
     [/^not stocked this tick — the carried step did not settle/, "refused prereq:carried"],
   ],
-  drops: [[/^restored \d+/, "ok"]],
+  drops: [[/ · \d+ failed \(/, "refused write-failed"], [/^restored \d+/, "ok"]],
 });
 export function softStepStatus(text, step) {
   const line = String(text ?? "").split(/\r?\n/).map((l) => l.trim()).find((l) => l.startsWith(`${step}: `));

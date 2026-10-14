@@ -21,7 +21,14 @@
 // class" on every tick. That is the honest empty, like "stocked 0": ok, with the
 // reason prereq:chest_class kept on the receipt so the dress rehearsal can watch it
 // turn into "stocked N" once the class lands. A store
-// with no ingested law at all is a broken prerequisite: refused prereq:law.
+// with no ingested law at all is a broken prerequisite: refused prereq:law, and
+// so is "no chest class" while a NEWER blessing's law is not ingested yet (a
+// stalled ingest could be hiding the class; review-612 F1).
+//
+// AND ONE RULING ON DROPS (Wright 10-14, review-612 F2): a guard's designed
+// bounce is undecided, asked again: ok. A write the store refused (a raw error,
+// or a filed drop whose resolution could not be recorded) fails again every
+// tick: it is its own `N failed (…)` segment, read refused write-failed.
 //
 // THE CAN-FAIL FLIPS: drop `keep_step chests` or `keep_step drops` from
 // office-keep.sh; drop either from SOFT_STEPS or from the manifest; read any
@@ -59,6 +66,12 @@ test("chests: the step's own lines, from its own functions, read as ruled", asyn
   assert.deepEqual(r.steps.chests, { s: "ok", r: "prereq:chest_class" }, "the receipt keeps the reason on an ok step");
   assert.deepEqual(judgeKeep(appendReceipt("", r), { steps: ["chests"], n: 1, staleMinutes: 45, now: Date.parse("2026-10-14T19:09:00Z") }), [],
     "and the roll-call reads it as ok: no alarm");
+  // refused prereq:law: no chest class, but a NEWER blessing's law is not
+  // ingested yet — the class may be there, so this is a stalled ingest, never
+  // the honest empty (review-612 F1)
+  const stalled = await stockChests(lawClient([{ ...LAW_ROW, number: 105, newest: 108 }]));
+  assert.equal(stalled.line, "chests: not stocked — the law at S105 declares no chest class, and S108's law is not ingested yet — nothing is stocked until it is");
+  assert.equal(softStepStatus(stalled.line, "chests"), "refused prereq:law");
   // refused prereq:law: no ingested law at all
   const noLaw = await stockChests(lawClient([]));
   assert.match(noLaw.line, /^chests: not stocked — the store holds no settlement whose law is ingested/);
@@ -73,12 +86,43 @@ test("chests: the step's own lines, from its own functions, read as ruled", asyn
   assert.equal(softStepStatus(threw.line, "chests"), "refused write-failed");
 });
 
-test("drops: restored N is ok, undecided drops included (asked again by design); a failed reconcile is refused", async () => {
+/**
+ * A store, scripted, for the REAL recoverOrphanDrops: two set-downs older than a
+ * tick above a cursor of 0. Act 10's row is gone, so the guard BOUNCES it (a
+ * designed `defect`: undecided, asked again). Act 20's undo INSERT is refused
+ * by the store as a raw error (`permission denied`) when `rawFails` is set.
+ */
+function dropsStore({ acts = ["10"], rawFails = false } = {}) {
+  const at = new Date(Date.now() - 60 * 60e3).toISOString();
+  return {
+    query: async (sql, params = []) => {
+      const q = String(sql);
+      if (/^\s*(BEGIN|COMMIT|ROLLBACK)/i.test(q)) return { rows: [] };
+      if (/max\(id\)/.test(q)) return { rows: [{ id: acts.at(-1) }] };
+      if (params.length === 5) return { rows: acts.map((id) => ({ id, actor: "keith", at, household: "hh:keith", payload: { label: "lantern" }, undone: null, resolved: null })) };
+      if (/INSERT INTO acts/i.test(q)) {
+        if (rawFails && String(params[3] ?? "").includes('"undoes"')) throw new Error("permission denied for table acts");
+        return { rows: [{ id: "99" }] };
+      }
+      // the drop's own row: act 10's is gone, so the guard bounces it
+      if (params.length === 2 && acts.includes(String(params[0]))) return { rows: String(params[0]) === "10" ? [] : [{ actor: "keith", household: "hh:keith", payload: { label: "lantern" } }] };
+      return { rows: [] };
+    },
+  };
+}
+
+test("drops: undecided (a guard's designed bounce) is ok; a write the store refused is its own `failed` segment and refused (Wright 10-14, review-612 F2)", async () => {
   const quiet = await dropsRecoveredOnTick(null, { recover: async () => ({ line: "drops: restored 0" }), crossing: () => 0 });
   assert.equal(softStepStatus(quiet.line, "drops"), "ok");
-  const busy = await dropsRecoveredOnTick(null, {
-    recover: async () => ({ line: "drops: restored 1 (act 9 → 1 lantern back to keith) · 1 undecided, asked again next tick (act 12: store busy)" }), crossing: () => 0 });
-  assert.equal(softStepStatus(busy.line, "drops"), "ok", "an undecided drop is the step working, not failing");
+  // the real recovery, a defect only: undecided, asked again — the design
+  const bounced = await dropsRecoveredOnTick(dropsStore({ acts: ["10"] }), { crossing: () => 0 });
+  assert.match(bounced.line, /^drops: restored 0 · 1 undecided, asked again next tick \(act 10: act 10 is not a set-down\)$/);
+  assert.equal(softStepStatus(bounced.line, "drops"), "ok", "a designed bounce is the step working, not failing");
+  // the real recovery, a raw store error beside it: a failure, not a pending decision
+  const raw = await dropsRecoveredOnTick(dropsStore({ acts: ["10", "20"], rawFails: true }), { crossing: () => 0 });
+  assert.match(raw.line, / · 1 undecided, asked again next tick \(act 10: act 10 is not a set-down\) · 1 failed \(act 20: permission denied for table acts\)$/);
+  assert.equal(softStepStatus(raw.line, "drops"), "refused write-failed", "a write that fails every tick must alarm");
+  // the whole step throwing is refused too
   const threw = await dropsRecoveredOnTick(null, { recover: async () => { throw new Error("boom"); }, crossing: () => 0 });
   assert.equal(threw.line, "drops: NOT reconciled (non-fatal) — boom");
   assert.equal(softStepStatus(threw.line, "drops"), "refused write-failed");

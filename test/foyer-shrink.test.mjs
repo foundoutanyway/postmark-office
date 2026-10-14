@@ -984,33 +984,33 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //   full  21924 -> 21974 (+50, +0.23%) = stances +50
   //   slim  19417 -> 19467 (+50, +0.26%) = stances +50
   //
-  // ⚠ AND RE-CAPTURED A THIRTEENTH TIME, 2026-10-14 (lane plumb-bugs-a,
-  // postmark#3757), for the stakes segment's rule sentence, which now quotes
-  // the sweep's whole rule (world unpublish-verdict.mjs § UNPUBLISH_RULE: "…
-  // its registered path is on main, and its standing, walked at the crossing,
-  // is still commons"). Diffed leaf by leaf BEFORE the
-  // capture, in two steps, each on a world clone built the way
-  // .github/scripts/suite-clones.sh builds CI's (origin/main AT the pin, no
-  // tag newer than it), because the page reads the world at its BLESSED ref
-  // and a pool tree's clone, re-pointed only at HEAD, kept its old origin/main
-  // and showed no move. (The first capture here was taken that way and CI
-  // red it.) At the OLD pin (17b64ef1, blessed S107) with this branch's code:
-  // 1063 paths before, 1063 after, none removed or added, ONE changed,
-  // `full.stakes.rule`. Then at the NEW pin (10da4401, the head of
-  // postmark-world#208, blessed S108) against that: 2 changed, both the world's
-  // own data at the pin, `stances.stances_awaiting` 62 -> 61 on each skin. The
-  // slim skin drops `rule`. Re-checked at #208's merge, 978a1d34: 0 paths moved.
+  // ⚠ AND RE-CAPTURED A THIRTEENTH TIME, 2026-10-14 (lane plumb-arrival, WLD-5),
+  // because the PR moved the world pin, 17b64ef1 -> 01f7c83e (the head of
+  // postmark-world#206, over main 9988b669; then to its merge bdbf1061, which
+  // moved nothing here: F7c5 green on a CI-shaped clone), as the tenth note says a pin move
+  // must. The code was cleared first: at this PR's head with a CI-shaped clone at
+  // the OLD pin (suite-clones.sh's fetch), F7c5 is green. Then the diff, leaf by
+  // leaf at the new pin BEFORE the capture: 1063 paths before and after, NONE
+  // removed or added, 2 changed, both the world's own data at the pin (the new
+  // pin's history carries settlement/S108): `stances.stances_awaiting` 62 -> 61
+  // on both skins.
   //
-  //   full  21974 -> 22098 (+124, +0.56%) = stakes.rule +124
-  //   slim  19467 -> 19467 (0; stances_awaiting is two digits either way)
+  // Measured from the file:
   //
-  // …and RE-WORDED the same day, before it shipped: Darko ruled the plain
-  // sentence (WLD-51, 14:31 EDT), "At each settlement, a commons mark with no
-  // stamps behind it leaves the world. A mark standing on your household's
-  // ground or the town's never does, whatever it was first filed as."
-  // (postmark-world#212). Same two steps on CI-shaped clones: at 978a1d34 with
-  // the new words, ONE path changed, `full.stakes.rule`; then at #212's head
-  // (c098ecfd, blessed S108), 0 more. Against the train's golden:
+  //   full  21974 -> 21974 (+0) · slim  19467 -> 19467 (+0)
+  //
+  // ⚠ AND RE-CAPTURED A FOURTEENTH TIME, 2026-10-14 (lane plumb-bugs-a,
+  // postmark#3757), for the stakes segment's rule sentence, which is now
+  // Darko's plain sentence (WLD-51, 14:31 EDT), world unpublish-verdict.mjs §
+  // UNPUBLISH_RULE verbatim: "At each settlement, a commons mark with no stamps
+  // behind it leaves the world. A mark standing on your household's ground or
+  // the town's never does, whatever it was first filed as." The world pin moved
+  // bdbf1061 -> c098ecfd (the head of postmark-world#212, tools/ only, blessed
+  // S108 on both). Diffed leaf by leaf BEFORE the capture, on CI-shaped clones
+  // (suite-clones.sh's fetch; a pool tree's clone re-pointed only at HEAD keeps
+  // its old origin/main and shows no move, which red this lane's first try):
+  // against the thirteenth capture, 1063 paths before and after, NONE removed
+  // or added, ONE changed, `full.stakes.rule`. The slim skin drops `rule`.
   //
   //   full  21974 -> 21905 (-69, -0.31%) = stakes.rule -69
   //   slim  19467 -> 19467 (0)

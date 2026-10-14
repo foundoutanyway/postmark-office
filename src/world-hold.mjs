@@ -372,7 +372,23 @@ export async function reachContext(thing, actor) {
     // A synchronous lookup over ONE read of the store's registry (POS-342).
     let householdOf = null;
     try { householdOf = await (await import("./households.mjs")).householdLookup(); } catch { householdOf = null; }
-    return { mark, canon_readable: canon_marks > 0, within, standing, standsWithin, householdOf };
+    // WHETHER AN UNPUBLISHED NAME IS A DRAFT AT ALL, for clause 4's in-house
+    // half. Canon not carrying a thing proves only that it isn't published; a
+    // typo looks exactly the same. The actor's OWN household's live layer is
+    // the one place that can tell the two apart, and reading it shows the actor
+    // nothing they couldn't already see (withdraw asks the same question the
+    // same way). Another household's drafts are never read here. UNDEFINED
+    // when the layer can't answer, so the door degrades to what it did before
+    // rather than refusing a real draft.
+    let ownDraftExists;
+    if (!mark && canon_marks > 0) {
+      try {
+        const { guardedLiveMarks } = await import("./world2-guards.mjs");
+        const live = await guardedLiveMarks(null, { actor });
+        ownDraftExists = live.some((m) => m.id === thing);
+      } catch { ownDraftExists = undefined; }
+    }
+    return { mark, canon_readable: canon_marks > 0, within, standing, standsWithin, householdOf, own_draft_exists: ownDraftExists };
   } catch { return null; }
 }
 
@@ -430,10 +446,28 @@ export async function refuseOutOfReach({ thing, to, actor, act, holder, ctx: giv
   if (!mark && !canonReadable) return null; // canon did not answer — nothing measured, nothing refused
   if (!mark) {
     const madeBy = String(thing).split("/")[0];
+    const slug = String(thing).split("/").slice(1).join("/") || String(thing);
     const mine = sameHousehold(madeBy, actor, householdOf);
+    // OUTSIDE THE HOUSE, A MISSPELLED NAME AND A PRIVATE DRAFT MUST ANSWER
+    // ALIKE, or the refusal tells a stranger which slugs are someone's drafts.
+    // So this cannot say which it is — and it must not claim either. It used
+    // to say "it is a private draft" and hand the stranger the owner's stake
+    // call, so a resident who mistyped a slug walked away believing a
+    // published thing was unstaked (kogane's bug post, 2026-10-14). The
+    // stranger's useful next step is the name, so that is what it offers.
     if (!mine.same)
       throw bounce(409, `${thing} does not stand on the world`,
-        `it is a private draft — on no docket, in no export, in no public answer — so nobody outside ${madeBy}'s household can take it or be given it, and you are not of that household (${byWhat(mine)}). ${madeBy} puts it forward by staking it (world { do: "stake", args: { mark: "${thing}", stamps: 1 } }); it changes hands after the crossing that carries it.`);
+        `nothing by that name is published, so it cannot change hands. Check the name: world { find: "${slug}" } searches what is published. A thing that is still a private draft answers exactly the same, on purpose: a draft is on no docket and in no public answer, so nobody outside ${madeBy}'s household can take it or be given it until it publishes, and you are not of that household (${byWhat(mine)}). Nothing was recorded.`);
+
+    // INSIDE THE HOUSE THE DOOR CAN TELL, so it does. The household may see its
+    // own drafts, and a take of a name that is neither published nor drafted
+    // used to SUCCEED — a hold edge, and then a set-down, for nothing at all
+    // (kogane's bug post, 2026-10-14: `keith/spare-part` for `keith/spare-parts`).
+    // Only a definite "no such draft" refuses; an unread live layer leaves the
+    // door as it was.
+    if (ctx.own_draft_exists === false)
+      throw bounce(404, `${thing} is neither published nor one of your household's drafts`,
+        `nothing by that name stands on the world or in ${madeBy}'s household's drafts. Check the name: world { find: "${slug}" } searches what is published, and world { read: "leave-mark" } lists your own marks, drafts included. Nothing was recorded.`);
 
     // A GIVE OF AN UNPUBLISHED THING IS STILL A GIVE. Both halves of clause 3
     // apply — who receives, and how far away they are.

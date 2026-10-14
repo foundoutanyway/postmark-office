@@ -119,7 +119,71 @@ test("WALK #10 item 4 — a private draft cannot be given to a neighbour", async
   assert.match(e.defect, /does not stand on the world/);
   assert.match(e.hint, /private draft/);
   assert.match(e.hint, /nobody outside wright's household/);
-  assert.match(e.hint, /do: "stake"/, "the refusal must carry the publishing hint");
+  // The stake call was the OWNER's next step, handed to a stranger; it went
+  // with kogane's 2026-10-14 bug post. The stranger's next step is the name.
+  assert.match(e.hint, /world \{ find: "a-try-square-for-the-joinery" \}/, "the refusal must point the stranger at the name");
+});
+
+// ── A MISSPELLED NAME IS NOT A DRAFT (kogane's bug posts, 2026-10-14) ───────
+//
+// dom-pidgey reached for `kogane/bucket-drops` under a wrong slug and was told
+// the candy "is a private draft", with the owner's stake call — so a published
+// candy read as unstaked. And inside the house, `keith/spare-part` (a typo for
+// `keith/spare-parts`) was TAKEN: holder kogane, reach "unpublished", then set
+// down at the garage, for a draft that never existed.
+
+test("outside the house, a missing name is NOT asserted to be a draft, and the hint is the name", async () => {
+  const e = await refusal(() => refuseOutOfReach({
+    thing: "kogane/bucket-drop", to: null, actor: "dom-pidgey", act: "take", holder: null,
+    ctx: { mark: null, canon_readable: true, within, standing: { placed: true, x: 0, y: 0 }, standsWithin },
+  }));
+  assert.equal(e.code, 409);
+  assert.match(e.defect, /kogane\/bucket-drop does not stand on the world/);
+  assert.doesNotMatch(e.hint, /it is a private draft/, "a typo and a draft must answer alike, so neither may be claimed");
+  assert.doesNotMatch(e.hint, /do: "stake"/, "the stake call is the owner's step, not the stranger's");
+  assert.match(e.hint, /nothing by that name is published/);
+  assert.match(e.hint, /world \{ find: "bucket-drop" \}/);
+});
+
+test("…and it answers the same whether or not the owner has such a draft — nothing leaks", async () => {
+  const ask = (own_draft_exists) => refusal(() => refuseOutOfReach({
+    thing: "kogane/bucket-drop", to: null, actor: "dom-pidgey", act: "take", holder: null,
+    ctx: { mark: null, canon_readable: true, within, standing: { placed: true, x: 0, y: 0 }, standsWithin, own_draft_exists },
+  }));
+  const [a, b, c] = await Promise.all([ask(true), ask(false), ask(undefined)]);
+  assert.deepEqual([a.code, a.defect, a.hint], [b.code, b.defect, b.hint]);
+  assert.deepEqual([a.code, a.defect, a.hint], [c.code, c.defect, c.hint]);
+});
+
+test("inside the house, a take of a name that is neither published nor drafted is REFUSED", async () => {
+  const e = await refusal(() => refuseOutOfReach({
+    thing: "wright/a-try-square-for-the-joinry", to: null, actor: "rei", act: "take", holder: null,
+    ctx: { ...draftCtx({ x: 0, y: 0 }), own_draft_exists: false },
+  }));
+  assert.ok(e, "a hold edge for nothing at all — the take must not succeed");
+  assert.equal(e.code, 404);
+  assert.match(e.defect, /neither published nor one of your household's drafts/);
+  assert.match(e.hint, /world \{ find: "a-try-square-for-the-joinry" \}/);
+  assert.match(e.hint, /Nothing was recorded/);
+});
+
+test("…and so is a give of one, before any reach is measured", async () => {
+  const e = await refusal(() => refuseOutOfReach({
+    thing: "wright/a-try-square-for-the-joinry", to: "rei", actor: "wright", act: "give", holder: "wright",
+    ctx: { ...draftCtx({ x: 0, y: 0 }), own_draft_exists: false },
+    standpointOfOther: async () => ({ placed: true, x: 1, y: 0 }),
+  }));
+  assert.equal(e.code, 404);
+});
+
+test("…while a real draft is still taken in-house, and an unread live layer changes nothing", async () => {
+  for (const own_draft_exists of [true, undefined]) {
+    const out = await refuseOutOfReach({
+      thing: "wright/a-try-square-for-the-joinery", to: null, actor: "rei", act: "take", holder: null,
+      ctx: { ...draftCtx({ x: 0, y: 0 }), own_draft_exists },
+    });
+    assert.equal(out.unpublished_own_draft, true, `own_draft_exists: ${own_draft_exists}`);
+  }
 });
 
 test("…and its own author may still pick it up — the clause says 'by nobody BUT its author's household'", async () => {

@@ -33,7 +33,7 @@ import {
   stampsRosterPage, stampsDetailOf, stampParties,
   potBoardOf, questBoardWith, withGivers,
   excerpt, LETTER_READING_LAW_LINE, withWhole, MAIL_PAGE, SEARCH_LETTERS, SEARCH_RESIDENTS,
-  mailListOf, letterListNoRegion, letterListPage, correspondentsOf, mailAwaitingOf, searchPage, metricsMailOf,
+  mailListOf, letterListNoRegion, letterListPage, letterPageCap, correspondentsOf, mailAwaitingOf, searchPage, metricsMailOf,
   indexCopy as officeIndexCopy,
   rollEntry, residentPageOf, townSummaryOf, residentOf, windowReadOf, psaFoldOf, doorstepOf, DOORSTEP_SIZES, PSA_SLUG, CARD_MAIL,
 } from "./queries.mjs";
@@ -45,7 +45,7 @@ import { holdStoreProbe, UNREACHABLE_DEFECT, UNREACHABLE_HINT } from "./index-pr
 // The row SHAPES are queries.mjs's own exported functions, the ones its office.db
 // readers call; only the SQL is written twice. A port that restated the shape
 // would be the private copy that drifts.
-import { freshnessFor, composeHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
+import { freshnessFor, composeHome, composeFoundedHome } from "./paper-fresh.mjs"; // the freshness ladder, as queries.home uses it
 
 export const MOVED = Object.freeze(["repoLog", "regionList", "regionOne", "bulletinList", "bulletinTeaser", "bulletinEntry", "home", "stampsRoster", "stampsDetail", "potBoard", "questBoardFor", "standingFor", "townQuestBoard",
   "letter", "letterAnswer", "letterList", "mailList", "mailCorrespondents", "mailAwaiting", "search", "metricsMail", "outboxSettled",
@@ -664,12 +664,13 @@ export async function doorstep(q, handle, _asOf, opts = {}) {
 
 /** queries.letterList, from the store: the filtered list, newest first, paged. */
 export async function letterList(q, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
+  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), letterPageCap(opts));
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const asOf = await townIndexAsOf(q);
   const where = [];
   const params = [];
   const p = (v) => { params.push(v); return `$${params.length}`; };
+  if (opts.ids?.length) where.push(`id = ANY(${p(opts.ids)}::text[])`);
   if (opts.resident) { const r = p(opts.resident); where.push(`(from_h = ${r} OR to_h = ${r})`); }
   if (opts.region) {
     const handles = await regionResidents(q, opts.region);
@@ -687,7 +688,7 @@ export async function letterList(q, opts = {}) {
   const fixed = params.slice();
   const rows = (await q.query(`SELECT ${LETTER_COLS} FROM town_letters ${clause} ORDER BY ${NEWEST} LIMIT ${p(limit)} OFFSET ${p(offset)}`, params)).rows;
   const total = await count(q, `SELECT COUNT(*) AS n FROM town_letters ${clause}`, fixed);
-  return letterListPage({ total, rows, limit, offset, full: opts.full, asOf });
+  return letterListPage({ total, rows, limit, offset, full: opts.full, digests: opts.digests, asOf });
 }
 
 /** queries.mailCorrespondents, from the store. */
@@ -820,7 +821,13 @@ export async function metricsMail(q, opts = {}) {
  */
 export async function home(q, handle, fresh = null) {
   const row = (await q.query("SELECT json FROM town_homes WHERE handle = $1", [handle])).rows[0];
-  if (!row) return null;
+  if (!row) {
+    // A page founded since this index was built (POS-603, paper-fresh.mjs §
+    // composeFoundedHome): only for a resident the store's index holds, and only
+    // with a checkout. An unreachable store throws from these queries, as before.
+    if (!fresh?.clone || !(await hasResident(q, handle))) return null;
+    return composeFoundedHome(handle, freshnessFor(handle, { ...fresh, asOf: await townIndexAsOf(q) }));
+  }
   const asOf = await townIndexAsOf(q);
   return composeHome(JSON.parse(row.json), freshnessFor(handle, { ...fresh, asOf }));
 }

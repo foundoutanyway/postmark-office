@@ -39,6 +39,7 @@
 import { renamedRow, DOOR_FIELDS, withRefused } from "./one-contract.mjs"; // POS-70: the one rename shape; POS-246: the door's own fields; POS-427: refused beside did
 import { actUnderNonce, nonceDefect } from "./act-nonce.mjs"; // POS-246: a world act's retry key
 import { readFileSync } from "node:fs";
+import { IDENTITIES_SQL } from "./world2-fold.mjs"; // POS-350: the household grain is the store's identities
 import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock
 import { cardsSchemaAt, describeAt, readShape, shapeRead } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
@@ -129,6 +130,7 @@ import { ARENA_TOOLS, ARENA_VERBS, arenaActViaOffice, arenaClosed } from "./aren
 // THE PORTAL GROUND'S OWN LAW outlived the arena: which room you stand in, its
 // stride and its spawn (src/portal-ground.mjs). Rides and vehicles are not this.
 import { cockpitPortal, groundAt, spawnPointFor } from "./portal-ground.mjs";
+import { caughtBounce, isHttpStatus, trippedError } from "./fault-words.mjs"; // the office's own words for its own fault (POS-573/578)
 
 export const apexEnabled = () => process.env.WORLD_APEX === "1";
 
@@ -327,6 +329,41 @@ export function spineWithVehicles(geometricIds = [], occupied = [], classOf = ()
   return out;
 }
 
+/**
+ * THE `within` A RESIDENT READS, with the vessel they are aboard (WLD-11, town #3394).
+ *
+ * The geometric spine holds the marks whose footprint holds the standpoint. A
+ * vessel's mark stands where it is berthed, and a rider's feet are at the hull
+ * wherever she is, so a passenger under way was in `within` of nothing, while the
+ * walk read said "aboard" and a plain exit (which takes the innermost thing in
+ * `within`) could not find her. `apexSpineIds` already adds the vehicles you occupy
+ * to the spine a GRANT is asked against; this is the same union for the spine you
+ * are TOLD. Occupancy is the ledger's own derivation (`occupiedMarksOf`), the class
+ * gate is the same `vehicle` class, a mark already in the spine is not repeated,
+ * and the vessel is appended innermost (the rider is inside it).
+ *
+ * Pure over (spine, occupied, markOf) so the union itself can be falsified.
+ */
+async function markLookup() {
+  try {
+    const byId = new Map(((await worldStateRaw())?.marks ?? []).map((m) => [m.id, m]));
+    return (id) => byId.get(id) ?? null;
+  } catch { return () => null; }
+}
+
+export function withinWithVehicles(spine = [], occupied = [], markOf = () => null) {
+  const out = [...spine];
+  const have = new Set(out.map((m) => m.id));
+  for (const id of occupied) {
+    if (!id || have.has(id)) continue;
+    const mark = markOf(id);
+    if (!mark || String(mark.class ?? "") !== VEHICLE_CLASS) continue;
+    have.add(id);
+    out.push({ id, by: mark.by, tier: mark.tier, body: mark.body, extentM: Math.max(mark.extent?.w ?? 0, mark.extent?.h ?? 0) });
+  }
+  return out;
+}
+
 /** The three channels' spine for one caller, with the vehicle union applied. */
 async function apexSpineIds(db, spine, args, key) {
   const geometric = (spine ?? []).map((m) => m.id);
@@ -374,7 +411,7 @@ export function rideDeps() {
           // `test/world-ride.test.mjs` pins the key set for that reason.
           payload: entry.payload,
           effect: entry.effect,
-          household: worldHouseholdOf(entry.handle),
+          household: (await worldHouseholds())(entry.handle),
         });
       }
     },
@@ -414,7 +451,8 @@ export function crossingDeps() {
     stop: async (who, here, key, opts = {}) => walkViaOffice(WORLD_CLONE, { handle: who, x: here.x, y: here.y,
       ...(opts?.from && Number.isFinite(Number(opts.from.x)) && Number.isFinite(Number(opts.from.y)) ? { __from: { x: Number(opts.from.x), y: Number(opts.from.y) } } : {}),
       ...(opts?.exit === true ? { exit: true } : {}) }, key),
-    now: () => (Date.now() - Date.UTC(2026, 5, 12)) / (12 * 3600 * 1000),
+    // given the door's one reading (world-crossings.mjs § passageInstant), it names that reading's ferry
+    now: (ms = Date.now()) => (ms - Date.UTC(2026, 5, 12)) / (12 * 3600 * 1000),
     // THE ACTS THIS ACTOR HAS WRITTEN, oldest first — the ride fold's one input
     // (world-ride.mjs § rideStateFrom). Read from the STORE (POS-152), which is
     // never truncated, so an entry older than the drain cursor is still here; a
@@ -436,9 +474,7 @@ export function crossingDeps() {
           { ...process.env, WORLD_CLONE });
       } catch (e) {
         if (lockTimedOut(e)) { const err = new Error(LOCK_BUSY.defect); Object.assign(err, LOCK_BUSY); throw err; }
-        const err = new Error("the crossing pass tripped");
-        Object.assign(err, { code: 500, defect: "the crossing pass tripped", hint: String(e.stderr ?? e.message ?? e).slice(0, 300) });
-        throw err;
+        throw trippedError("the crossing pass tripped", e); // its stderr goes to the log (POS-578)
       }
       const result = JSON.parse(out.trim().split("\n").at(-1));
       if (result.error) { const err = new Error(result.error.defect); Object.assign(err, result.error); throw err; }
@@ -715,6 +751,11 @@ const DISPATCH = {
   give: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", args, key) },
   drop: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", args, key) },
   take: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", args, key) },
+  // COUNTED UNITS (WLD-27): consume and refill are the hold lane's two new
+  // faces — one held consumable used up, and a candy label's creator topping a
+  // chest up. Same tool, same queue; the face rides as `act`.
+  consume: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", { ...args, act: "consume" }, key) },
+  refill: { tool: "world_hold", run: (args, key) => callHoldTool("world_hold", { ...args, act: "refill" }, key) },
   // ── the crossings ─────────────────────────────────────────────────────────
   //
   // ⚠ THE OLD COMMENT HERE WAS FALSE, AND SAID SO CONFIDENTLY. It read:
@@ -906,7 +947,7 @@ export function actionFields(props = {}, required = [], { strip = STANDPOINT_PAR
 // src/declare.mjs § DECLARE_SCHEMA). They belong on the act's own CARD
 // (`household { read: "declare" }`), which is what the site's move-in form is
 // generated from. They do NOT belong on the acts index the bare answer carries
-// — OPERATIONS.md § Breaking-change rules: "REST: stable/simple for frozen
+// — CONTRACT.md § Breaking changes: "REST: stable/simple for frozen
 // consumers", and test/foyer-shrink.test.mjs F5/F7d pin that index's shape
 // key by key and its size — so the index keeps exactly the shape it had:
 // `type`, `description`, `required`, and whatever else the schema always
@@ -1332,25 +1373,40 @@ const HELD_ROWS = `SELECT id, by,
 registerTwin(HELD_ROWS, (g, idsJson) => nodesIn(g, idsJson)
   .map((n) => ({ id: n.id, by: n.by, class: jx(n.p, "class"), held_grant: jx(n.p, "held_grant"), body: jx(n.p, "body") })));
 
-// ── the household grain, read from the world's own registry ─────────────────
+// ── the household grain, read from the store's `identities` (POS-350) ─────
 //
-// `WORLD/households.json` is the world clone's own pin registry — the same file
-// leave-exec reads for the fan-up grain. Used here for ONE question: whose
-// ground is this, and is the caller of that house? A handle with no registry
-// row is `solo:<handle>`, which is the grain the fold already assumes and is
-// why two accounts of one house compose here exactly as they do there.
+// Used here for ONE question: whose ground is this, and is the caller of that
+// house? The answer is the store's `identities` view (055): `hh:<slug>` for the
+// house the office's one deriver names (household-deriver.mjs § resolveHouse),
+// `solo:<handle>` for a handle no house holds, which is the grain the fold
+// already assumes. A handle the registry does not know is `solo:<handle>` too.
 //
-// UNREADABLE IS NULL, NOT A GUESS. `scopeAdmits` refuses on a null household
-// rather than admitting, so a missing registry closes the relation-scoped doors
-// instead of opening them to everyone. That direction is the whole point.
+// IT USED TO READ THE WORLD CLONE'S `WORLD/households.json`, the crossing's
+// printout of that same registry (world-households-export.mjs), so the door
+// judged by the copy a settlement last pulled while the store already held the
+// answer (Darko, 2026-10-04: the store is the record, and every reader reads it;
+// Wright, 2026-10-13, POS-350 gap 2).
 //
-// CACHED PER HEAD, NOT PER PROCESS (the Starling House, 2026-09-30). This used
-// to parse the file ONCE for the life of the process, and nothing in
-// production ever reset it: a settlement that re-derived the registry reached
-// this door only at the office's next restart, so a house split across two
-// keys stayed split here after the world had joined it. The parse is now keyed
-// on the clone's HEAD sha, read off disk (no git subprocess), so the checkout
-// moving is what re-reads it.
+// NO SILENT FALLBACK. An office pointed at the store (WORLD2_PG=1 and
+// WORLD2_PG_URL, which prod is) answers from the store or not at all: a read
+// that fails throws `HouseholdsUnreadable`, carrying the store's own error as
+// its cause, so a lost store answers 503 at the door and anything else 500 with
+// the reason. Falling back to the printout would answer under a stale source,
+// which is the disease this read was moved to cure. Only an office with NO store
+// configured (a test, a local office) reads the world clone's file, re-read
+// whenever the clone's HEAD moves.
+//
+// ASYNC AT THE EDGE, SYNC IN THE LADDER, as households.mjs § householdLookup:
+// `worldHouseholds()` reads once and hands back `(handle) => key`, because
+// `resolveForActor` asks `groundHouseholdOf` synchronously, once per ground.
+export class HouseholdsUnreadable extends Error {
+  constructor(cause) {
+    super(`the household registry (the store's identities) could not be read${cause ? `: ${cause.message ?? cause}` : ""} — the World's household is never guessed from WORLD/households.json`, { cause });
+    this.name = "HouseholdsUnreadable";
+    this.code = "households-unreadable";
+  }
+}
+
 function headShaOf(repo) {
   try {
     const head = readFileSync(join(repo, ".git", "HEAD"), "utf8").trim();
@@ -1358,9 +1414,8 @@ function headShaOf(repo) {
     return sym ? refShaFromDisk(repo, sym[1]) ?? null : head;
   } catch { return null; }
 }
-let _hh = null; // { head, map }
-export function worldHouseholdOf(handle, { repo = WORLD_CLONE } = {}) {
-  if (!handle) return null;
+let _hh = null; // { head, map }: the no-store road's file, per HEAD
+function fileHouseholds(repo) {
   const head = headShaOf(repo);
   if (_hh === null || _hh.head !== head) {
     let map = {};
@@ -1368,7 +1423,22 @@ export function worldHouseholdOf(handle, { repo = WORLD_CLONE } = {}) {
     catch { map = {}; }
     _hh = { head, map };
   }
-  return _hh.map[handle] ?? `solo:${handle}`;
+  return _hh.map;
+}
+
+/** One read of the household grain -> the synchronous `(handle) => key` (null for no handle). */
+export async function worldHouseholds({ repo = WORLD_CLONE, env = process.env } = {}) {
+  const { world2Enabled, actsQuery } = await import("./world2-acts.mjs");
+  if (!world2Enabled(env)) {
+    const map = fileHouseholds(repo);
+    return (handle) => (handle ? map[handle] ?? `solo:${handle}` : null);
+  }
+  let rows;
+  try { rows = await actsQuery(IDENTITIES_SQL, [], env); }
+  catch (e) { throw new HouseholdsUnreadable(e); }
+  if (!Array.isArray(rows)) throw new HouseholdsUnreadable(null);
+  const map = new Map(rows.map((r) => [String(r.handle), String(r.household)]));
+  return (handle) => (handle ? map.get(String(handle)) ?? `solo:${handle}` : null);
 }
 export const resetHouseholdCache = () => { _hh = null; };
 
@@ -2093,7 +2163,12 @@ async function apexRead(args, key, ctx = {}) {
   const seen = await worldEyes(args, key);
   if (seen?.error) return seen;
 
-  const spine = oriented.you?.within ?? [];
+  // WLD-11: the geometric spine, plus the vessel an embodied caller is aboard.
+  const geometric = oriented.you?.within ?? [];
+  const occupied = oriented.standpoint?.stance === "embodied" ? await occupiedMarksOf(standingHandle(args, key)) : [];
+  const spine = occupied.length
+    ? withinWithVehicles(geometric, occupied, await markLookup())
+    : geometric;
   const nearby = seen.objects ?? [];
   // POS-551: the air at the standpoint, in the engine's words; null (and so
   // absent below) whenever the engine tells none.
@@ -2123,14 +2198,15 @@ async function apexRead(args, key, ctx = {}) {
     rows = amb.rows;
     const ground = gatherGroundActions(store.db, { spineIds, reachIds });
     const held = gatherHeldActions(store.db, await holdingsFor(args, key));
+    const houseOf = await worldHouseholds(); // POS-350: the store's identities, read once for every ground below
     // THE SEAT, and the read must gather it the same way the act does — "read:
     // is every action's shadow ... anything you can do, you can read, and never
     // the reverse." A read that showed a seated human less than the door admits
     // is that reverse, wearing an omission.
     const resolved = resolveForActor([...held.entries, ...ground.entries, ...amb.entries], {
       kind: actorKindOf(args),
-      actorHousehold: worldHouseholdOf(standingHandle(args, key)),
-      groundHouseholdOf: (id) => worldHouseholdOf(ground.byId?.get(id)?.by ?? null),
+      actorHousehold: houseOf(standingHandle(args, key)),
+      groundHouseholdOf: (id) => houseOf(ground.byId?.get(id)?.by ?? null),
       // root-first, so the seat lands on the OUTERMOST room that seats you
       spineIds,
       // ⚑ NO HANDOFF SEAT IS PASSED (parked 2026-09-10). `resolveForActor`
@@ -2156,8 +2232,8 @@ async function apexRead(args, key, ctx = {}) {
     // channels, so the roster cannot claim feet the door would refuse.
     const humanHere = resolveGrants([...held.entries, ...ground.entries, ...amb.entries], {
       kind: "human",
-      actorHousehold: worldHouseholdOf(standingHandle(args, key)),
-      groundHouseholdOf: (id) => worldHouseholdOf(ground.byId?.get(id)?.by ?? null),
+      actorHousehold: houseOf(standingHandle(args, key)),
+      groundHouseholdOf: (id) => houseOf(ground.byId?.get(id)?.by ?? null),
     });
     // GROUND-granted only. An ambient `say` reaches a human anywhere and says
     // nothing about whether this room gives them feet — counting it would light
@@ -2334,6 +2410,24 @@ async function apexRead(args, key, ctx = {}) {
 
 // ── the act ─────────────────────────────────────────────────────────────────
 
+// THE ACT BRANCH'S CATCH (apexDo), a function so a test drives its rebuild
+// directly (the review of #525: a flip of the foreign-code line stayed green,
+// because the MCP door's answer classifies the code too).
+export function actCaught(e, done = {}) {
+  if (!isHttpStatus(e.code)) return { ...caughtBounce(e), ...done }; // a foreign code (pg's SQLSTATE, Node's ENOENT): its words go to the log (fault-words.mjs § caughtBounce, POS-573)
+  // THE EXTRAS A CALLER READS ARE CARRIED, BY NAME, and this list is the
+  // whole reason to read it twice: this line REBUILDS the bounce, so a
+  // field the door underneath added and this list does not name is dropped
+  // here and reaches nobody. `choices` (which resident?) has ridden since
+  // the multi-resident bounce; `walk` joined 2026-09-11 with the enter
+  // door's reach refusal, because the world page's "walk there and enter"
+  // button reads `walk.mark` off THIS body — the apex is the door it calls.
+  // A value nothing can read is the quiet failure this office has a museum
+  // of; adding a field below without adding it here builds one.
+  return { ...bounce(e.code, e.defect, e.hint,
+    { ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) }), ...done };
+}
+
 async function apexDo(args, key, ctx = {}) {
   const action = String(args.do ?? "").trim();
 
@@ -2379,12 +2473,13 @@ async function apexDo(args, key, ctx = {}) {
     const amb = gatherActions(store.db, { spineIds, reachIds });
     const ground = gatherGroundActions(store.db, { spineIds, reachIds });
     const held = gatherHeldActions(store.db, await holdingsFor(args, key));
+    const houseOf = await worldHouseholds(); // POS-350: the store's identities, read once for every ground below
     const kind = actorKindOf(args);
     const { entries, refused: refusedGrants, seated: seatedAt, handoff: handoffSeat } = resolveForActor(
       [...held.entries, ...ground.entries, ...amb.entries], {
         kind,
-        actorHousehold: worldHouseholdOf(standingHandle(args, key)),
-        groundHouseholdOf: (id) => worldHouseholdOf(ground.byId?.get(id)?.by ?? null),
+        actorHousehold: houseOf(standingHandle(args, key)),
+        groundHouseholdOf: (id) => houseOf(ground.byId?.get(id)?.by ?? null),
         spineIds,
         // ⚑ THE THIRD SEATING GROUND (world#16) IS PARKED, 2026-09-10. No
         // handoff is passed, `resolveForActor` answers `handoff: null`, and the
@@ -2653,7 +2748,7 @@ async function apexDo(args, key, ctx = {}) {
         // it in its own finally. Handing the factory instead would open a
         // second store per act and read the world twice in one call.
         db: store.db, spineIds, handle: standingHandle(args, key),
-        household: worldHouseholdOf(standingHandle(args, key)),
+        household: houseOf(standingHandle(args, key)),
         crossing: currentCrossing(), witnessStamp, nowMs: Date.now(),
       };
       // ── THE HAND, NOT A FLAG (2026-08-27) ─────────────────────────────────
@@ -2724,17 +2819,7 @@ async function apexDo(args, key, ctx = {}) {
       }
     } catch (e) {
       if (!e?.code) throw e;
-      // THE EXTRAS A CALLER READS ARE CARRIED, BY NAME, and this list is the
-      // whole reason to read it twice: this line REBUILDS the bounce, so a
-      // field the door underneath added and this list does not name is dropped
-      // here and reaches nobody. `choices` (which resident?) has ridden since
-      // the multi-resident bounce; `walk` joined 2026-09-11 with the enter
-      // door's reach refusal, because the world page's "walk there and enter"
-      // button reads `walk.mark` off THIS body — the apex is the door it calls.
-      // A value nothing can read is the quiet failure this office has a museum
-      // of; adding a field below without adding it here builds one.
-      return { ...bounce(e.code, e.defect, e.hint,
-        { ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) }), ...done };
+      return actCaught(e, done);
     }
     // ── THE GROUND SETS ITS ENTRANT DOWN (LOGOS § The portal ground) ────────
     // AFTER the enter and only when it succeeded. The receipt keeps the shape
@@ -2962,7 +3047,7 @@ export async function readDomainFor(action, fields, key, oriented, ctx = {}) {
       return r?.error ? r : r;
     } catch (e) {
       if (!e?.code) throw e;
-      return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint };
+      return caughtBounce(e, { code: e.code, defect: e.defect, hint: e.hint }); // a foreign code (pg's SQLSTATE, Node's ENOENT): its words go to the log (fault-words.mjs § caughtBounce, POS-573)
     }
   };
   switch (action) {
@@ -3112,10 +3197,11 @@ async function apexReadAction(args, key, ctx = {}) {
     const amb = gatherActions(store.db, { spineIds, reachIds });
     const ground = gatherGroundActions(store.db, { spineIds, reachIds });
     const held = gatherHeldActions(store.db, await holdingsFor(args, key));
+    const houseOf = await worldHouseholds(); // POS-350: the store's identities, read once for every ground below
     const { entries } = resolveGrants([...held.entries, ...ground.entries, ...amb.entries], {
       kind: actorKindOf(args),
-      actorHousehold: worldHouseholdOf(standingHandle(args, key)),
-      groundHouseholdOf: (id) => worldHouseholdOf(ground.byId?.get(id)?.by ?? null),
+      actorHousehold: houseOf(standingHandle(args, key)),
+      groundHouseholdOf: (id) => houseOf(ground.byId?.get(id)?.by ?? null),
     });
     const rows = [...amb.rows, ...ground.classRows];
     const match = entries.find((e) => e.action === action);

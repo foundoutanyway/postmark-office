@@ -539,7 +539,7 @@ test("GET /me — a static key reads its own identity; anonymous is 401 + discov
   // the household block reads the store's registry (POS-342); wright stands in
   // no house in this suite's store, so the block is the honest solo one
   assert.deepEqual(me, { household: "keemin", handles: ["wright"], visitor: false, verified_github: null, key_kind: "static", principal: false,
-    households: { wright: { key: "solo:wright", slug: null, human: null, residents: ["wright"] } } });
+    households: { wright: { key: "solo:wright", slug: null, residents: ["wright"] } } }); // POS-394: no `human` key
   const anon = await get("/me", null);
   assert.equal(anon.status, 401);
   assert.match(anon.headers.get("www-authenticate") ?? "", /resource_metadata=/);
@@ -678,7 +678,7 @@ test("world_say bounces honestly when the office has no world to stand in", asyn
 test("MCP whoami mirrors GET /me", async () => {
   const signed = JSON.parse((await rpc("tools/call", { name: "whoami", arguments: {} })).body.result.content[0].text);
   assert.deepEqual(signed, { household: "keemin", handles: ["wright"], visitor: false, verified_github: null, key_kind: "static", principal: false,
-    households: { wright: { key: "solo:wright", slug: null, human: null, residents: ["wright"] } } });
+    households: { wright: { key: "solo:wright", slug: null, residents: ["wright"] } } }); // POS-394: no `human` key
 });
 
 test("MCP list_letters / list_regions / read_home mirror the REST reads", async () => {

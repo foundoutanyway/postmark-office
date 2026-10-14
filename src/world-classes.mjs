@@ -67,7 +67,11 @@ export const ROSTER_FLOOR = Object.freeze(["bounty", "thing"]);
 // world repo's board-grammar.test.mjs whitelist; these two sets are NAME-KEYED
 // TWINS and move together or the door refuses what the law allows (this one
 // nearly shipped stale — caught at the w36 pre-ship risk review).
-export const RESIDENT_INSTANTIABLE = Object.freeze(["bounty", "thing", "note", "idea"]);
+// `chest` joined 2026-10-12 (WLD-27, Wright-verified on the issue), its twin in
+// world tools/board-grammar.test.mjs moving with it. Candy does NOT join (Wright,
+// 2026-10-13T00:09Z): town alone makes candy, and a resident's candy mark is only
+// a held unit their drop set down (world.mjs § leaveMarkViaOffice, `dropUnit`).
+export const RESIDENT_INSTANTIABLE = Object.freeze(["bounty", "thing", "note", "idea", "chest"]);
 export const residentMayInstantiate = (klass) => RESIDENT_INSTANTIABLE.includes(String(klass));
 
 const ROSTER_SQL = `SELECT DISTINCT json_extract(props, '$.class') AS class

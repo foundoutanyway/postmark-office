@@ -404,14 +404,14 @@ test("registry blob round-trips byte for byte — a join diff is only what chang
   assert.doesNotMatch(original, /\r/, "the pen writes blobs, and the town's blob is LF");
 });
 
-test("slug + lookup: a house answers to its slug, its name, and its human", () => {
+test("slug + lookup: a house answers to its slug and its name, never its private human (POS-609)", () => {
   const reg = REGISTRY();
   assert.equal(slugFromName("The Trueing House"), "the-trueing-house");
   assert.equal(slugFromName("cadaeic.space"), "cadaeic.space", "a chosen domain is already a name");
   assert.equal(slugFromName("  Liz's  Rookery! "), "lizs-rookery");
   assert.equal(houseForName(reg, "The Trueing House"), "the-trueing-house");
   assert.equal(houseForName(reg, "the-trueing-house"), "the-trueing-house");
-  assert.equal(houseForName(reg, "Keemin"), "the-trueing-house", "the human's name finds the house too");
+  assert.equal(houseForName(reg, reg.households["the-trueing-house"].human), null, "the private human finds no house (POS-609)");
   assert.equal(houseForName(reg, "nobody's house"), null);
   assert.equal(houseForAccount(reg, 999, "keeminlee"), "the-trueing-house");
   assert.equal(houseForAccount(reg, 424242, "some-stranger"), null);

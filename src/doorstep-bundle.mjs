@@ -287,6 +287,52 @@ export async function doorstepBundle(handle, ctx = {}) {
       unavailable: [`the house's posts could not be read (${String(e?.message ?? e).slice(0, 160)})`],
       put_up: { total: null, shown: 0, rows: [] }, taking_part: { total: null, shown: 0, rows: [] } };
   }
+  // ── WHAT THEY HOLD (WLD-27) — beside the segments, not one of them ─────
+  //
+  // `holds`: the resident's counted units, one edge per label, and what the
+  // holding shows ("Pocket Comets: 18", "101 candies"); `chests`: the chests
+  // they made, each with its live count — or, when the town has not stocked one
+  // because no candy label is registered for them, the sentence saying so. A
+  // held stack is drawn HERE and on the card, never as a pip on the map. The
+  // same block answers GET /world/chests's rows; both are the fold of the
+  // record's acts at this read. Public, like where a resident stands.
+  //
+  // ⚑ ONLY WHEN THERE IS SOMETHING TO SAY. Every byte here is served on every
+  // doorstep (foyer-shrink F7c5 holds the page still), and most residents hold
+  // nothing and made no chest — so empty hands add no key at all, and the card
+  // reads an absent block as nothing to show. An office not pointed at the
+  // record has no holding to read and says nothing either; one that IS pointed
+  // at it and cannot read it says so, because there "unknown" must not read as
+  // "empty".
+  try {
+    const { residentHolds } = await import("./world-units.mjs");
+    const h = await residentHolds(handle);
+    if (h.holds.count > 0 || h.chests.length || h.label) d.holds = { serves: "world.holdings", args: { handle }, ...h };
+  } catch (e) {
+    const { world2Enabled } = await import("./world2-acts.mjs");
+    if (world2Enabled()) d.holds = { serves: "world.holdings", args: { handle },
+      unavailable: `what ${handle} holds could not be read (${String(e?.message ?? e).slice(0, 160)}) — unknown, not empty` };
+  }
+  // ── WHEN THE MISTS REACH THE HOUSE'S MARKS (WLD-38) — beside the segments ─
+  //
+  // `mists`: for every published mark the household's residents made that the
+  // advancing Mists reach within their schedule, the first crossing the FRINGE
+  // reaches it (sight shortened) and the first the WALL does (hidden), each
+  // with its date — or that it stands there now — and that it stays theirs and
+  // comes back when they lift. One forecast, the World engine's own reading,
+  // computed at this read with this page's one clock; nothing is stored or
+  // sent (mists-forecast.mjs). Published marks only, so a stranger's view
+  // shows nothing the map does not. Like `holds`: only when there is something
+  // to say, and an office pointed at a world it cannot read says
+  // `mists-forecast-unavailable`, never a quiet clear.
+  try {
+    const { householdMistsForecast } = await import("./mists-forecast.mjs");
+    const m = await householdMistsForecast(handle, { nowMs });
+    if (m) d.mists = m;
+  } catch (e) {
+    const { MISTS_FORECAST_UNAVAILABLE } = await import("./mists-forecast.mjs");
+    d.mists = { serves: "world.mists", args: { handle }, unavailable: `${MISTS_FORECAST_UNAVAILABLE}: ${String(e?.message ?? e).slice(0, 160)}` };
+  }
   // The manifest, republished now that every segment is on the page. A reader
   // walks `segments` to find them, so it must name all ten or none.
   d.segments = [...DOORSTEP_SEGMENTS];
@@ -414,7 +460,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
     // still lacks. It retires itself the day the list empties.
     try {
       const { paperGaps } = await import("./household-apex.mjs");
-      const gaps = await paperGaps(handle, { db, clone, key, ix });
+      const gaps = await paperGaps(handle, { db, clone, key, ix, odb, asOf });
       if (gaps.length) d.settling_in = {
         note: "your house is still settling in — this block disappears as the list empties",
         next: gaps,
@@ -434,7 +480,7 @@ export async function ownerGate(d, handle, { db, clone, key, odb, meta, asOf = n
   // itself rides every read — it is what the public bundle already publishes —
   // but its gap-shaped half is gated on the same ownership test above.
   try {
-    const ns = await nextStepsFor(db, meta, handle, clone, { own, key, ix });
+    const ns = await nextStepsFor(db, meta, handle, clone, { own, key, ix, odb, asOf });
     if (ns?.steps?.length) d.next_steps = ns;
   } catch { /* garnish only */ }
   return d;

@@ -13,4 +13,9 @@ WorkingDirectory=/srv/postmark-office
 # touches neither office.db nor world.db; postmark-office-rehydrate does that,
 # two minutes later, from the clones this pulled. The ferry, the pen and both
 # halves share the one town lock.
+# THE SCHEDULED UNIT BY CONTRACT (POS-524, Wright 2026-10-13): every run it
+# makes records source "scheduled" in the keep receipt. A hand run goes through
+# postmark-office-keep-by-hand.service, never this unit; starting THIS unit by
+# hand is recorded as scheduled (an accepted limitation, deploy/DEPLOY.md).
+Environment=POSTMARK_KEEP_SOURCE=scheduled
 ExecStart=/bin/sh /srv/postmark-office/deploy/office-keep.sh

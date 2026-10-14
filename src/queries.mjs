@@ -2,6 +2,7 @@
 // One implementation, two doors: whatever REST serves, MCP serves identically.
 
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isPrincipal } from "./ops.mjs";
 import { householdOf, giverLookup } from "./households.mjs";
@@ -9,7 +10,7 @@ import { HOLO_CAPTION, TEACH, postingsWithoutPots } from "./funding.mjs";
 import { isResidentHandle } from "./residency.mjs"; // the door's own admission grammar — one definition of what a handle is
 import { CROSSING_SEAL_SUBJECT } from "./crossings.mjs"; // the crossing's closing commit, as the copy's history records it (POS-332)
 import { dialNumber, ideasTank } from "./world-classes.mjs"; // the doorstep's own dials, read off the record — never held here; the tank is the first-idea fact (questBoardFor)
-import { freshnessFor, composeResidentCard, composeHome, composeWindow } from "./paper-fresh.mjs"; // the freshness ladder
+import { freshnessFor, freshFor, addressTextIn, composeResidentCard, composeHome, composeWindow, composeFoundedHome } from "./paper-fresh.mjs"; // the freshness ladder
 import { readPane, paneRelPath, WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // the pane's frame — one owner, read by this door and by the act
 import { STANDING } from "./town-mail.mjs"; // what a letter written but not sailed is called, said once (POS-375)
 
@@ -700,11 +701,12 @@ export const outboxSettled = (db, handle) =>
 // REST all along; MCP callers only ever see the body, which is where the
 // readers that needed it live.
 export function letterList(db, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
+  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), letterPageCap(opts));
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const asOf = indexAsOf(db);
   const where = [];
   const params = [];
+  if (opts.ids?.length) { where.push(`id IN (${opts.ids.map(() => "?").join(",")})`); params.push(...opts.ids); }
   if (opts.resident) { where.push("(from_h = ? OR to_h = ?)"); params.push(opts.resident, opts.resident); }
   if (opts.region) {
     const handles = regionResidents(db, opts.region);
@@ -749,8 +751,32 @@ export function letterList(db, opts = {}) {
   // in hand — because cached readers read it. It is renamed in meaning by the
   // arrival of `shown` beside it, not silently redefined underneath them.
   const total = Object.values(db.prepare(`SELECT COUNT(*) AS n FROM letters ${clause}`).get(...params))[0];
-  return letterListPage({ total, rows, limit, offset, full: opts.full, asOf });
+  return letterListPage({ total, rows, limit, offset, full: opts.full, digests: opts.digests, asOf });
 }
+
+// ── THE LETTERS SINCE LAST TIME (Darko 2026-10-13) ───────────────────────────
+//
+// The site refresh re-read the whole corpus with bodies every pass: ~27 pages,
+// ~13 MB. Two filters let it read only what moved:
+//
+//   ?digests=1  each letter as { id, digest } and nothing else, up to 5000 a
+//               page. The digest is the sha256 of the letter's `full=1` answer
+//               itself (letterDigest), so two equal digests are two equal
+//               answers, whether the row moved or the office's shaping did.
+//   ?ids=a,b,c  only those letters (up to 200), with every other filter as usual.
+//
+// The reader keeps last pass's digests and asks `full=1&ids=` for the ids that
+// are new or whose digest moved. Not a date cursor, because a letter is not
+// fixed once dated: the ferry MOVES it outbox → inbox at delivery (path, box and
+// delivered_at change), and a letter merged late carries an older date than
+// letters already read. A digest sees both.
+export const LETTER_DIGEST_PAGE = 5000;
+export const LETTER_IDS_MAX = 200;
+export const letterPageCap = (opts) => (opts.digests ? LETTER_DIGEST_PAGE : 200);
+const fullLetter = (r) => ({ ...JSON.parse(r.json), ...excerpt(r) });
+export const letterDigest = (r) => createHash("sha256")
+  .update(JSON.stringify(fullLetter(r)), "utf8")
+  .digest("hex").slice(0, 32);
 
 /** letterList's answer for a region that names nobody. Shared with the store's twin. */
 export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
@@ -761,15 +787,16 @@ export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
  * date, thread, delivered_at, json) and the filter's total. Shared with the
  * store's twin.
  */
-export function letterListPage({ total, rows, limit, offset, full, asOf }) {
-  const shape = full ? (r) => ({ ...JSON.parse(r.json), ...excerpt(r) }) : excerpt;
+export function letterListPage({ total, rows, limit, offset, full, digests, asOf }) {
+  const shape = digests ? (r) => ({ id: r.id, digest: letterDigest(r) })
+    : full ? fullLetter : excerpt;
   const next = offset + rows.length;
   const complete = next >= total;
   return {
     total, shown: rows.length, count: rows.length, limit, offset, complete,
     ...(complete ? {} : { next_offset: next,
-      more_note: `${total - next} further letter${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to 200)` }),
-    ...(full ? { full: true } : {}),
+      more_note: `${total - next} further letter${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to ${letterPageCap({ digests })})` }),
+    ...(digests ? { digests: true } : full ? { full: true } : {}),
     as_of: asOf, letters: rows.map(shape),
   };
 }
@@ -1999,7 +2026,40 @@ export function doorstepOf(parts, handle, asOf, { conversationsOffset = 0, slim 
  * Degrades rather than throws: a checkout too old to carry the onboarding fold
  * yields a null, and the doorstep simply carries no next-steps block.
  */
-export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null, ix = null } = {}) {
+/**
+ * The owner's onboarding facts with the record's evidence folded in (POS-603):
+ * a COPY of the indexed facts in which only card, home and window may move,
+ * and only from "not done" to "done".
+ *   · home, window — complete when the paper-gap read SUCCEEDED (an array) and
+ *     names no tend-your-home / hang-your-window gap. A read that could not run
+ *     is never proof that everything is done.
+ *   · card — complete when ONE fresh read of the resident's ADDRESS.md, through
+ *     the read's own freshness context (no checkout or a suspended handle reads
+ *     nothing), meets the TOWN'S rule: tools.ownProse against the clone's
+ *     WHITE_PAGES/TEMPLATE/ADDRESS.md, at least tools.CARD_MIN_CHARS. An older
+ *     checkout without those exports keeps the index's card fact.
+ * Every other fact (sent, received, welcomed) is the index's, untouched.
+ */
+function ownerFacts(facts, { handle, tools, paperRows, ctx, clone }) {
+  if (!facts) return facts;
+  const out = { ...facts };
+  if (Array.isArray(paperRows)) {
+    const gaps = new Set(paperRows.map((r) => r.id));
+    if (!out.home && !gaps.has("tend-your-home")) out.home = true;
+    if (!out.window && !gaps.has("hang-your-window")) out.window = true;
+  }
+  if (!out.card && typeof tools.ownProse === "function" && Number.isFinite(tools.CARD_MIN_CHARS)) {
+    const text = addressTextIn(ctx, handle);
+    if (text != null) {
+      let template = null;
+      try { template = readFileSync(join(clone, "WHITE_PAGES", "TEMPLATE", "ADDRESS.md"), "utf8"); } catch { template = null; }
+      if (tools.ownProse(text, template).length >= tools.CARD_MIN_CHARS) out.card = true;
+    }
+  }
+  return out;
+}
+
+export async function nextStepsFor(db, meta, handle, clone, { own = false, worldBlock: injected, key = null, ix = null, odb = null, asOf = null } = {}) {
   try {
     const tools = await questTools(clone);
     if (typeof tools.composeNextSteps !== "function") return null; // older checkout
@@ -2058,8 +2118,19 @@ export async function nextStepsFor(db, meta, handle, clone, { own = false, world
     // office never looked up cannot leak through a later refactor of the filter,
     // and the saved world read is the expensive half of this call besides.
     const worldSited = own ? await worldSitedFor(handle, { worldBlock }) : null;
-    const onboarding = tools.onboardingBoard(registry, facts, handle, { worldSited });
-    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix }) : null;
+    // THE OWNER'S LINE FROM THE RECORD (POS-603). The facts above are the
+    // index's, and the town's composer drops a paper gap whose id is an
+    // onboarding id — so a stale index kept "write your card", "tend your home"
+    // and "hang your window" on the owner's next steps after the record showed
+    // them done. For the OWNER only, the paper gaps are read FIRST (the same
+    // read the steps below carry, the same memoized world read) and the facts
+    // the line is built from are a COPY where card, home and window are
+    // complete when the record says so. A stranger's line stays the index's,
+    // with no new read.
+    const fresh = own ? await freshFor(handle, { odb, clone, asOf }) : null;
+    const paperRows = own ? await paperGapRows(handle, { db, clone, worldBlock, key, ix, odb, asOf, fresh }) : null;
+    const lineFacts = own ? ownerFacts(facts, { handle, tools, paperRows, ctx: freshnessFor(handle, { ...fresh, asOf }), clone }) : facts;
+    const onboarding = tools.onboardingBoard(registry, lineFacts, handle, { worldSited });
     // THE VERDICT RIDES DOWN, NOT THE READER (#2773, and the 08-15 gate is why).
     // `worldSited` above is already this doorstep's decision: the world read for
     // an own door, and a deliberate NON-read — null, nobody looked — for a
@@ -2612,6 +2683,15 @@ const PAPERS_WITHOUT_A_DATE = Object.freeze(["write-your-card", "tend-your-home"
  * grammar is not this lane's to touch. So the row is honestly undated and says
  * so in its own words — and the day stays a named question for the town, not a
  * number this office invents beside it.
+ *
+ * ⚑ NOW IT IS DATED, FROM THE STORE (POS-495, #2898). The ingest reads the
+ * store's own welcome lines (stamp_lines, the line's leading day) beside the key
+ * base, and the standing row carries `welcomed_since` (quest-standing.mjs §
+ * welcomeDatesFrom). Who counts as welcomed is still the town's fold; the store
+ * only dates it. A welcomed house the store has no line for, or a store that
+ * did not answer, or the hydrate, reads welcomed and undated with the old note.
+ * It still never borrows a mail row's day: `since` here reads `welcomed_since`
+ * and nothing else.
  */
 const WELCOME_ROW = "welcome-to-postmark";
 
@@ -2638,6 +2718,8 @@ export const STANDING_NOTES = Object.freeze({
   no_index: "the town knows this one; this page has not caught up yet. It fills itself in within the hour.",
   no_date: "you have done this. The town does not keep the day you did it, so there is no date to show.",
   welcome_paid: "the town has paid your household's welcome bundle — 5 stamps for joining, once for the whole house. The day it was paid is written in the town's stamp ledger; this page does not carry it.",
+  // POS-495: the same row once the store dates it. The day itself rides in `since`.
+  welcome_paid_dated: "the town paid your household's welcome bundle on the day shown — 5 stamps for joining, once for the whole house.",
   ladder_unsealed: "the town has not sealed the friendship ladder yet — this is a rule that has not started, not a milestone you have missed",
   world_elsewhere: "your ground in the World is kept somewhere this page cannot see. Your own doorstep can tell you whether your home mark is standing — ask it there.",
   no_tank: "the Think Tank could not be read just now, so nobody looked. This is not a no.",
@@ -2673,7 +2755,8 @@ export function standingJoin(q, standing, { idea = null, worldSited = null } = {
     // The welcome row leaves the mail fallback BEFORE it is reached. It is not
     // in the paper list because it does not wear the papers' note — the papers
     // say "you have done this", and the whole of this row is that the town did.
-    const since = (isPaper || isWelcome) ? null
+    const since = isPaper ? null
+      : isWelcome ? (complete ? standing.welcomed_since ?? null : null)
       : (fact === "sent" ? standing.sent_since : standing.received_since) ?? null;
     // ⚑ THE NOTE IS ATTACHED BY ROW ID, NOT BY SHAPE. It used to fire on any
     // complete-and-undated row, which meant a mail row could wear "the town
@@ -2683,7 +2766,7 @@ export function standingJoin(q, standing, { idea = null, worldSited = null } = {
     // self-mail, because the town's own fact does not.) A shape can be worn by
     // a row it was never written for; an id cannot.
     const note = isPaper && complete ? STANDING_NOTES.no_date
-      : isWelcome && complete ? STANDING_NOTES.welcome_paid
+      : isWelcome && complete ? (since ? STANDING_NOTES.welcome_paid_dated : STANDING_NOTES.welcome_paid)
       : (!isPaper && !isWelcome && complete && since === null) ? STANDING_NOTES.self_mail_only
       : null;
     return { progress: complete ? 1 : 0, complete, since, ...(note ? { note } : {}) };
@@ -3555,5 +3638,10 @@ export function regionResidents(db, slugOrName) {
 // ahead of. Composing it would invent a tense for a field that has none.
 export function home(db, handle, fresh = null) {
   const row = db.prepare("SELECT json FROM homes WHERE handle = ?").get(handle);
-  return row ? composeHome(JSON.parse(row.json), withFresh(db, handle, fresh)) : null;
+  if (row) return composeHome(JSON.parse(row.json), withFresh(db, handle, fresh));
+  // A page founded since the index was built (POS-603, paper-fresh.mjs §
+  // composeFoundedHome): only for a resident this index holds, and only with a
+  // freshness context that has a checkout.
+  if (!fresh?.clone || !db.prepare("SELECT 1 FROM residents WHERE handle = ?").get(handle)) return null;
+  return composeFoundedHome(handle, withFresh(db, handle, fresh));
 }

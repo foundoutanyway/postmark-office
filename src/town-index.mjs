@@ -383,8 +383,12 @@ export async function fundingRows(TOWN, { log = console } = {}) {
  * `base` is the store's key base when the caller read one (POS-341 part 4: the
  * delta ingest, behind STAMP_LINES); the town's folds group households by it in
  * place of the printouts. Null is the printouts, as before.
+ *
+ * `welcomeLines` is the store's welcome rows when the ingest read them
+ * (POS-495, src/stamp-lines.mjs § welcomeLinesVia): they date the welcome row.
+ * Null is undated, as before (the hydrate always passes null).
  */
-export async function questRows(TOWN, town, { log = console, base = null } = {}) {
+export async function questRows(TOWN, town, { log = console, base = null, welcomeLines = null } = {}) {
   const questTool = join(TOWN, "tools", "quest-progress.mjs");
   const registryPath = join(TOWN, "quest-registry.json");
   if (!existsSync(questTool) || !existsSync(registryPath)) return null;
@@ -407,12 +411,12 @@ export async function questRows(TOWN, town, { log = console, base = null } = {})
   // is the office's own admission grammar: the raw list carries `_archived`.
   if (typeof questMod.onboardingFactsFor === "function" && typeof questMod.foldFriendships === "function") {
     const { onboardingFactsFor, foldFriendships, welcomedHouseholds } = questMod;
-    const { parseDeliveries, currentHouseholds } = await import(pathToFileURL(join(TOWN, "tools", "stamp-mint.mjs")));
+    const { parseDeliveries, currentHouseholds, classifyEntry } = await import(pathToFileURL(join(TOWN, "tools", "stamp-mint.mjs")));
     const { standingRowsFromTown } = await import("./quest-standing.mjs");
     const handles = town.residents.map((r) => r.handle).filter(isResidentHandle);
     const { rows, friendships } = standingRowsFromTown(
-      { parseDeliveries, foldFriendships, currentHouseholds, welcomedHouseholds, onboardingFactsFor },
-      TOWN, handles, { base });
+      { parseDeliveries, foldFriendships, currentHouseholds, welcomedHouseholds, onboardingFactsFor, classifyEntry },
+      TOWN, handles, { base, welcomeLines });
     const standing = keyed("quest_standing");
     for (const [h, row] of rows) standing.put([h, JSON.stringify(row)]);
     out.standing = standing.rows();
@@ -487,7 +491,7 @@ export function atlasRows(TOWN, town, { log = console } = {}) {
  * The whole index for one checkout, every table: what hydrate.mjs writes and
  * what the ingest's seed writes. `meta` rows come in hydrate's insert order.
  */
-export async function deriveTownIndex(TOWN, { log = console, base = null } = {}) {
+export async function deriveTownIndex(TOWN, { log = console, base = null, welcomeLines = null } = {}) {
   const asOf = execFileSync("git", ["-C", TOWN, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const town = readTown(TOWN);
   for (const p of town.problems) log.warn(`WARN (town): ${p}`);
@@ -525,7 +529,7 @@ export async function deriveTownIndex(TOWN, { log = console, base = null } = {})
   }
   Object.assign(t, await fundingRows(TOWN, { log }));
 
-  const q = await questRows(TOWN, town, { log, base }); // the store's key base when the seed read one (POS-341 part 4); null in hydrate
+  const q = await questRows(TOWN, town, { log, base, welcomeLines }); // the store's key base and welcome rows when the seed read them (POS-341 part 4, POS-495); null in hydrate
   t.quest_progress = q?.progress ?? [];
   t.quest_standing = q?.standing ?? [];
   if (q) meta.push(["quest_day", q.questDay], ["quest_registry", q.questRegistry]);

@@ -89,7 +89,8 @@ WHAT ONE RESIDENT HAS MADE in the told world, in three tenses that are three dif
 
 | field | type | notes |
 |---|---|---|
-| `handle` | string | **required** — lowercase-hyphenated, as in WHITE_PAGES/ |
+| `handle` | string | lowercase-hyphenated, as in WHITE_PAGES/ — omit it (with sort) to read the whole town's published marks |
+| `sort` | string | rank by the fold's own numbers, highest first, ties by id: "stamps" = the direct stake on the mark, "weight" = its effective weight (breadth and what is nested inside included). With no handle this is the town-wide published read; with a handle it ranks that resident's marks. one of: stamps, weight |
 | `limit` | number | how many published marks to render (default 20, max 200) — the counts beside the page are always of the whole set |
 | `offset` | number | how many published marks to skip — walk with the next_offset the previous read returned |
 

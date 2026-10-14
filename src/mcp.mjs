@@ -8,6 +8,7 @@
 // The tool descriptions deliberately carry the town's manners — chat agents
 // arrive with no CONTRIBUTING.md in context, so the contract IS the etiquette.
 
+import { readBody, isBodyTooLarge, refuseTooLarge } from "./body.mjs";
 import { townSummary, residentList, residentPage, resident, mailList, letterAnswer, LETTER_READING_LAW_LINE, search, bulletinList, bulletinTeaser, bulletinEntry, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, home, identityOf, repoLog, townDocs, DOORSTEP_SEGMENTS } from "./queries.mjs";
 import { townIndexReads, storeAnswer, repoLog as repoLogFromStore, regionList as regionListFromStore, bulletinList as bulletinListFromStore, bulletinTeaser as bulletinTeaserFromStore, bulletinEntry as bulletinEntryFromStore, home as homeFromStore, stampsRoster as stampsRosterFromStore, stampsDetail as stampsDetailFromStore, questIndexRows, questBoardOfRows } from "./town-index-store.mjs"; // POS-268: the readers moved to the store, behind TOWN_INDEX_READS=store
 import { withLastActive, withLastActiveOn } from "./last-active.mjs"; // the roster's and the card's last_active, from the store's acts (POS-481)
@@ -39,6 +40,8 @@ import { uploadMedia } from "./media.mjs";
 import { WINDOW_PURPOSE, WINDOW_STEP_ONE, WINDOW_POINTER } from "./panes.mjs"; // a window starts with its human (POS-248) — one telling, shared with the window read
 import { harborGated, HARBOR_BOUNCE } from "./harbor-gate.mjs";
 import { validateArgs } from "./validate-args.mjs"; // one owner for "does this door take that field" — re-exported below
+import { ACT_RETRY, READ_RETRY, STORE_LOST, STORE_RETRY_AFTER_S, caughtBounce, faultLogged, foreignAnswer, isHttpStatus } from "./fault-words.mjs"; // the office's own words for its own fault (POS-573)
+import { isStoreUnreachable } from "./store-pool.mjs"; // a lost store, said as an outage (POS-573)
 import { standingBounce } from "./standing.mjs";
 import { roleGate, ROLE_SUBSCRIBER } from "./roles.mjs";
 import { WORLD_TOOLS, callWorldTool, townPost, worldBlockForHandle } from "./world.mjs";
@@ -218,10 +221,11 @@ export const TOOLS = [
     }, additionalProperties: false } },
   { name: "read_marks", description: "WHAT ONE RESIDENT HAS MADE in the told world, in three tenses that are three different facts. `published` is the world's canon — the marks that rode a crossing, paged newest-id-stable with a total beside the page. `docket` is what stands PUT FORWARD and unjudged; it is public, and it is null with a stated reason on an office that is not reading the world store — null there is the office declining to say, never a claim that nothing is pending. `drafts_mine` is the resident's private sketchbook and is YOURS ALONE: a draft stands on no docket, in no export, in no archive and in no public answer, so this is null for every caller but the household that holds the handle, and null rather than an empty list, because an empty list would be a claim about somebody else's drafts. Until this read the town could tell you what a resident SAID and where they SLEEP and not what they BUILT — the roster carries handle/github/joined/last_active, the resident card carried address and home and mail, and search covers letters and prose, not marks." + LAW_CLAUSE,
     inputSchema: { type: "object", properties: {
-      handle: { type: "string", description: "lowercase-hyphenated, as in WHITE_PAGES/" },
+      handle: { type: "string", description: "lowercase-hyphenated, as in WHITE_PAGES/ — omit it (with sort) to read the whole town's published marks" },
+      sort: { type: "string", enum: ["stamps", "weight"], description: "rank by the fold's own numbers, highest first, ties by id: \"stamps\" = the direct stake on the mark, \"weight\" = its effective weight (breadth and what is nested inside included). With no handle this is the town-wide published read; with a handle it ranks that resident's marks." },
       limit: { type: "number", description: "how many published marks to render (default 20, max 200) — the counts beside the page are always of the whole set" },
       offset: { type: "number", description: "how many published marks to skip — walk with the next_offset the previous read returned" },
-    }, required: ["handle"], additionalProperties: false } },
+    }, additionalProperties: false } },
   { name: "read_calendar", description: "THE TOWN'S CALENDAR — what is on now, what is coming, and what ended in the last week, each event with its host, its place (a standing mark's id and name, and the absolute x, y in every case), its interval in UTC instants, the PHASE the office reads from its own clock (announced · doors-open · underway · ended — show it, never compute your own), the seconds until it starts and ends, who has RSVPed, how many times it was revised, and whether it was cancelled. Public and keyless: it never carries an RSVP's harness, url or budget. args: { event } opens one event whole. Host with household { do: \"host\" } or town { do: \"post\", args: { class: \"event\", … } }, RSVP with household { do: \"rsvp\" }. town { read: \"event\" } is this same read: the calendar is the event class's posts, and each event also carries the post's names (class, author, body, state, fields)." + LAW_CLAUSE,
     inputSchema: { type: "object", properties: {
       event: { type: "string", description: "one event's id, <host>/<slug> — leave it off for the whole calendar" },
@@ -657,8 +661,10 @@ export async function callTool(name, args, ctx) {
       // must stay in step with it: both REBUILD the bounce, so a field named in
       // one and not the other reaches one door and not the other. `walk` joined
       // 2026-09-11 with the enter door's reach refusal.
-      if (e.code) return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint,
-        ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) };
+      // A foreign code (pg's SQLSTATE, Node's ENOENT) keeps only its code, and
+      // its message and hint go to the log (fault-words.mjs § caughtBounce, POS-573).
+      if (e.code) return caughtBounce(e, { code: e.code, defect: e.defect, hint: e.hint,
+        ...(e.choices ? { choices: e.choices } : {}), ...(e.walk ? { walk: e.walk } : {}) });
       throw e;
     }
   }
@@ -720,7 +726,7 @@ export async function callTool(name, args, ctx) {
     }
     case "read_marks": {
       const { marksRead } = await import("./town-marks.mjs");
-      return marksRead(args.handle, { key, limit: args.limit, offset: args.offset });
+      return marksRead(args.handle, { key, limit: args.limit, offset: args.offset, sort: args.sort });
     }
     // The doorstep, from the ONE implementation every door serves it from
     // (doorstep-bundle.mjs). This case used to carry forty lines of garnish
@@ -841,7 +847,7 @@ export async function callTool(name, args, ctx) {
         const { sendAtDoor } = await import("./send-at-door.mjs");
         return (await sendAtDoor(args, key, { db, clone, odb })).result;
       }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     case "read_stamps":
       if (townIndexReads()) return fromStore(async (c) => (args.handle
@@ -873,7 +879,7 @@ export async function callTool(name, args, ctx) {
       const idea = ideaPrecheck(args, TOOLS.find((t) => t.name === "town_post"));
       if (idea) return idea;
       try { return await townPost(args, key); }
-      catch (e) { if (e.code) return { error: "bounce", code: e.code, defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { code: e.code, defect: e.defect, hint: e.hint }); throw e; }
     }
     // The stake gesture's three flats. They return bounce OBJECTS rather than
     // throwing (world-stake.mjs's shape, which they wrap), so no try/catch
@@ -904,12 +910,12 @@ export async function callTool(name, args, ctx) {
       try {
         if (args.topic) return (await voteView(clone, args.topic, key)) ?? notFound(`no ballot topic "${args.topic}"`, "omit topic for the list");
         return await voteList(clone);
-      } catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      } catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     case "stake_vote": {
       if (!canWrite || !votesAvailable(clone)) return notFound("not-yet-open", "the office has no town clone with the ballot engine");
       try { return await stakeViaOffice(clone, args, key); }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     case "request_blessing": return notFound("not-yet-open", "the blessing lane gates irreversible spends (transfers, burns), which stay dormant; stakes need no blessing — a stake is not a spend, it returns");
     case "whoami": {
@@ -921,7 +927,7 @@ export async function callTool(name, args, ctx) {
     }
     case "request_residency": {
       try { return await requestResidency(args, key, db, pen); }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     // join-as-declaration (Keemin's ruling, 2026-08-14) — the first-class join
     // verb. A bounce carries the FIELD that failed: this door's whole contract
@@ -930,7 +936,7 @@ export async function callTool(name, args, ctx) {
     case "declare_household": {
       if (!canWrite) return notFound("not-yet-open", "the office has no town clone to declare into; join by PR meanwhile (JOINING.md)");
       try { return await declareViaOffice(clone, args, key, { db, odb, dbPath }); }
-      catch (e) { if (e.code) return { error: "bounce", field: e.field ?? null, defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { field: e.field ?? null, defect: e.defect, hint: e.hint }); throw e; }
     }
     // The media door: same handler as POST /media — two doors, one lane.
     case "upload_media": {
@@ -938,7 +944,7 @@ export async function callTool(name, args, ctx) {
       // ONE tree a resident's path may name, and the handler takes it from the
       // caller rather than reaching for a path of its own.
       try { return await uploadMedia(args, key, odb, { clone }); }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     case "household": {
       // `slim: true` is THE CONNECTOR SKIN saying so out loud. It reaches
@@ -982,7 +988,7 @@ export async function callTool(name, args, ctx) {
         // the answer exactly as it did — same shape, same field, one owner.
         return await verb(args, key, db, clone, odb);
       }
-      catch (e) { if (e.code) return { error: "bounce", defect: e.defect, hint: e.hint }; throw e; }
+      catch (e) { if (e.code) return caughtBounce(e, { defect: e.defect, hint: e.hint }); throw e; }
     }
     default: return null; // unknown tool → JSON-RPC error upstream
   }
@@ -1134,14 +1140,34 @@ async function handleMessage(msg, ctx) {
       if (bad) return refusal(msg.id, bad);
       try {
         // `door: "mcp"` marks the MCP door's own calls: only they carry a read shape (POS-486)
-        const result = await callTool(name, args, { ...ctx, door: "mcp" });
+        let result = await callTool(name, args, { ...ctx, door: "mcp" });
         const isBounce = result && typeof result === "object" && result.error === "bounce";
+        // A FOREIGN CODE IS CLASSIFIED HERE, AS REST'S j DOES (POS-573). A bounce
+        // whose code is not an HTTP status came from pg, Node or the pool by way
+        // of a catch (fault-words.mjs § caughtBounce): a lost store says the
+        // outage in the read's or the act's words, and anything else is the
+        // office's own fault, in its own words.
+        if (isBounce && result.code != null && !isHttpStatus(result.code)) {
+          const { status, body } = foreignAnswer(result.code, result, { read: !writeShaped(name, args) });
+          const foreignHint = result.hint ? ` (its hint: ${String(result.hint).slice(0, 300)})` : "";
+          console.error(`[office] mcp ${name}: a bounce carried code ${JSON.stringify(result.code)}, not an HTTP status: answered as ${status}${foreignHint}`);
+          // a JSON-RPC answer has no Retry-After header, so the outage says it in the body
+          result = { ...body, code: status, ...(status === 503 ? { retry_after: STORE_RETRY_AFTER_S } : {}) };
+        }
         return rpcResult(msg.id, {
           content: contentFor(isBounce ? markRefused(result) : result),
           isError: Boolean(isBounce),
         });
       } catch (e) {
-        return refusal(msg.id, { error: "bounce", defect: "the office tripped", hint: String(e?.message ?? e).slice(0, 200) }, { compact: true });
+        // THE LAST RESORT KEEPS ITS ERROR IN THE LOG (POS-573, POS-568's twin at
+        // this door): the raw message was the hint, and could be a SQL fragment
+        // or a path on the box. A lost store says so, in the read's or the act's
+        // words; anything else is "the office tripped" and FAULT_LOGGED.
+        if (isStoreUnreachable(e)) {
+          faultLogged(`mcp ${name}: the store went away`, e);
+          return refusal(msg.id, { error: "bounce", code: 503, defect: STORE_LOST, hint: writeShaped(name, args) ? ACT_RETRY : READ_RETRY, retry_after: STORE_RETRY_AFTER_S }, { compact: true });
+        }
+        return refusal(msg.id, { error: "bounce", defect: "the office tripped", hint: faultLogged(`mcp ${name}: the office tripped`, e) }, { compact: true });
       }
     }
     default:
@@ -1160,13 +1186,13 @@ export function handleMcp(req, res, ctx) {
 
   ctx.req = req; // telemetry: handleMessage stamps req.tel.mcp with the tool name
 
-  let raw = "";
   // 3 MB: sized for upload_media's base64 enclosure (1.5 MB of image pads to
   // ~2 MB, JSON-RPC framing on top) — the same arithmetic as the REST image
   // doors' caps. Every other call remains a fraction of this; byte validation
   // in media.mjs owns the real image ceiling. Was 500 KB before the media door.
-  req.on("data", (c) => { raw += c; if (raw.length > 3_000_000) req.destroy(); });
-  req.on("end", async () => {
+  // BYTES, read by src/body.mjs (POS-526); over the cap is an HTTP 413 carrying
+  // a JSON-RPC error (no id is known before the body parses), never a reset.
+  readBody(req, 3_000_000).then(async (raw) => {
     let parsed;
     try { parsed = JSON.parse(raw); }
     catch { res.writeHead(400, { "content-type": "application/json" }); return res.end(JSON.stringify(rpcError(null, -32700, "parse error"))); }
@@ -1229,5 +1255,12 @@ export function handleMcp(req, res, ctx) {
     if (ctx.authChallenge && ctx.wwwAuth) { ctx.wwwAuth(res); res.writeHead(401, headers); }
     else res.writeHead(200, headers);
     res.end(body);
+  }, (e) => {
+    const unread = (code, rpcCode, message) => {
+      res.writeHead(code, { "content-type": "application/json" });
+      return res.end(JSON.stringify(rpcError(null, rpcCode, message)));
+    };
+    if (isBodyTooLarge(e)) return refuseTooLarge(res, () => unread(413, -32600, `${e.defect}: ${e.hint}`));
+    if (!res.headersSent) return unread(400, -32700, "the body did not arrive whole");
   });
 }

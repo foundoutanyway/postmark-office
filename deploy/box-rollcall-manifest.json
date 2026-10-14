@@ -144,7 +144,34 @@
         "kind": "unit_trigger",
         "stale_after_minutes": 45
       },
-      "stale_means": "the town clone stops pulling (the write pen and declare read a stale town), the mint catch-up and welcome pass stop, the settlements row stops following the keeper's tag, the household-keys line stops being written, and the panes freeze. The allowance is three ticks."
+      "stale_means": "the town clone stops pulling (the write pen and declare read a stale town), the mint catch-up and welcome pass stop, the settlements row stops following the keeper's tag, the household-keys line stops being written, and the panes freeze. The allowance is three ticks.",
+      "outcome": {
+        "history_path": "/srv/postmark-harbor/office-keep.jsonl",
+        "kind": "keep_steps",
+        "steps": [
+          "registry",
+          "settle",
+          "standing",
+          "gangway",
+          "mint",
+          "welcome",
+          "bugstage",
+          "ballots",
+          "verify",
+          "commit",
+          "push",
+          "sync",
+          "rollback",
+          "settlements",
+          "positions",
+          "hhkeys",
+          "hhkeys_log"
+        ],
+        "step_refused_runs": 3,
+        "stale_after_minutes": 45,
+        "why": "POS-524 (Wright 2026-10-10 / 2026-10-13). Most of the keeping tick is deliberately NON-FATAL: a step prints a line and the tick goes on, so a step could fail on every tick forever while this unit read green. deploy/office-keep.sh now leaves ONE receipt line per run (deploy/keep-history.mjs) naming every step: ok, refused, skip or notrun, with a reason from a fixed vocabulary. This row judges each soft step on its own: N=3 consecutive SCHEDULED receipts without ok is an alarm. Only that step’s scheduled ok clears it; skip, notrun and a missing status never do. Hand runs (postmark-office-keep-by-hand.service, source by-hand) neither extend nor clear a streak, so a manual success cannot mask the timer; a line with no source is an older scheduled one; an unknown source clears nothing. Starting postmark-office-keep.service itself by hand is recorded as scheduled: an accepted limitation, documented in deploy/DEPLOY.md. A torn or unreadable line, or an unknown source, written after the last scheduled receipt alarms until a later valid scheduled receipt recovers it: a hand run can neither hide it nor erase it. A stale scheduled receipt is never healthy. The fatal steps (lock, pull, fetch, snapshot, publish) are recorded for provenance; they already fail the unit. The path is a proposal for the owner’s box review: the directory must exist and be writable by meepo.",
+        "means": "A keeping-tick step has not completed on three scheduled ticks running, or its receipts are missing, unreadable or stale: read the newest line of /srv/postmark-harbor/office-keep.jsonl and the unit’s journal for that step’s own message. INSTALL-DAY NOTE: this row is EXPECTED to read ALARM-outcome until the first tick after deploy writes the log, and it clears itself then."
+      }
     },
     {
       "unit": "postmark-town-index.timer",
@@ -204,7 +231,7 @@
         "stamp_field": "generated_at",
         "stale_after_minutes": 30
       },
-      "stale_means": "THE WATCHMAN ITSELF HAS STOPPED, and it is the one failure the sentinel is structurally incapable of reporting — its own header says so: 'it cannot see its own death'. A dead sentinel presents as a permanently green board, which is worse than no board. This row is the answer to that, and it is the single most load-bearing row in this file. Since POS-556 (2026-10-10) the sentinel is also the box's ONE alarm route to Discord and the board /fleet reads, and it carries the root disk (probe disk_root, DOWN at 85%), which postmark-disk-watch used to shout on its own timer, and the meeps (probe meeps, from /srv/postmark-sentinel/meeps.json, which Wright's desktop watcher lands every 5 minutes; STALE past 15): a dead sentinel is now a blind disk and unwatched meeps as well. The allowance is three ticks."
+      "stale_means": "THE WATCHMAN ITSELF HAS STOPPED, and it is the one failure the sentinel is structurally incapable of reporting — its own header says so: 'it cannot see its own death'. A dead sentinel presents as a permanently green board, which is worse than no board. This row is the answer to that, and it is the single most load-bearing row in this file. Since POS-556 (2026-10-10) the sentinel is also the box's ONE alarm route to Discord and the board /fleet reads, and it carries the root disk (probe disk_root, DOWN at 85%), which postmark-disk-watch used to shout on its own timer, and the meeps (probe meeps, from /srv/postmark-sentinel/meeps.json, which Wright's desktop watcher lands every 5 minutes; STALE past 15), and since POS-619 the law pen (probe law_pen, from /srv/world2-lab/state/ingest-law.json; DOWN on a refused or failed law run): a dead sentinel is now a blind disk, unwatched meeps and an unwatched law pen as well. The allowance is three ticks."
     },
     {
       "unit": "postmark-settlement.timer",
@@ -503,7 +530,7 @@
         "stamp_field": "at",
         "stale_after_minutes": 45
       },
-      "stale_means": "The rulebook copy stops advancing and the store answers under a law the tree has amended. This is the alarm postmark#2893 asked for, and it is worth saying WHY it had to be asked for: the designed guard is the clearing's refusal on a NULL world-law pin, and a pin that was written once and then froze is never null — so between 09-05 and 09-19 nothing anywhere went red while law_projection fell 37 commits behind. The allowance is 45 minutes, three ticks: one missed fire is weather, three is the rail. THIS FILE IS THIS UNIT'S ALONE and that is the point — the parked poll writes /srv/world2-lab/state/ingest.json, so a heartbeat here can never go green on a run that was not the law pen's. Read the `law.sha` line beside the stamp: a fresh `at` with an ALARM-failed exit means the pen ran and could not ingest, and the detail names which."
+      "stale_means": "The rulebook copy stops advancing and the store answers under a law the tree has amended. This is the alarm postmark#2893 asked for, and it is worth saying WHY it had to be asked for: the designed guard is the clearing's refusal on a NULL world-law pin, and a pin that was written once and then froze is never null — so between 09-05 and 09-19 nothing anywhere went red while law_projection fell 37 commits behind. The allowance is 45 minutes, three ticks: one missed fire is weather, three is the rail. THIS FILE IS THIS UNIT'S ALONE and that is the point — the parked poll writes /srv/world2-lab/state/ingest.json, so a heartbeat here can never go green on a run that was not the law pen's. Read the `law.sha` line beside the stamp: a fresh `at` with an ALARM-failed exit means the pen ran and could not ingest, and the detail names which. A law the parser would read diminished is REFUSED whole (POS-619): status `law-failed`, and the state's own `refusal` field carries the REFUSED line and the lint's sentence per mark; every law update waits until the mark is fixed. site-sentinel's law_pen probe pages on the same file (DOWN on any failed run, STALE past 45 min), deliberately duplicating this row from the alarm route."
     },
     {
       "unit": "postmark-earpiece.timer",

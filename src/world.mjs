@@ -68,7 +68,7 @@ import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // the world gr
 import { emissionsEnabled } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
 import { world2Enabled } from "./world2-acts.mjs"; // the write-path closure: is the shadow mirror on at all
 import { VESSEL_HANDLE, ridesTheVessel } from "./dynamic-entities.mjs"; // the aboard test, one home for two readers
-import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedGoverningDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
+import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, walkFenceRefusal, movementV2Enabled, roadTerms, storedDepartures, storedGoverningDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
 import { arrivedNotice, doorstepTransport, isVehicleStop, rideStateFrom, stopAnnotationFor, stopUnderfoot, transportAt } from "./world-ride.mjs"; // #2986 § 11: the derived visibility of a vehicle, off the same timetable; POS-165: the walk verb asks the same predicate the ride verb does
 import { findMarks } from "./world-find.mjs"; // find a mark by name from anywhere (2026-09-26)
 import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as presenceEveryone, PRESENCE_DIALS } from "./dynamic-presence.mjs"; // stage 2: residents revealed to each other
@@ -92,9 +92,10 @@ export const WORLD_CLONE = process.env.WORLD_CLONE
 // a clone, and pulls in graphology). Re-exported here so every caller that has
 // always read `currentCrossing` from `world.mjs` still does.
 export { currentCrossing, CROSSING_DERIVATION } from "./crossings.mjs";
-import { arrivesAt, CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { arrivesAt, CROSSING_DERIVATION, crossingSailsAt, currentCrossing } from "./crossings.mjs";
 import { myMarksRefused } from "./claim-effects.mjs"; // POS-241 part 5: my-marks hears what the candle refused
 import { ringOf, ringBox, ringAgrees, ringMovedTo, RING_SHAPE_SENTENCE, RING_CLAIM_SENTENCE } from "./ring-box.mjs"; // POS-322: a mark's box is derived from its ring
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 // ── engine + world cache ─────────────────────────────────────────────────────
 let _mods = null;         // { verbs, build }
@@ -181,6 +182,46 @@ async function world() {
   _worlds.set(selected.ref, { sha: selected.sha, world: assembled });
   _places.clear(); // place words are a fold over these marks — a new world, new names
   return assembled;
+}
+
+// ── WHAT THIS STANDPOINT SEES INSIDE A DUNGEON (WLD-5, Darko 2026-10-13 20:31) ──
+//
+// The world tools' ONE function, `standpointSight` (postmark-world
+// tools/portals.mjs), asked here for every resident read: orient, the eyes,
+// investigate (the apex's mark: focus) and find. The spectator World page asks
+// the same function, and this office keeps no copy of the rule. From outside, a
+// dungeon reads as its own mark alone; inside, the room you entered and what it
+// holds. A household's own marks are always its own to see.
+//
+// A world with no dungeon comes back as the SAME object from the function's
+// first, standpoint-free answer, so no ledger is read for it, and a clone that
+// predates the function has no dungeon class to hide anything with.
+async function sightFor(w, handle, key = null) {
+  const { verbs } = await mods();
+  if (typeof verbs.standpointSight !== "function" || verbs.standpointSight(w, {}) === w) return w;
+  const who = String(handle ?? "").trim();
+  let stack = [];
+  if (who) {
+    const { crossingLaw } = await import("./world-crossings.mjs");
+    const { crossingDeps } = await import("./world-apex.mjs");
+    const law = await crossingLaw(WORLD_CLONE).catch(() => null);
+    stack = law?.thresholds ? await occupiedNowBy(who, law.thresholds, crossingDeps()).catch(() => []) : [];
+  }
+  return sightedWorld(w, { verbs, handle: who, stack, key });
+}
+
+/** The pure half of sightFor, so a test can hand it the clone's verbs: the
+ *  standpoint's stack becomes the occupancy the one function reads, and the
+ *  key's own residents keep their marks. */
+export function sightedWorld(w, { verbs, handle = null, stack = [], key = null } = {}) {
+  if (typeof verbs?.standpointSight !== "function") return w;
+  const who = String(handle ?? "").trim();
+  const own = new Set([...(key?.handles ?? []), ...(who ? [who] : [])]);
+  return verbs.standpointSight(w, {
+    occupancy: who ? new Map([[who, [...stack]]]) : null,
+    handle: who || null,
+    keep: (m) => own.has(m.by),
+  });
 }
 
 // The Origin — {0,0}, where the ferry lands; the grid origin and the default
@@ -1141,7 +1182,7 @@ export const MISTS_RETRY_AFTER_S = 30;
 // ring crosses it, and each piece is kept by which side of the other ring its
 // middle stands on; a piece lying along the other ring's boundary is shared ground,
 // not new. An amend that neither moves nor widens adds nothing.
-const groundRingOf = (mark) => {
+export const groundRingOf = (mark) => {
   const ring = ringOf(mark?.points);
   if (ring) return ring;
   const hw = (Number(mark?.extent?.w) || 0) / 2, hh = (Number(mark?.extent?.h) || 0) / 2;
@@ -1527,7 +1568,7 @@ export async function worldSay(args = {}, key = null) {
       withNoticeBoard(r);
       return r;
     } catch (e) {
-      return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+      return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
     }
   }
   const choice = chooseStandpoint({ handle: args.handle }, key);
@@ -1554,7 +1595,7 @@ export async function worldSay(args = {}, key = null) {
     withNoticeBoard(r);
     return r;
   } catch (e) {
-    return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+    return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
   }
 }
 
@@ -1657,7 +1698,7 @@ export async function worldSayHuman(args = {}, key = null) {
     withNoticeBoard(r);
     return r;
   } catch (e) {
-    return { error: "bounce", defect: "the world door tripped", hint: String(e?.message ?? e).slice(0, 200) };
+    return { error: "bounce", code: 500, defect: "the world door tripped", hint: faultLogged("the world door tripped (say)", e) }; // POS-578: its error goes to the log, and it is the office's 500, not the request's 422
   }
 }
 
@@ -1813,7 +1854,7 @@ export async function worldAir(oriented) {
 export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce; // a multi-resident key must name a handle
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const { verbs } = await mods();
   const at = choice.coords ?? await standCoords(choice.handle, w);
   const crossing = crossingOf(args);
@@ -1839,7 +1880,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   const { note, unavailable: noteUnavailable } = choice.handle ? await noteForHandle(key, choice.handle) : { note: null };
   // the primer rides every orient — the one page to read before a first mark
   // (the door's own pointer; the full serve-on-first-arrival design stays filed)
-  const primer = "https://raw.githubusercontent.com/keeminlee/postmark-world/main/WORLD/FURNISHING.md";
+  const primer = "https://raw.githubusercontent.com/postmark-town/postmark-world/main/WORLD/FURNISHING.md";
   // Who else is standing here (Stage 2, WORLD_PRESENCE). `presentNear` returns
   // null on its first line with the flag off, so this spreads nothing and the
   // answer is the one orient has always given.
@@ -2069,7 +2110,7 @@ export async function markRecords(ids = [], w = null) {
 export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce;
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const { verbs } = await mods();
   const at = choice.coords ?? await standCoords(choice.handle, w);
   const crossing = crossingOf(args);
@@ -2090,7 +2131,12 @@ export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
   // thickness nobody was comparing against a second source.
   //
   // world2-serve.mjs:570 has always had the right form. This is the older twin.
-  const r = verbs.openYourEyes({ x: at.x, y: at.y, name: args.name }, w, { crossing });
+  // THE ACTING RESIDENT RIDES IN THE OPTIONS (WLD-9, formerly POS-528): the bare read
+  // carries the selected resident's own home outside the 12-mark telling budget, and
+  // the engine can only do that if it is told who is acting. `choice.handle` is the
+  // handle chooseStandpoint SELECTED (an embodied read only; a spectator's x/y has
+  // none), never `args.name` and never a key's first handle.
+  const r = verbs.openYourEyes({ x: at.x, y: at.y, name: args.name }, w, { crossing, actor: choice.handle ?? null });
   // tell is a lazy thunk on the verb's return — render it here so the JSON
   // skin carries the prose (a function would vanish in serialization).
   const engineTelling = typeof r.tell === "function" ? r.tell() : r.tell ?? null;
@@ -2298,7 +2344,7 @@ export async function markImageBytes(url, { fetchImpl = null, maxBytes = INVESTI
 
 export async function worldInvestigate(args = {}, key = null) {
   if (!args.mark) return { error: "bounce", defect: "which mark?", hint: "pass mark: '<by>/<slug>' (ids in /world/state; the telling's [id] tags)" };
-  const w = await world();
+  const w = await sightFor(await world(), chooseStandpoint(args, key).handle ?? null, key);
   const { verbs } = await mods();
   const depth = Number.isFinite(Number(args.depth)) ? Number(args.depth) : 1;
   const r = verbs.investigate(String(args.mark), w, { depth });
@@ -2407,7 +2453,7 @@ export async function worldFind(args = {}, key = null, { words } = {}) {
     hint: "name the mark you are looking for: world { find: \"snug\" } — a name, a slug or an id (GET /world/find?q=snug over plain HTTP)" };
   const choice = chooseStandpoint({ handle: args.handle }, key);
   if (choice.bounce) return choice.bounce;
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const at = choice.handle ? await standCoords(choice.handle, w) : null;
   let service = null;
   try {
@@ -2474,7 +2520,7 @@ export async function thingStandsBlock(id, w, r) {
     ]);
     const rows = await standsRowsFromStore(id);
     if (!rows) return null; // the register was not asked — the same answer an absent store gave
-    const { attachments, journal } = rows;
+    const { attachments, journal, amends } = rows;
     if (!attachments.some((a) => a.target === id)) return null; // never held — nothing new to say
     const marks = w?.marks ?? [];
     const centreOf = (mid) => marks.find((m) => m.id === mid)?.at ?? null;
@@ -2493,6 +2539,17 @@ export async function thingStandsBlock(id, w, r) {
         try { const { stanceRows } = await import("./world-stance.mjs"); return await stanceRows(); }
         catch { return []; }
       })(),
+      // …and whether an amend from the latest drop is on the docket (POS-451),
+      // read in the same snapshot: the re-site is promised over a filed amend,
+      // never over the drop.
+      amends: amends ?? null,
+      // …and, for an accepted stranger's set-down with no amend on the docket,
+      // the escrow behind the mark (the stake read), which says what puts the
+      // author's draft forward. Asked only in that branch.
+      escrowOf: async (mid) => {
+        const sr = await callWorldStakeTool("world_stake_read", { mark: mid });
+        return Number.isFinite(Number(sr?.escrow)) ? Number(sr.escrow) : null;
+      },
       standpointOf: async (h) => {
         const s = await residentStandpoint(h, w).catch(() => null);
         return s?.placed ? { x: s.x, y: s.y } : null;
@@ -2627,6 +2684,9 @@ export async function pointWithinMarkFn() {
 }
 
 export async function worldStateRaw() { return (await world())._raw.worldState; }
+
+/** Every canon mark in the one world — for a read that filters by class (WLD-27: the map's chests). */
+export async function worldMarksAll() { return (await world()).marks ?? []; }
 
 // WHERE EACH MARK'S CENTRE IS, in the fold the witness stamp reads (witnessStampAt
 // § centreOf): the inverse every reader of an act's anchor needs. The save's
@@ -3184,7 +3244,7 @@ async function foldConstants() {
 }
 
 // The town's parcel dial as a box, for the door's ring rule (POS-322).
-async function parcelDial() {
+export async function parcelDial() {
   const side = (await foldConstants()).PARCEL_EXTENT_M ?? 25;
   return { w: side, h: side };
 }
@@ -3393,7 +3453,7 @@ export async function markStandsOnOwnGround(clean, canon = null) {
  * the same fields the exec answers with — `branch` and `commit` become `seq`,
  * because under the flag the receipt for a write is its line in the log.
  */
-async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
+async function journalLeaveMark(clean, { crossing = currentCrossing(), guard = null } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${clean.by}/${clean.slug}`;
   const canon = canonForGuards();
@@ -3679,8 +3739,8 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
     let row;
     try {
       row = laneFlipped("mark")
-        ? await appendActFlipped(null, entry)
-        : await appendJournal(null, entry);
+        ? await appendActFlipped(null, entry, guard ? { guard } : {})
+        : await appendJournal(null, entry, guard ? { guard } : {});
     } catch (err) {
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
@@ -3754,7 +3814,7 @@ async function journalLeaveMark(clean, { crossing = currentCrossing() } = {}) {
 }
 
 /** withdraw, as one later entry. The terminal supersession (edit-law § withdraw) — nothing is deleted, a row says it ended. */
-async function journalWithdraw({ by, slug, household }, { crossing = currentCrossing() } = {}) {
+export async function journalWithdraw({ by, slug, household, cause = null, guard: asked = null }, { crossing = currentCrossing() } = {}) {
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const id = `${by}/${slug}`;
   const canon = canonForGuards();
@@ -3768,6 +3828,13 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
       const { markStandingStatus, withdrawRetiredRefusal } = await import("./world2-claims.mjs");
       const retired = withdrawRetiredRefusal(id, await markStandingStatus({ slug: id }).catch(() => null));
       if (retired) throw bounce(retired.code, retired.defect, retired.hint);
+      // A SET-DOWN UNIT'S MARK FROM A HOUSE ITS DROPPER HAS LEFT lands here too,
+      // and stays here by ruling (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
+      // WLD-27): the draft or pending claim belongs to the household that filed
+      // it, so the moved dropper's present house does not reach it and nothing is
+      // returned or retracted through it. Once published, the unit comes back by
+      // take-back like any published unit (test/withdraw-dropped-unit.test.mjs §
+      // ORIGINAL HOUSEHOLD). No visibility is widened to make it reachable.
       throw bounce(404, `no mark "${id}" in your world`, "ids are <by>/<slug> — you can withdraw your drafts and your published marks; check world_my_marks");
     }
 
@@ -3785,7 +3852,10 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
     const entry = {
       crossing, actor: by, household, action: ACTION_WITHDRAW,
       object: id, at, witnesses, cls: CLASS_MARK,
-      payload: { by, slug, was_published: wasPublished },
+      // `cause` (WLD-27): a withdrawal the door files because a dropped unit's mark
+      // was taken back or consumed — the author's mark leaves, and the record says
+      // whose act made it leave, so the author is not read as having withdrawn it.
+      payload: { by, slug, was_published: wasPublished, ...(cause ? { cause } : {}) },
       effect: wasPublished
         ? "your sketchbook lets it go now; canon lets it go at the next crossing — the settlement unpublishes it, and its whole life stays in the log"
         : "the draft is gone — it never crossed, so there is nothing to unpublish; its life stays in the log",
@@ -3801,12 +3871,24 @@ async function journalWithdraw({ by, slug, household }, { crossing = currentCros
     // The unflipped arm was `appendJournal(db, entry)` — a sqlite row written
     // here and a Postgres copy queued behind it. The sqlite row is gone, so
     // that call awaits the record and throws exactly as the flipped one does.
+    //
+    // A CHEST IS WITHDRAWN ONLY EMPTY (WLD-27, Wright's independent review F1):
+    // judged under the chest's own lock inside this write's transaction
+    // (chest-lock.mjs § chestEmptyGuard), so no give or stock can slip contents
+    // in behind the decision. Any other mark withdraws exactly as before.
+    const isChest = (live.find((m) => m.id === id) ?? canon.marks.find((m) => m.id === id))?.class === "chest";
+    const chestGuard = isChest ? (await import("./chest-lock.mjs")).chestEmptyGuard({ chest: id }) : null;
+    // `asked` (WLD-27 A): the door's own check that must hold in this same
+    // transaction — the public withdrawal's escrow, read under the mark's lock.
+    const guards = [asked, chestGuard].filter(Boolean);
+    const guard = guards.length ? async (client) => { for (const g of guards) await g(client); } : null;
     let row;
     try {
       row = laneFlipped("mark")
-        ? await appendActFlipped(null, entry)
-        : await appendJournal(null, entry);
+        ? await appendActFlipped(null, entry, guard ? { guard } : {})
+        : await appendJournal(null, entry, guard ? { guard } : {});
     } catch (err) {
+      if (err?.defect && err?.code) throw err;           // the chest guard refused, under its lock — nothing was written
       if (err?.name === "PenUnreachableError")
         throw bounce(503, err.message,
           "this door's pen is the office's record; when it cannot be reached the door refuses rather than writing anywhere else — your mark is exactly as it was, and the withdrawal is safe to make again");
@@ -3910,7 +3992,26 @@ async function placingOnBehalf(by, payload, key, bounce) {
 // family as `_act_id` and `_adopted`), so it reaches the act's payload and the
 // claim's `data` and never a mark file. It is not read off `payload`: a
 // resident cannot claim a drop they did not make by typing the key.
-export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, { setDown = null, mistsCrossing = null } = {}) {
+/**
+ * THE PLACEMENT RECEIPT'S MISTS FORECAST (WLD-38): the one forecast
+ * (mists-forecast.mjs) for this mark's ground, or the named unavailability.
+ * `null` when there is nothing to say — no season on the record, or a season
+ * that never reaches this ground within its schedule.
+ */
+async function placementForecast({ worldClone, w, worldUnread, id, ring, mistsCrossing = null }) {
+  const { forecastMists, mistsEngine, MISTS_FORECAST_UNAVAILABLE } = await import("./mists-forecast.mjs");
+  if (!w) return { unavailable: `${MISTS_FORECAST_UNAVAILABLE}: the world could not be read (${String(worldUnread?.message ?? worldUnread ?? "no world").slice(0, 120)})` };
+  const skeleton = w?._raw?.skeleton ?? undefined;
+  const engine = skeleton?.mists ? await mistsEngine(worldClone) : null;
+  const nowMs = mistsCrossing == null ? Date.now() : Date.parse(crossingSailsAt(mistsCrossing));
+  const f = await forecastMists({ engine, skeleton, footprints: [{ id, ring }], nowMs });
+  if (f.unavailable) return { unavailable: f.unavailable };
+  if (f.season === false || !f.reaches.length) return null;
+  const [r] = f.reaches;
+  return { as_of: f.as_of, fringe: r.fringe, wall: r.wall, says: r.says };
+}
+
+export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, { setDown = null, mistsCrossing = null, dropUnit = null } = {}) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const handles = [...(key?.handles ?? [])];
@@ -4032,7 +4133,16 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // door is a resident household; the town's own class marks arrive by the
     // town's pen, never here. Found 2026-08-22 when a resident's class: home
     // sailed through and the settlement shadow caught it as a would-refuse.
-    if (!residentMayInstantiate(klass))
+    // ── A HELD UNIT SET DOWN IS NOT A RESIDENT PLACING CANDY (WLD-27; Wright,
+    // 2026-10-13T00:09Z). Candy stays off the whitelist: town alone makes it.
+    // The one road a resident's candy mark arrives by is the hold door's drop
+    // (world-hold.mjs § THE UNIT SET DOWN), which hands its own act in as
+    // `dropUnit` — a parameter no caller's payload can set — and the mark it
+    // files must name that very act and label. Anything else carrying class:
+    // candy falls to the whitelist refusal below, exactly as before.
+    const droppedUnit = klass === "candy" && dropUnit != null
+      && payload.dropped === `act:${dropUnit.actId}` && payload.label === dropUnit.label && kind === "sited";
+    if (!droppedUnit && !residentMayInstantiate(klass))
       throw bounce(422, `class "${klass}" is town-only`,
         `residents may instantiate only [${RESIDENT_INSTANTIABLE.join(", ")}] today (#1797) — the class exists in the law, but citing it on your own mark is the town's act, not a resident's`);
   }
@@ -4047,6 +4157,26 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     if (kind !== "sited") throw bounce(422, "a thing is a sited mark", `got kind: ${JSON.stringify(kind)} — a thing stands somewhere and has a footprint`);
     if (ask !== undefined || reward !== undefined || status !== undefined)
       throw bounce(422, "ask/reward/status belong to a bounty notice, not a thing", "a thing carries a body and nothing else it does not want");
+  }
+
+  // ── the chest grammar (WLD-27): a chest is a sited thing with its own three
+  // dials — capacity (the class's default, or a whole number in its range),
+  // portable, and its welcome. Each is optional; an absent one is the class's.
+  let chestFields = null;
+  if (klass === "chest") {
+    if (kind !== "sited") throw bounce(422, "a chest is a sited mark", `got kind: ${JSON.stringify(kind)} — a chest stands somewhere and has a footprint`);
+    const { capacityOf, WELCOMES } = await import("./world-stacks.mjs");
+    const dials = classDials("chest");
+    chestFields = {};
+    if (payload.capacity !== undefined) chestFields.capacity = capacityOf(payload.capacity, dials); // throws the 422 naming the range
+    if (payload.portable !== undefined) {
+      if (typeof payload.portable !== "boolean") throw bounce(422, "portable is true or false", "a fixed chest — a bowl — is portable: false; leave it off to be carried");
+      chestFields.portable = payload.portable;
+    }
+    if (payload.welcome !== undefined) {
+      if (!WELCOMES.includes(String(payload.welcome))) throw bounce(422, `welcome is ${WELCOMES.join(" or ")}`, "open (the default) lets anyone take from it; closed keeps it to your household");
+      chestFields.welcome = String(payload.welcome);
+    }
   }
 
   if (klass === "bounty") {
@@ -4120,7 +4250,9 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   const classFields = klass === undefined ? {}
     : klass === "bounty"
       ? { class: klass, ask: String(ask).trim(), reward: Number(reward), status: status === undefined ? "open" : String(status).trim() }
-      : { class: klass };
+      : klass === "chest" ? { class: klass, ...chestFields }
+        : klass === "candy" ? { class: klass, label: String(payload.label), dropped: String(payload.dropped) }
+          : { class: klass };
   const clean = { slug, kind, at, extent, points, body: String(body).trim(), slot, value, parent_id, by, household, date: new Date().toISOString(),
     ...classFields, ...(image !== undefined ? { image } : {}), ...(payload.amend === true ? { amend: true } : {}),
     ...(payload.preview === true ? { preview: true } : {}),
@@ -4133,36 +4265,36 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // rule on it (the ground question is a canon question). The ledger move is
     // still the stake verb's; this is the declaration saying what was asked for.
     ...(payload.stamps === undefined || payload.stamps === null ? {} : { stamps: stakeLands }) };
-  // ── NO NEW GROUND BEHIND THE MISTS (POS-468 B) ───────────────────────────
-  // From the Mists' first crossing, a mark may not be placed, nor moved by its
-  // amend, onto ground behind the wall: the wall hides everything behind it,
-  // and a mark there would be a way to stand something where no one can see or
-  // reach. Its whole ground is asked (its outline, else its box), here after
-  // every other judgment and before either pen writes. Marks already standing
-  // are not touched by this; only a write that would put ground behind the wall
-  // is refused. No Mists, a clone without them, or a world that will not load:
-  // no check at all.
+  // ── THE MISTS ON THE PLACEMENT RECEIPT (WLD-38; was POS-468 B's veto) ─────
+  // A sited or parcel mark's whole ground (its outline, else its box) is asked
+  // the Mists forecast here, after every other judgment and before either pen
+  // writes; the answer rides the receipt as `mists`. Nothing is refused for the
+  // Mists any more — see below. A parcel whose dial cannot be read has unknown
+  // ground, and says so rather than guessing a box.
+  let mistsWarning = null;
   if (kind === "sited" || kind === "parcel") {
-    const box = kind === "parcel" ? (await parcelDial().catch(() => ({ w: 25, h: 25 }))) : extent;
+    let box = extent, dialUnread = null;
+    if (kind === "parcel") { try { box = await parcelDial(); } catch (e) { dialUnread = e; } }
     const hw = (Number(box?.w) || 0) / 2, hh = (Number(box?.h) || 0) / 2;
     const ground = ringOf(points) ? ringOf(points)
       : [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([dx, dy]) => ({ x: Number(at.x) + dx, y: Number(at.y) + dy }));
-    // AN AMEND IS ASKED ONLY ABOUT THE GROUND IT ADDS. The town's own great marks
-    // (its sea, its channel, the root's box) already reach behind the wall, and
-    // re-filing one in place must not be refused for ground it always held: so the
-    // wall is asked only about the points of the new ground that stand outside the
-    // mark's old footprint. An amend that neither moves nor widens it asks nothing.
-    let w = null;
-    try { w = await world(); } catch { w = null; }
-    const old = payload.amend === true ? (w?.marks ?? []).find((m) => m.id === `${by}/${slug}`) ?? null : null;
-    const fresh = mistsNewGround(old, ground);
-    const seen = fresh.points.length || fresh.edges.length
-      ? await mistsGroundCheck(worldClone, async () => w?._raw?.skeleton ?? null, fresh, mistsCrossing ?? currentCrossing())
-      : null;
-    if (seen?.unreadable) throw bounce(503, MISTS_UNREADABLE,
-      `the office could not read the world or its engine to see where the wall of the Mists stands, so it will not place this mark until it can. Nothing was written; send the same request again after ${MISTS_RETRY_AFTER_S} seconds (Retry-After).`);
-    if (seen?.wall) throw bounce(422, "this ground stands behind the wall of the Mists",
-      `a mark may not be placed or moved behind the wall while the Mists stand: its ground reaches (${seen.wall.x}, ${seen.wall.y}), which no one can see or reach. Choose ground on the clear side of the wall; marks already standing stay as they are.`);
+    // An amend is forecast for its WHOLE new ground: a warning, unlike the old
+    // veto, has no reason to spare ground the mark already held.
+    let w = null, worldUnread = null;
+    try { w = await world(); } catch (e) { w = null; worldUnread = e; }
+    // THE MISTS WARN; THEY DO NOT VETO (WLD-38, Wright 2026-10-13T05:16:12Z).
+    // This door used to refuse ground behind the wall (422) and refuse to place
+    // anything while it could not read the wall (503). Both are gone from
+    // placement: a valid mark is written, and its receipt carries the Mists
+    // forecast for its whole ground — when the fringe and the wall reach it, or
+    // that the wall already stands over it — or, when the forecast cannot be
+    // read, `mists-forecast-unavailable: <why>`, never a silent clear. It is
+    // computed HERE, before either pen writes and with no write of its own, so
+    // nothing after the commit can turn a written mark into an error. The walk,
+    // portal and spawn checks keep `mistsGroundCheck` exactly as it was.
+    mistsWarning = dialUnread
+      ? { unavailable: `mists-forecast-unavailable: the parcel dial could not be read, so this parcel's ground is unknown (${String(dialUnread?.message ?? dialUnread).slice(0, 120)})` }
+      : await placementForecast({ worldClone, w, worldUnread, id: `${by}/${slug}`, ring: ground, mistsCrossing });
   }
   const exec = join(HERE, "leave-exec.mjs");
   let result;
@@ -4170,18 +4302,24 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     // POS-5 slice 1. The journal door throws its bounces directly (they are the
     // same grammar the exec answers with, one process earlier), so only the
     // machinery tripping lands in the catch.
-    try { result = await journalLeaveMark(clean); }
-    catch (e) { if (e?.code) throw e; throw bounce(500, "the mark pass tripped", String(e?.message ?? e).slice(0, 300)); }
+    // A DROPPED UNIT'S MARK is filed under its drop's own lock, and not at all
+    // once that drop was undone (WLD-27 F0, drop-recovery.mjs § dropLiveGuard):
+    // the unit is in hands or on the ground, never both.
+    const dropGuard = dropUnit != null && payload.dropped === `act:${dropUnit.actId}`
+      ? (await import("./drop-recovery.mjs")).dropLiveGuard({ actId: dropUnit.actId }) : null;
+    try { result = await journalLeaveMark(clean, dropGuard ? { guard: dropGuard } : {}); }
+    catch (e) { if (e?.code) throw e; throw bounce(500, "the mark pass tripped", faultLogged("the mark pass tripped", e)); } // its error goes to the log (POS-578)
   } else {
     try {
       result = await draftWrite(worldClone, exec, JSON.stringify(clean), household, `${by}/${slug}`);
     } catch (e) {
       if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-      throw bounce(500, "the mark pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+      throw bounce(500, "the mark pass tripped", faultLogged("the mark pass tripped", e)); // its stderr goes to the log (POS-578)
     }
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
   }
   if (outline) result.outline = outline; // POS-322: one line, only when the door moved or derived the box
+  if (mistsWarning) result.mists = mistsWarning; // WLD-38: the forecast, computed before the write
   await discloseOverhang(result, by, key);
   await discloseYourGround(result, clean);             // before the publish note, which strips _ground_min
   await disclosePublishing(result, by);
@@ -4249,7 +4387,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
 // exec cannot: WHOSE hand (the mark's by must be on your key — only the hand
 // that left a mark may withdraw it) and the LEDGER (escrow anchors a mark; the
 // stake ledger lives town-side, so the check runs here before anything spawns).
-export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
+export async function withdrawMarkViaOffice(worldClone, args = {}, key = null, { units = null, escrowOf = null } = {}) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   const bounce = (code, defect, hint) => { const e = new Error(defect); Object.assign(e, { code, defect, hint }); return e; };
   const mark = String(args.mark ?? "").trim();
@@ -4288,7 +4426,11 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
   // you can take back yourself; another's is their word standing behind your
   // mark, and it must come back to them before the mark can go.
   try {
-    const sr = await callWorldStakeTool("world_stake_read", { mark });
+    // read SETTLED (WLD-27, Bevel's first review R1): under the mark's lock, so
+    // a stake or unstake still landing — or about to roll back — is not counted
+    // either way; the guard below reads again in the write's own transaction
+    const { withMarkHeld } = await import("./mark-stake-lock.mjs");
+    const sr = await withMarkHeld(mark, () => callWorldStakeTool("world_stake_read", { mark }), { refusal: "your mark is exactly as it was", connection: "pool" });
     if (Number(sr?.escrow) > 0) {
       const holders = (sr.holders ?? []).map((h) => `${h.handle} (${h.stamps}✦)`).join(", ");
       throw bounce(409, `${sr.escrow}✦ stand in escrow on "${mark}" — a staked mark cannot be withdrawn`,
@@ -4299,16 +4441,50 @@ export async function withdrawMarkViaOffice(worldClone, args = {}, key = null) {
   const exec = join(HERE, "leave-exec.mjs");
   let result;
   if (singleLogEnabled()) {
-    try { return await journalWithdraw({ by, slug, household }); }
-    catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", String(e?.message ?? e).slice(0, 300)); }
+    // THE ESCROW AGAIN, UNDER THE MARK'S LOCK, IN THE WRITE'S OWN TRANSACTION
+    // (Wright, WLD-27 A: "the public withdraw door has the same read-then-write
+    // gap"). The read above answers early and names the holders; this one
+    // decides. A stake admitted before it has its line on the ledger, and one
+    // after it finds this withdrawal committed and is refused at the exec
+    // (mark-stake-lock.mjs). Both pens take it.
+    const { withdrawEscrowGuard } = await import("./mark-stake-lock.mjs");
+    const { ledgerEscrowOf } = await import("./world-stake.mjs");
+    // `escrowOf` and `units` are injectable only so a falsifier can make the
+    // ledger read fail and hand in the class law; the office passes neither.
+    const guard = withdrawEscrowGuard({ mark, escrow: escrowOf ?? ((m) => ledgerEscrowOf(m)) });
+    try {
+      // A SET-DOWN UNIT'S MARK (WLD-27 D): withdrawn before publication, the
+      // unit comes back to its dropper — an add, judged against the carry cap
+      // in the hold queue — in the withdrawal's own transaction; published, it
+      // is taken back, not withdrawn. Any other mark: null, and on as before.
+      const { withdrawDroppedUnit, liveUnitDeps } = await import("./world-units.mjs");
+      const viaUnit = await withdrawDroppedUnit({ mark, by, household, caller: by, guard,
+        withdraw: ({ guard: g }) => journalWithdraw({ by, slug, household, guard: g }) }, units ?? await liveUnitDeps());
+      if (viaUnit) return viaUnit;
+      return await journalWithdraw({ by, slug, household, guard });
+    }
+    catch (e) { if (e?.code) throw e; throw bounce(500, "the withdrawal tripped", faultLogged("the withdrawal tripped", e)); } // its error goes to the log (POS-578)
+  }
+  // THE GIT LANE TAKES NO SET-DOWN UNIT (Wright, AUTHORITY 2026-10-13T07:52:24.868Z,
+  // on Bevel's first review of #503, R3): a dropped unit's mark is withdrawn only
+  // on the store's single-log path, where the unit comes back in the
+  // withdrawal's own transaction under the carry cap (WLD-27 D). This lane has
+  // no such return, so it refuses by name, before anything is written — never a
+  // best-effort refund, never a silent withdrawal that leaves the unit nowhere.
+  // Any other mark goes on exactly as before.
+  {
+    const { droppedUnitOnGitLane } = await import("./world-units.mjs");
+    const refusal = await droppedUnitOnGitLane({ mark, by, household }, units ?? null);
+    if (refusal) throw Object.assign(bounce(refusal.code, refusal.defect, refusal.hint), { reason: refusal.reason });
   }
   try {
     result = await draftWrite(worldClone, exec, JSON.stringify({ op: "withdraw", by, slug, household }), household, mark);
   } catch (e) {
     if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-    throw bounce(500, "the withdrawal tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+    throw bounce(500, "the withdrawal tripped", faultLogged("the withdrawal tripped", e)); // its stderr goes to the log (POS-578)
   }
-  if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);
+  // the exec's named reason rides through (the git lane's set-down refusal, R3)
+  if (result.error) throw Object.assign(bounce(result.error.code ?? 500, result.error.defect, result.error.hint), result.error.reason ? { reason: result.error.reason } : {});
   return result;
 }
 
@@ -4629,7 +4805,7 @@ export async function worldNoteViaOffice(worldClone, payload = {}, key = null) {
   } catch (e) {
     if (e?.name === "NoRecordError")
       throw bounce(503, "this office keeps no notes: it is not pointed at a record", "notes live only in the office's record; ask the town's office, which keeps one");
-    throw bounce(503, "the note could not be kept: the office's record did not answer", `nothing was written anywhere — try again shortly (${String(e?.message ?? e).slice(0, 160)})`);
+    throw bounce(503, "the note could not be kept: the office's record did not answer", `nothing was written anywhere — try again shortly; ${faultLogged("the note could not be kept", e)}`);
   }
   // The receipt echoes the note itself — "did it say what I meant" must not
   // cost a second call (Keemin's clunk, 2026-08-15).
@@ -5188,6 +5364,11 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
       // the same world the enter door adjudicates against (deps.world().marks).
       const w = stack.length ? await deps.world() : null;
       const byId = new Map((w?.marks ?? []).map((m) => [m.id, m]));
+      // ── THE WALK INSIDE A DUNGEON IS FENCED TO THE ROOM YOU ENTERED (WLD-5,
+      // G4). Asked before DEC-5 could offer `exit: true`, because a dungeon
+      // offers no exit at all; world-movement.mjs § walkFenceRefusal holds it.
+      const fenced = w ? walkFenceRefusal({ stack, toward, marks: w.marks ?? [], verbs: law.verbs }) : null;
+      if (fenced) throw bounce(403, fenced.defect, fenced.hint, fenced.fields);
       const leaving = leavingWhileOccupying(stack, toward, (pt, id) => { const m = byId.get(id); return m ? law.verbs.pointWithinMark(pt, m) : null; });
       // ── A WALK DECLARED ABOARD IS THE CHOICE TO GO ASHORE (#2986) ────────
       //
@@ -5356,7 +5537,7 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
       out = await execUnderTownLock(exec, JSON.stringify(clean), env);
     } catch (e) {
       if (lockTimedOut(e)) throw bounce(LOCK_BUSY.code, LOCK_BUSY.defect, LOCK_BUSY.hint);
-      throw bounce(500, "the walk pass tripped", String(e.stderr ?? e.message ?? e).slice(0, 300));
+      throw bounce(500, "the walk pass tripped", faultLogged("the walk pass tripped", e)); // its stderr goes to the log (POS-578)
     }
     result = JSON.parse(out.trim().split("\n").at(-1));
     if (result.error) throw bounce(result.error.code ?? 500, result.error.defect, result.error.hint);

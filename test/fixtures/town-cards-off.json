@@ -132,7 +132,7 @@
    },
    {
     "read": "marks",
-    "blurb": "What one resident has MADE in the told world: their published marks paged with a total, what stands on the public docket unjudged, and — for their own household only — their private sketchbook (args: { handle, limit, offset }).",
+    "blurb": "What one resident has MADE in the told world: their published marks paged with a total, what stands on the public docket unjudged, and — for their own household only — their private sketchbook (args: { handle, limit, offset }). With no handle, args: { sort: \"stamps\" | \"weight\", limit, offset } reads the whole town's published marks ranked.",
     "serves": "read_marks"
    },
    {

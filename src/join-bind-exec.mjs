@@ -20,6 +20,7 @@ import { DatabaseSync } from "node:sqlite";
 import { indexSwitched, UNREACHABLE_DEFECT, UNREACHABLE_HINT } from "./index-probe.mjs";
 import { bindUnderLock } from "./join-bind.mjs";
 import { penTransaction } from "./write.mjs";
+import { faultLogged, isHttpStatus } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLONE = process.env.TOWN_CLONE ?? resolve(HERE, "..", "town-clone");
@@ -53,6 +54,9 @@ async function main() {
       return await bindUnderLock({ args, key, clone: CLONE, db, date: townDate() });
     } catch (e) {
       if (typeof e?.code !== "number") throw e;
+      // a refusal (an HTTP status) speaks its own words; any other coded error (pg's SQLSTATE) is the
+      // office's own fault: its message goes to this child's stderr, the office's log (POS-578)
+      if (!isHttpStatus(e.code)) return { error: { code: 500, field: null, defect: "the join pass tripped", hint: faultLogged("the join pass tripped", e) } };
       return { error: { code: e.code, field: e.field ?? null, defect: e.defect ?? String(e.message), hint: e.hint ?? null } };
     } finally {
       db?.close();

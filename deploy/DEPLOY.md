@@ -12,7 +12,7 @@ repo ~every 30 min for the site extractor. The office rides that rhythm.
 
 ## The weekly train (Keemin-directed 2026-08-23)
 
-> **The whole of how code ships, in one place:** `postmark-blueprints/documentation/SHIPPING.md` (each repo's PR base and route to live, hotfixes and their hand tag, the train taking main the same day, keeping the trains clean). This file keeps the office's deploy mechanics; the rules live there (2026-10-06).
+> **The whole of how code ships, in one place:** the maintainers' `SHIPPING.md`, private in `postmark-town/postmark-telemetry` at `docs/SHIPPING.md` since 2026-10-11 (each repo's PR base and route to live, hotfixes and their hand tag, the train taking main the same day, keeping the trains clean). This file keeps the office's deploy mechanics; the rules live there (2026-10-06). An outside contributor's route is public: postmark-blueprints `CONTRIBUTING.md` § Code.
 
 Feature branches merge into `train/2026-wNN`; the DEV office runs the train
 branch when it is hand-carried there (the workflow deploys tags only; SHIPPING.md § 3). ~Weekly the train PRs into `main`;
@@ -330,10 +330,22 @@ git clone https://github.com/postmark-town/postmark-office.git /srv/postmark-off
 git clone https://github.com/postmark-town/postmark.git /srv/postmark-office/town-clone
 
 # 2. secrets — NEVER in either repo
+#    QUOTE ANY VALUE THAT HOLDS A SPACE OR A SHELL CHARACTER (; & | # $ ` ( ) < >),
+#    in double quotes: BOT_NAME="Postmark Pen". systemd reads either form, but
+#    the steps in this file that load an env into a shell (`set -a; . <file>`)
+#    run an unquoted value's second word as a command ("line 5: Pen: command not
+#    found"), and an unquoted `;` silently cuts the value at it, with no error at
+#    all (POS-590). Double quotes, not single: the scripts that read these files
+#    with sed (cron-postmark-activity-report.sh) strip double quotes only. A
+#    value holding `"`, `$`, a backtick or `\` needs more than quotes; read the
+#    file's consumers first.
+#    A store URL and its switch go together: WORLD2_PG=1 with WORLD2_PG_URL, or
+#    neither (src/world2-acts.mjs § world2Enabled). The roll-call's ALARM-env
+#    row checks that pair for every unit (POS-581).
 sudo tee /etc/postmark-office.env >/dev/null <<'EOF'
 TOWN_CLONE=/srv/postmark-office/town-clone
 TOWN_PUSH=1
-BOT_NAME=postmark-office[bot]
+BOT_NAME="postmark-office[bot]"
 BOT_EMAIL=<bot-account-noreply-email>
 EOF
 sudo chmod 600 /etc/postmark-office.env
@@ -358,6 +370,7 @@ git -C /srv/postmark-office/town-clone config user.email "<pen-noreply-email>"
 
 # 3. units (office + the keeping tick + rehydrate + the ferry at the published crossings)
 sudo cp deploy/postmark-office.service deploy/postmark-office-keep.{service,timer} \
+        deploy/postmark-office-keep-by-hand.service \
         deploy/postmark-office-rehydrate.{service,timer} \
         deploy/postmark-ferry.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -558,6 +571,17 @@ systemctl show postmark-office-rehydrate.service -p ExecStart   # office-tick.sh
 ```
 
 After that the box runs exactly what it ran before step 2, and the manifest rows go back to what they said (keep parked).
+
+### The keeping tick's receipt (POS-524, proposal for the owner's box review)
+
+Most of `office-keep.sh` is deliberately non-fatal: a step that fails prints a line and the tick goes on. That keeps the tick alive, but it also means a step can fail on every tick while the unit reads green. So every run now leaves **one receipt line** naming each step as `ok`, `refused`, `skip` or `notrun`, with a reason from a fixed list (never tool output, keys or bodies). The format, the reader and the judgement are all in `deploy/keep-history.mjs`. The roll-call's outcome rule on the `postmark-office-keep.timer` row raises ALARM-outcome when a step has not been `ok` on **three consecutive scheduled ticks**, judged step by step. It also alarms when the newest line is unreadable, when there is no scheduled receipt, or when the newest scheduled receipt is more than 45 minutes old.
+
+- **Path (a proposal; nothing on the box has been checked or created):** `OFFICE_KEEP_LOG`, default `/srv/postmark-harbor/office-keep.jsonl`, plus its lock file `office-keep.jsonl.lock` beside it. Both must be writable by meepo. The owner confirms the directory and its permissions on the box, or sets `OFFICE_KEEP_LOG` in `/etc/postmark-office.env` and changes the manifest row's `history_path` to match.
+- **Retention:** each write keeps the newest 96 scheduled receipts (a day of quarter-hour ticks) and, separately, the newest 32 other lines, so a burst of hand runs cannot push the scheduled window out. A line is at most 4096 bytes, so the file stays under about 280 KB. An unreadable line, or a receipt with an unknown source, written after the last scheduled receipt is **evidence**: it alarms until a later valid scheduled receipt, and a hand run can neither hide it from the reader nor erase it on its write. The writer keeps the newest 8 such lines apart from both caps, with an unreadable line rewritten as a small marker that names only its category, never its bytes. Once a scheduled receipt follows it, an unreadable line is dropped on the next write.
+- **Writing:** the top-level EXIT trap writes the receipt once, after the work and before the SNAP cleanup. It takes its own lock (`flock -w 20`) on the lock file, not the town lock, and writes a temp file that it renames over the log. If the lock or the write fails, the journal gets a `[office-keep] RECEIPT NOT WRITTEN` line, the tick keeps its own exit status, and the roll-call then sees a stale outcome. SIGKILL and power loss write nothing; the 45-minute staleness check covers them.
+- **Provenance (Wright, 2026-10-13):** `postmark-office-keep.service` is the scheduled unit by contract and always records `source: "scheduled"`. To run the tick by hand, use **`systemctl start postmark-office-keep-by-hand.service`**: it runs the same script and records `by-hand`. A by-hand run never extends or clears a scheduled streak and never counts as freshness. That unit has no `[Install]` section and no timer, so the roll-call's unit discovery does not list it. A line with no `source` field (older than this change) counts as scheduled. A source the reader does not know counts as unknown and never clears anything.
+- **Accepted limitation:** starting `postmark-office-keep.service` itself by hand is recorded as **scheduled**, because the unit cannot tell who started it, and there is deliberately no `INVOCATION_ID` or `LastTrigger` detection. Use the by-hand unit instead. `/etc/postmark-office.env` must not set `POSTMARK_KEEP_SOURCE`: an `EnvironmentFile=` value overrides the unit's `Environment=` line.
+- **Install day:** copy both units, as in One-time setup step 3 (the by-hand unit is copied, never enabled). Until the first receipt is written at `history_path`, this row is **expected** to show ALARM-outcome ("empty or unreadable"). The first scheduled tick after the release clears it, if every step is `ok`.
 
 ### Switch 2's guard: the store never waits on a held transaction (POS-370, 2026-10-04)
 
@@ -779,8 +803,84 @@ unset ENTRY
 
 Without the switch and `--oauth-db`, the import writes the checkout's own
 `oauth.db` and the key answers as anonymous on prod. The import never revokes,
-so the other rows are untouched. Removing a static key is deleting its row;
-there is no verb for it yet.
+so the other rows are untouched. To remove one, see "Retiring a static key"
+below: deleting the row by hand is not enough, because a later import writes it
+back from `OFFICE_KEYS`.
+
+**Retiring a static key** (POS-604). One verb, by household and handle. It takes
+no key and no hash, on the command line or in the environment, and prints none.
+It needs the store switch like the import (`OFFICE_PAPERWORK_STORE=1`,
+`WORLD2_PG=1`, `WORLD2_PG_URL`), and runs as meepo with the office's own env file
+loaded, naming the office's own file:
+
+```sh
+# the dry run first: advisory, writes nothing, binds nothing
+sudo bash -c 'set -a; . /etc/postmark-office.env; set +a; cd <the staged tip> && exec runuser -u meepo -- node tools/static-keys-retire.mjs --household <slug> --handle <h> --dry --oauth-db /srv/postmark-office/oauth.db'
+# then the same line without --dry
+sudo bash -c 'set -a; . /etc/postmark-office.env; set +a; cd <the staged tip> && exec runuser -u meepo -- node tools/static-keys-retire.mjs --household <slug> --handle <h> --oauth-db /srv/postmark-office/oauth.db'
+```
+
+What it does, and what it will not:
+
+- It retires exactly one `static` row whose handles are exactly `[<h>]`. No match,
+  two exact matches (ambiguous), or only a row that holds `<h>` among other
+  handles (widened) are refused and write nothing.
+- ANOTHER working key must still cover THIS household and handle: another
+  `static` row of the household that holds the handle, or a live human
+  household key of the account the registry pins the handle to, where the
+  registry also shows that account belongs to this household and the handle is
+  its resident. Anything it cannot prove (the registry unreadable, a household
+  string that is not a registry slug, an expired key) refuses. It never falls
+  back to the login index the office uses at request time, so it can refuse a
+  cover that would have worked.
+- In ONE Postgres transaction it takes `LOCK TABLE oauth_tokens IN SHARE ROW
+  EXCLUSIVE MODE` (2 s `lock_timeout`), rereads the selector and the cover, deletes
+  the row (the delete must remove exactly one) and writes a `retired` row on the
+  same hash. That mode makes every other WRITER of `oauth_tokens` (a mint, a
+  rotation, the sweep, an import) wait while readers (bearer lookups) go on
+  answering. Nothing but the database runs while it is held; the test run
+  measured 8.5 ms on a synthetic store, which is a measurement of that run and
+  not a promise. If the table is busy for the whole 2 s, nothing was changed:
+  exit 6, run it again.
+- Then, and only then, it replays the retirement into `oauth.db` (the temporary
+  mirror, `paperwork.mjs` ⚑) in its own transaction and reads it back. **A
+  missing file, a failed write or a wrong read-back is NOT a success**: exit 4,
+  "STORE COMMITTED ... the file is NOT verified", and the exact command to
+  repair it. Do not roll the office back to the file until that is repaired: the
+  file would still hold the live key. The repair writes nothing in the store:
+
+```sh
+... node tools/static-keys-retire.mjs --household <slug> --handle <h> --mirror-only --oauth-db /srv/postmark-office/oauth.db
+```
+
+  `--mirror-only` reads the recorded retirements for that household and handle,
+  never a `static` row (a new key for the same household and handle is counted
+  and left alone), and refuses when none is recorded. A plain rerun with no
+  static row left does not repair anything; it says so and names this command.
+- Exit status: 0 retired and the file verified (or repaired); 1 refused, nothing
+  written; 2 cannot run (usage, no store switch); 4 STORE COMMITTED, file not
+  verified; 5 COMMIT not acknowledged, so the store may or may not hold it (check
+  with `--dry`, then `--mirror-only` if it is recorded); 6 table busy, nothing
+  changed.
+- There is no un-retire. A household that needs a key again is issued a NEW key
+  (a new hash), which the retired row does not touch.
+
+**The import after a retirement.** A `retired` row keeps the key's hash, its
+household, handles and gh_id (no secret), so `tools/static-keys-import.mjs`
+refuses an `OFFICE_KEYS` entry for that hash BY NAME (`household:handles`) and
+imports the rest. Its first line says which of three things happened: `complete`
+(exit 0), `partial` (the rest committed; N entries refused as retired; exit 3),
+or `rolled_back` (a key of another kind, `access`, `refresh` or `household`,
+owns a hash, so NOTHING was written, even if a retired entry is also named; exit 1).
+
+**What this does not cover.** A key deleted by hand BEFORE this verb existed has
+no row, so it has no hash to refuse and no selector to find: nothing here can
+tombstone it. Take its entry out of whatever `OFFICE_KEYS` text an import reads
+(including a backup copy of the env file) before the import runs. Production
+retirements, and shredding the backup copy that still holds every key, are the
+owner's. When the mirror is deleted with `oauth.db` and `roles.db`, this tool
+loses its file step in the same change; until then its exit 4 is the honest
+answer for a missing file.
 
 **Rollback.**
 

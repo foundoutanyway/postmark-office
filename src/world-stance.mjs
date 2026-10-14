@@ -97,6 +97,7 @@ import {
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 // ── THE TEACHING LINE (walk #1 item 4 · walk #2, 2026-09-05/06) ─────────────
 //
@@ -1369,7 +1370,7 @@ async function declareTownStance(repo, args, key, { dbPath = null, crossing = nu
     try { lawMarks = lawMarksAt(repo, lawSha.sha); }
     catch (e) {
       throw bounce(503, "the law could not be read at the law sha",
-        `the town's word cites law at ${String(lawSha.sha).slice(0, 12)} (${lawSha.from}), and this office's world clone could not read it (${String(e?.message ?? e).slice(0, 120)}) — nothing was written`);
+        `the town's word cites law at ${String(lawSha.sha).slice(0, 12)} (${lawSha.from}), and this office's world clone could not read it — nothing was written; ${faultLogged("the law could not be read at the law sha", e)}`);
     }
   }
   const law = citeLaw(args.law, { word: stance, lawMarks, sha: lawSha.sha });

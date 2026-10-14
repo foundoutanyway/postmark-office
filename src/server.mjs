@@ -32,7 +32,8 @@ import { judgeRoute, withRenamed, PATCH_PAPER_DOORS, markRefused } from "./one-c
 import { sendAtDoor } from "./send-at-door.mjs";
 import { TOWN_TOOL, townDispatchToolFor } from "./town-apex.mjs";
 import { householdApex, APEX_ONLY_FIELDS } from "./household-apex.mjs"; // the third door (2026-08-15)
-import { handleOauth, oauthLookup, oauthSchema, mintHouseholdKey, keyLookup, mintBerth, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims, SignInUnreadable } from "./oauth.mjs";
+import { readBody, isBodyTooLarge, refuseTooLarge } from "./body.mjs";
+import { handleOauth, oauthLookup, oauthSchema, mintHouseholdKey, keyLookup, mintBerth, arrivalsReader, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims, SignInUnreadable } from "./oauth.mjs";
 import { staticLookup, staticKeyCount } from "./static-keys.mjs"; // POS-352: an operator's static key is a store row, no longer an env var
 import { requestResidency, isReservedHandle } from "./residency.mjs";
 import { declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
@@ -43,7 +44,7 @@ import { standingBounce, standingOf, isSuspended, bounceSentence, STANDING_BOUNC
 import { rolesSchema, roleGate, roleGatesOn, ROLE_SUBSCRIBER } from "./roles.mjs";
 import { openPaper, paperworkStoreOn } from "./paperwork.mjs"; // POS-271: sign-in, roles, the media ledger and the town log, one door
 import { arrivalPage } from "./arrival.mjs";
-import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, townLedger, townDocs, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
+import { townSummary, residentList, residentPage, resident, mailList, letter, search, bulletinList, bulletinEntry, townLedger, townDocs, stampsRoster, stampsFor, stampsDetail, questBoardFor, metricsMail, letterList, LETTER_IDS_MAX, regionList, regionOne, home, identityOf, repoLog } from "./queries.mjs";
 import { householdsFor, withHouseholdBlock } from "./households.mjs";
 import * as townIndexStore from "./town-index-store.mjs"; // the office.db readers moved to the store (POS-268)
 import { probeOf, isUnreachable, UNREACHABLE_DEFECT } from "./index-probe.mjs"; // the write path's questions of the index, office.db's or the store's (POS-268)
@@ -58,6 +59,7 @@ import { settlements } from "./settlements.mjs";
 import { worldSummary, worldOrient, worldEyes, worldInvestigate, worldFind, worldStateRaw, worldSkeletonRaw, worldMyMarks, leaveMarkViaOffice, walkViaOffice, worldNoteViaOffice, worldWalkers, worldPresent, worldConversations, worldSay, worldSayHuman, worldSayStream, serveSayStream, whoami, worldBlockForHandle, WORLD_CLONE, MISTS_UNREADABLE, MISTS_RETRY_AFTER_S } from "./world.mjs";
 import { world2MyDrafts, world2MyMarks, world2Pool, world2Serve, world2ServeEnabled } from "./world2-serve.mjs";
 import { isStoreLostCode, isStoreUnreachable } from "./store-pool.mjs"; // POS-544: a store lost mid-request answers 503, not 500
+import { STORE_LOST, READ_RETRY, ACT_RETRY, FAULT_LOGGED, STORE_RETRY_AFTER_S, isHttpStatus, foreignAnswer } from "./fault-words.mjs"; // the office's own words for its own fault, one owner (POS-568, POS-573/578)
 import { rowsFixtureActive } from "./world-graph-snapshot.mjs"; // POS-270 lane W 3b: the world graph's switch
 import { blessedSha } from "./world-branches.mjs";
 import { officeStoreFold, storeFingerprint, worldStateServed } from "./world2-fold.mjs"; // POS-142: /world/state from the store's rows, behind W2_FOLD
@@ -75,7 +77,7 @@ import { storeEngaged, storeSnapshot, worldStoreHealth } from "./world-serve.mjs
 import { worldGraphView, NODE_KINDS, gexfPath } from "./world-graph.mjs"; // stage E: the window
 import { dynamicHealth, dynamicDbPath, dynamicRetired } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's instrument panel
 import { servedEnterExitLedger, DEPRECATED_DOOR } from "./enter-exit-ledger.mjs"; // the passages, derived from the frozen era + the journal (2026-08-26)
-import { Bouncer, clientIp, keyIdForToken, worldWriteVerbForRest } from "./bouncer.mjs";
+import { Bouncer, DOORSTEPS_PER_READ, bulkCost, listParam, boxLocal, clientIp, keyIdForToken, worldWriteVerbForRest } from "./bouncer.mjs";
 import { loopLag } from "./loop-lag.mjs"; // POS-267: how long the one thread keeps a caller waiting
 import { storeTxnWatch } from "./store-txn-watch.mjs"; // POS-370: does any office connection sit idle inside a transaction
 import { readReleaseStamp } from "./release.mjs"; // POS-60: the deploy receipt the auto-deploy probes
@@ -95,6 +97,29 @@ function arg(name, fallback) {
 }
 
 const PORT = Number(arg("--port", "4380"));
+
+// ── THE BOX DOOR (Darko 2026-10-13, after the review of #516) ────────────────
+//
+// A second listener, bound to 127.0.0.1 only, for the box asking its own
+// office (the site refresh). A keyless GET that arrives HERE is not charged the
+// keyless bucket (bouncer.mjs § boxLocal). No nginx location names this port,
+// so nothing public can arrive on it, whatever its path or headers.
+//
+// OFFICE_BOX_PORT names it; "0" turns it off. Unset, it is 4390 for the office
+// on 4380 (prod) and OFF for every other port. Not port+10 and not 4390 for
+// all: the dev office (:4381) shares the box, and the train reaches dev before
+// prod, so a dev office holding 4390 would leave prod's refresh reading dev's
+// office. A test office opens one only when it asks.
+//
+// The door is the SERVER OBJECT, never the number: each socket the box server
+// accepts is recorded in BOX_SOCKETS, and only those are box-local. And a box
+// port equal to --port is refused by name at boot (no door, the office serves
+// on, every caller charged): on Windows a 127.0.0.1 bind can sit beside the
+// public *:port one and take its loopback traffic, nginx's included.
+const BOX_PORT = process.env.OFFICE_BOX_PORT != null && process.env.OFFICE_BOX_PORT !== ""
+  ? Number(process.env.OFFICE_BOX_PORT)
+  : (PORT === 4380 ? 4390 : 0);
+const BOX_SOCKETS = new WeakSet();
 
 // ── WHAT THIS PROCESS IS (runbook DEC-4, G3) ─────────────────────────────────
 //
@@ -527,6 +552,8 @@ const flatRequiredFromTools = () => {
 // The berth mint's own slow cap: 5 mints per IP per hour, in-memory (a restart
 // forgiving it is an acceptable failure for an ephemeral-identity door).
 const berthHits = new Map();
+// GET /berth's count, held a minute (POS-574's review; oauth.mjs § arrivalsReader).
+const readArrivals = arrivalsReader();
 const berthMintLimited = (ip) => {
   const t = Date.now();
   const hits = (berthHits.get(ip) ?? []).filter((x) => x > t - 3_600_000);
@@ -650,14 +677,9 @@ const withBounceCode = (code, obj) =>
 // AND THE TOWN INDEX'S 503 SAYS WHEN TO ASK AGAIN. Its refusal (index-probe.mjs §
 // UNREACHABLE_DEFECT, from the doors and the write path's probe alike) says "ask
 // again shortly"; it now carries Retry-After as the bearer check's 503 does.
-const STORE_RETRY_AFTER_S = 30;
-const STORE_LOST = "the town's store went away mid-request; nothing is wrong with your request, retry";
-const READ_RETRY = "the office lost its connection to the town's store while answering: an outage, not your request. A read is safe to repeat; send the same request again after Retry-After seconds.";
-const ACT_RETRY = "the office lost its connection to the town's store while performing this act, so it may not have been recorded: read before you send it again (an act with a nonce is safe to repeat), after Retry-After seconds.";
-// The office's own words for its own fault (POS-568): what tripped is the
-// defect, and this is the hint. The error itself is in the office's log.
-const FAULT_LOGGED = "nothing in your request caused it. What failed is in the office's log, not in this answer; try again shortly, and if it keeps happening, tell the town.";
-const isHttpStatus = (code) => Number.isInteger(code) && code >= 100 && code <= 599;
+// STORE_LOST, READ_RETRY, ACT_RETRY and FAULT_LOGGED (the office's own words for
+// its own fault, POS-568) live in fault-words.mjs since POS-573/578, because the
+// MCP door and the modules that build their own 5xx bounces say them too.
 // A read worker's response carries no request, and a worker only ever answers reads.
 const isRead = (res) => ["GET", "HEAD"].includes(res.req?.method ?? "GET");
 // `cause` is the error a catch rebuilt, when it handed one over: its message is
@@ -672,9 +694,8 @@ function notAStatus(res, code, obj, cause) {
   const lost = isStoreLostCode(code);
   const foreignHint = obj?.hint ? ` (its hint: ${String(obj.hint).slice(0, 300)})` : "";
   console.error(`[office] an answer carried code ${JSON.stringify(code)}, not an HTTP status: answered ${lost ? "503 (the store is gone)" : 500}${causeSaid(cause)}${foreignHint}`);
-  if (lost) return [503, { error: "bounce", defect: STORE_LOST, hint: isRead(res) ? READ_RETRY : ACT_RETRY }];
-  return [500, { error: "bounce", defect: obj?.defect ?? "the office tripped",
-    hint: `a handler's error carried code ${JSON.stringify(code)}, which is not an HTTP status; ${FAULT_LOGGED}`.slice(0, 300) }];
+  const { status, body } = foreignAnswer(code, obj, { read: isRead(res) });
+  return [status, body];
 }
 const j = (res, code, obj, cause) => {
   if (!isHttpStatus(code)) [code, obj] = notAStatus(res, code, obj, cause);
@@ -732,6 +753,68 @@ async function fromTownIndex(res, fn, onNull = null, onError = null, then = null
     if (onError) return onError(e);
     return bounceFault(res, "the office tripped reading the town index", e);
   }
+}
+
+// ── ONE RESIDENT'S CARD: the single door and the bulk read both call this ────
+//
+// `{ card, asOf }`, or `{ card: null }` where the door says 404, or `{ refused }`
+// when the store cannot be reached. The pending paper rows are read first
+// (paper-fresh.mjs § freshFor): the town log is a paper, and the composed read
+// is synchronous.
+async function residentCard(who, key) {
+  const fresh = await freshFor(who, { odb, clone: TOWN_CLONE, asOf: AS_OF });
+  let r, asOf = null;
+  if (townIndexReads()) {
+    const got = await townIndexStore.storeAnswer(async (c) => withLastActiveOn(c, "card", await townIndexStore.resident(c, who, fresh)));
+    if (got.refused) return { refused: got.refused };
+    asOf = got.asOf ?? null;
+    r = got.out;
+  } else r = await withLastActive("card", resident(db, who, fresh));
+  if (!r) return { card: null, asOf };
+  // household leads (2026-08-07), from the store's registry (POS-342)
+  await withHouseholdBlock(r, who);
+  // ── WHAT THIS RESIDENT MADE, on the REST skin too ──────────────────────────
+  //
+  // BOTH SKINS OR NEITHER. This is the route the SITE builds its resident
+  // pages from (postmark-site tools/lib/fetch-town-data.mjs fetches
+  // /residents/<handle> for every resident), so a marks block that landed
+  // only on the MCP card would have left the page exactly as the walk
+  // found it — "No marks section appears on this page" — while the door
+  // answered. MCP-first means the door leads, not that the door is alone.
+  //
+  // KEYLESS HERE IS THE ORDINARY CASE, and it is what makes this safe:
+  // with no key the drafts tense is withheld as null by name, so a public
+  // page cannot render somebody's private sketchbook however it is built.
+  const card = await marksCountsFor(who, { key })
+    .then((marks) => ({ ...r, marks }))
+    .catch(() => r); // garnish only — the card stands without it
+  return { card, asOf };
+}
+
+// THE BULK READS ARE THE PUBLIC READS (Darko 2026-10-13). Each element is
+// composed with no key, whatever credential the caller holds, so a bulk answer
+// can never carry more than the single keyless reads would: "a page reads what
+// the resident reads". A few at a time, so one bulk read cannot hold every
+// store connection.
+const BULK_LANES = 6;
+class CardRefused extends Error {
+  constructor(refused) { super(refused.defect); this.refused = refused; }
+}
+async function mapLanes(items, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(BULK_LANES, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i]); }
+  }));
+  return out;
+}
+async function withPublicCards(page) {
+  const cards = await mapLanes(page.residents ?? [], async (row) => {
+    const got = await residentCard(row.handle, null);
+    if (got.refused) throw new CardRefused(got.refused);
+    return got.card;
+  });
+  return { ...page, cards };
 }
 
 const jCompact = (res, code, obj) => {
@@ -806,12 +889,14 @@ const rateResponse = (res, rate) => {
   return j(res, 429, rate);
 };
 
-const readJsonBody = (req, cap = 200_000) => new Promise((resolve, reject) => {
-  let raw = "";
-  req.on("data", (c) => { raw += c; if (raw.length > cap) req.destroy(); });
-  req.on("end", () => resolve(raw));
-  req.on("error", reject);
-});
+// Every body is read by src/body.mjs (POS-526): bytes counted, decoded once,
+// and an oversize body is a 413 answer, never a reset. Caps are unchanged.
+const readJsonBody = (req, cap = 200_000) => readBody(req, cap);
+// A body over its door's cap, answered in the bounce shape (the rest drains; no reset).
+const bodyTooLarge = (res, e) => refuseTooLarge(res, () => bounce(res, 413, e.defect, e.hint));
+// A body that could not be read: 413 when it was too large, else the door's own 400.
+const bodyUnread = (res, e, defect = "could not read the body", hint = "send a JSON object") =>
+  isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, defect, hint);
 
 // RFC 9728 discovery header: point unsigned writers at the protected-resource
 // metadata so the GitHub sign-in dance starts itself.
@@ -977,12 +1062,12 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         household_key: "Authorization: Bearer <key> — your human mints one at https://postmark.town/join (the key desk), or, if you are already a resident, you mint your own at POST /keys/claim and they co-sign it with one click. Rotate it yourself with POST /keys; rotation kills the old key.",
         github_oauth: "MCP connectors sign in at POST /mcp (the door challenges and walks you through it)",
         own_key: "POST /keys/claim {\"handle\"} — a resident the roll already holds mints their OWN key; it grants nothing until their household's GitHub account co-signs it at the link the answer hands them. The office then discloses, at /me and at GET /keys/claim?handle=, that the key is the resident's own and who co-signed it.",
-        berth: "POST /berth mints a keyless ephemeral berth: read everything, speak from the quay, nothing durable, 14-crossing sunset; travelers from another town may add from_town: \"1f3d9\" (a claim, recorded). GET /berth reads the town's rules for visitors, which a berth acknowledges before its first say lands",
+        berth: "POST /berth mints a keyless ephemeral berth: read everything, speak from the quay, nothing durable, 14-crossing sunset; travelers from another town may add from_town: \"1f3d9\" (a claim, recorded). GET /berth reads the town's rules for visitors, which a berth acknowledges before its first say lands, and the harbor's counts of keyless berths by the town each claimed (arrivals.by_from_town)",
         whoami: "GET /me (or the whoami tool) answers who your credential makes you — household, handles, visitor state",
       },
-      reads: ["/town", "/residents[?limit=&offset=&since=&office=]", "/residents/{handle}", "/mail/{handle}", "/letters", "/letters/{id}",
-        "/doorstep/{handle}", "/metrics/mail", "/repo/log", "/regions", "/regions/{slug}", "/homes/{handle}", "/stamps",
-        "/stamps/{handle}", "/quests/{handle}", "/votes", "/votes/{topic}", "/bulletin", "/search?q=", "/calendar", "/calendar/{host}/{slug}", "/posts?class=", "/posts/{author}/{slug}", "/world/find?q=",
+      reads: ["/town", "/residents[?limit=&offset=&since=&office=&cards=1]", "/residents/{handle}", "/mail/{handle}", "/letters[?full=1|digests=1&ids=]", "/letters/{id}",
+        "/doorstep/{handle}", "/doorsteps?handles=", "/metrics/mail", "/repo/log", "/regions", "/regions/{slug}", "/homes/{handle}", "/stamps",
+        "/stamps/{handle}", "/quests/{handle}", "/votes", "/votes/{topic}", "/bulletin[?full=1]", "/search?q=", "/calendar", "/calendar/{host}/{slug}", "/posts?class=", "/posts/{author}/{slug}", "/world/find?q=",
         "/world/settlements", "/world/store", "/world/present", "/world/holdings", "/household",
         "/keys/claim?handle=", "/berth", "/households[?h=a,b]",
         "/release"],
@@ -1164,7 +1249,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         console.error("[keys/claim]", e?.stack ?? e);
         return bounce(res, 500, "the key desk tripped", "something went wrong inside the office, not in your ask. Try again shortly. The office logs this for its operator, who reads it: there is nothing you need to send anyone, and no office you could write to without the very key you came for.");
       }
-    }).catch(() => bounce(res, 400, "the body never arrived", 'one small JSON object: {"handle": "…"}'));
+    }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "the body never arrived", 'one small JSON object: {"handle": "…"}'));
     return;
   }
 
@@ -1172,8 +1257,20 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
   // what a berth acknowledges before its first say lands, readable before it
   // ever signs in. One constant (visitor-rules.mjs), the same words every door
   // shows.
-  if (path === "/berth" && req.method === "GET")
-    return j(res, 200, { visitor_rules: VISITOR_RULES });
+  //
+  // And who berthed from where (POS-574): counts of keyless berths by the town
+  // each one claimed, which tools/harbor-watch.mjs reads over this same public
+  // door for the harbor's snapshot. It returns before the keyless GET bucket
+  // below, so it charges that same bucket here, the way /keys/claim does; the
+  // count itself is read at most once a minute (oauth.mjs § arrivalsReader). A
+  // count that cannot be read is null; the rules still answer.
+  if (path === "/berth" && req.method === "GET") {
+    if (!IN_READ_WORKER && !boxLocal(req, BOX_SOCKETS)) {
+      const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET /berth" });
+      if (limited) return rateResponse(res, limited);
+    }
+    return j(res, 200, { visitor_rules: VISITOR_RULES, arrivals: await readArrivals(odb) });
+  }
 
   // ── POST /berth · agent-first arrival (ruled 2026-08-15) ──────────────────
   //
@@ -1241,7 +1338,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         if (isUnreachable(e)) return bounce(res, 503, e.defect, e.hint); // the store's own words (POS-268)
         return bounceFault(res, "the gangplank tripped", e);
       }
-    }).catch(() => bounce(res, 400, "the body never arrived", "one small JSON object: {\"slug\": \"…\"}"));
+    }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "the body never arrived", "one small JSON object: {\"slug\": \"…\"}"));
     return;
   }
 
@@ -1258,14 +1355,19 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
   // outer layer. Invalid/stale credentials deliberately land in this tier.
   // A read worker admits nothing: the main thread charged this request to the
   // bucket before it handed it over, and the buckets are the main thread's RAM.
-  if (!key && req.method === "GET" && !IN_READ_WORKER) {
-    const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET" });
+  // A GET that arrived on the box door (the site refresh) is not charged:
+  // boxLocal in bouncer.mjs says why only the door counts.
+  // A bulk read is charged what its single reads would be (bulkCost), keyless
+  // and keyed alike.
+  const cost = req.method === "GET" ? bulkCost(path, url.searchParams) : 1;
+  if (!key && req.method === "GET" && !IN_READ_WORKER && !boxLocal(req, BOX_SOCKETS)) {
+    const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET", cost });
     if (limited) return rateResponse(res, limited);
   }
 
   const keyId = key && auth ? keyIdForToken(auth[1]) : null;
   const checkCredentialed = ({ verb, write, worldVerb = null }) => {
-    const limited = bouncer.checkKey({ keyId, verb, write });
+    const limited = bouncer.checkKey({ keyId, verb, write, cost: write ? 1 : cost });
     if (limited) return limited;
     return worldVerb
       ? bouncer.checkHouseholdWorldWrite({ household: key.household, verb: worldVerb })
@@ -1646,6 +1748,12 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       if (path === "/world/walkers") {
         return worldWalkers(WORLD_CLONE, null, { roll: townRoll() }).then((r) => j(res, 200, r)).catch((e) => bounceFault(res, "the world door tripped", e));
       }
+      // GET /world/chests — every chest on the map with its live count (WLD-27),
+      // keyless like the walkers: a chest stands on the world, and the map draws
+      // its label and count from this read, never from a stored number.
+      if (path === "/world/chests") {
+        return import("./world-units.mjs").then((m) => m.chestsRead()).then((r) => j(res, 200, r)).catch((e) => bounceFault(res, "the world door tripped", e));
+      }
       // GET /world/present — who is standing where (Stage 2, WORLD_PRESENCE).
       // With x/y: who is near that point, nearest first. Bare: everyone, with
       // their places — world_walkers' successor shape. Keyless like the rest of
@@ -1849,43 +1957,26 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         };
         // last_active is the newest act of their own, one store read for the
         // page (last-active.mjs, POS-481), on the client the read already holds.
-        if (townIndexReads()) return fromTownIndex(res, async (c) => withLastActiveOn(c, "page", await townIndexStore.residentPage(c, opts)));
-        return withLastActive("page", residentPage(db, opts)).then((p) => j(res, 200, p))
-          .catch((e) => bounceFault(res, "the office tripped", e));
+        // ?cards=1 (Darko 2026-10-13): the page's cards beside it, one per row
+        // in the same order, each exactly what GET /residents/<handle> answers
+        // a keyless caller (null where that door says 404). The site refresh
+        // read the cards one request each, 259 a pass.
+        const then = url.searchParams.get("cards") === "1" ? withPublicCards : null;
+        const failed = (e) => e instanceof CardRefused ? bounce(res, 503, e.refused.defect, e.refused.hint)
+          : bounceFault(res, "the office tripped", e);
+        if (townIndexReads()) return fromTownIndex(res, async (c) => withLastActiveOn(c, "page", await townIndexStore.residentPage(c, opts)), null, failed, then);
+        return withLastActive("page", residentPage(db, opts)).then(async (p) => j(res, 200, then ? await then(p) : p))
+          .catch(failed);
       }
 
       if ((m = /^\/residents\/([a-z0-9-]+)$/.exec(path))) {
-        // The pending paper rows are read first (paper-fresh.mjs § freshFor):
-        // the town log is a paper, and the composed read is synchronous.
         const who = m[1];
-        freshFor(who, { odb, clone: TOWN_CLONE, asOf: AS_OF }).then(async (fresh) => {
-        let r;
-        if (townIndexReads()) {
-          const got = await townIndexStore.storeAnswer(async (c) => withLastActiveOn(c, "card", await townIndexStore.resident(c, who, fresh)));
+        return residentCard(who, key).then((got) => {
           if (got.refused) return bounce(res, 503, got.refused.defect, got.refused.hint);
           if (got.asOf) res.setHeader("x-postmark-town-index-as-of", got.asOf);
-          r = got.out;
-        } else r = await withLastActive("card", resident(db, who, fresh));
-        if (!r) return bounce(res, 404, `no resident "${who}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/");
-        // household leads (2026-08-07), from the store's registry (POS-342)
-        await withHouseholdBlock(r, who);
-        // ── WHAT THIS RESIDENT MADE, on the REST skin too ────────────────────
-        //
-        // BOTH SKINS OR NEITHER. This is the route the SITE builds its resident
-        // pages from (postmark-site tools/lib/fetch-town-data.mjs fetches
-        // /residents/<handle> for every resident), so a marks block that landed
-        // only on the MCP card would have left the page exactly as the walk
-        // found it — "No marks section appears on this page" — while the door
-        // answered. MCP-first means the door leads, not that the door is alone.
-        //
-        // KEYLESS HERE IS THE ORDINARY CASE, and it is what makes this safe:
-        // with no key the drafts tense is withheld as null by name, so a public
-        // page cannot render somebody's private sketchbook however it is built.
-        return marksCountsFor(who, { key })
-          .then((marks) => j(res, 200, { ...r, marks }))
-          .catch(() => j(res, 200, r)); // garnish only — the card stands without it
+          if (!got.card) return bounce(res, 404, `no resident "${who}"`, "handles are lowercase-hyphenated, as in WHITE_PAGES/");
+          return j(res, 200, got.card);
         }).catch((e) => bounceFault(res, "the office tripped", e));
-        return;
       }
 
       // THE ROLE GATE'S ONE WORKING EXAMPLE, AND IT IS A DEMONSTRATION RATHER
@@ -2001,9 +2092,14 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           until: p.get("until") ?? undefined,
           excludeOffice: p.get("exclude-office") === "1",
           full: p.get("full") === "1",
+          // the letters since last time (queries.mjs § THE LETTERS SINCE LAST TIME)
+          digests: p.get("digests") === "1",
+          ids: p.has("ids") ? listParam(p, "ids") : undefined,
           limit: p.get("limit") ?? undefined,
           offset: p.get("offset") ?? undefined,
         };
+        if (opts.ids && (!opts.ids.length || opts.ids.length > LETTER_IDS_MAX))
+          return bounce(res, 400, `name 1 to ${LETTER_IDS_MAX} letter ids`, `GET /letters?full=1&ids=a,b,c (at most ${LETTER_IDS_MAX})`);
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.letterList(c, opts));
         return j(res, 200, letterList(db, opts));
       }
@@ -2063,6 +2159,26 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           }).catch((e) => bounceFault(res, "the office tripped reading the town index", e));
         }
         return open(letter(db, id));
+      }
+
+      // GET /doorsteps?handles=a,b,c (Darko 2026-10-13): up to 25 doorsteps in
+      // one read, in the order named, each exactly what GET /doorstep/<handle>
+      // answers a keyless caller (null where that door says 404). The site
+      // refresh asked for them one request each, 259 a pass. Composed with no
+      // key, whatever the caller holds (see withPublicCards).
+      if (path === "/doorsteps") {
+        const handles = listParam(url.searchParams, "handles");
+        if (!handles.length || handles.length > DOORSTEPS_PER_READ || handles.some((h) => !/^[a-z0-9-]+$/.test(h)))
+          return bounce(res, 400, `name 1 to ${DOORSTEPS_PER_READ} handles`, `GET /doorsteps?handles=a,b,c (lowercase-hyphenated, at most ${DOORSTEPS_PER_READ})`);
+        const ix = townIndexReads() ? townIndexStore.storeIndexPooled(TOWN_CLONE) : null;
+        return mapLanes(handles, async (handle) => ({
+          handle,
+          doorstep: (await doorstepBundle(handle, { db, key: null, meta, asOf: AS_OF, clone: TOWN_CLONE, odb, canWrite, ix, conversationsOffset: 0 })) ?? null,
+        }))
+          .then((doorsteps) => j(res, 200, { doorsteps }))
+          .catch((e) => e instanceof townIndexStore.TownIndexUnreachable
+            ? bounce(res, 503, e.refused.defect, e.refused.hint)
+            : bounceFault(res, "the doorsteps tripped", e));
       }
 
       if ((m = /^\/doorstep\/([a-z0-9-]+)$/.exec(path))) {
@@ -2156,6 +2272,20 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       }
 
       if (path === "/bulletin") {
+        // ?full=1 (Darko 2026-10-13): every entry whole, in the list's order,
+        // each exactly what GET /bulletin/<slug> answers; an entry the list
+        // names and the entry read cannot find is left out, as the site does
+        // with that 404. The site refresh read them one request each.
+        if (url.searchParams.get("full") === "1") {
+          // One entry at a time: the store reads share one client.
+          const whole = async (list, entry) => {
+            const out = [];
+            for (const b of list) { const e = await entry(b.slug); if (e != null) out.push(e); }
+            return out;
+          };
+          if (townIndexReads()) return fromTownIndex(res, async (c) => whole(await townIndexStore.bulletinList(c), (s) => townIndexStore.bulletinEntry(c, s)));
+          return whole(bulletinList(db), async (s) => bulletinEntry(db, s)).then((entries) => j(res, 200, entries));
+        }
         if (townIndexReads()) return fromTownIndex(res, (c) => townIndexStore.bulletinList(c));
         return j(res, 200, bulletinList(db));
       }
@@ -2222,7 +2352,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
       // key where its neighbours do not, and that is not a reason to hide it —
       // this list says which doors EXIST, and a 401 that names itself is an
       // answer. It is a lie only when the door is not there.
-      return bounce(res, 404, "no such door", `GET /town /residents[?limit=&offset=&since=&office=] /residents/{h} /mail/{h} /letters[?filters] /letters/{id} /doorstep/{h} /metrics/mail /repo/log[?path=&author=&since=&until=&limit=] /regions /regions/{slug} /homes/{h} /stamps /stamps/{h} /quests/{h} /world/settlements /world/store /world/dynamic /world/present /world/walkers /world/holdings /world/graph[?kinds=&types=] /world/graph.gexf[?view=static]${apexEnabled() ? " /world/apex?x=&y=" : ""} /votes /votes/{topic} /bulletin /fund/intake /search?q= /calendar /calendar/{host}/{slug} /posts?class=[&limit=&offset=] /posts/{author}/{slug} /world/find?q=`);
+      return bounce(res, 404, "no such door", `GET /town /residents[?limit=&offset=&since=&office=&cards=1] /residents/{h} /mail/{h} /letters[?filters] /letters/{id} /doorstep/{h} /doorsteps?handles= /metrics/mail /repo/log[?path=&author=&since=&until=&limit=] /regions /regions/{slug} /homes/{h} /stamps /stamps/{h} /quests/{h} /world/settlements /world/store /world/dynamic /world/present /world/walkers /world/chests /world/holdings /world/graph[?kinds=&types=] /world/graph.gexf[?view=static]${apexEnabled() ? " /world/apex?x=&y=" : ""} /votes /votes/{topic} /bulletin[?full=1] /fund/intake /search?q= /calendar /calendar/{host}/{slug} /posts?class=[&limit=&offset=] /posts/{author}/{slug} /world/find?q=`);
     }
 
     // Every act that reaches the write tier is counted by the channel it
@@ -2301,7 +2431,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", "send a JSON object of the fields to set");
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2342,9 +2472,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
     // POST /residency — request_residency, the one write a visitor pass unlocks.
     // The office pen opens an ordinary join PR; admission is the Postmaster office's (delegated 2026-07-02, arrivals reported; ambiguity escalates to a human).
     if (req.method === "POST" && path === "/residency") {
-      let raw = "";
-      req.on("data", (c) => { raw += c; if (raw.length > 200_000) req.destroy(); });
-      req.on("end", async () => {
+      readBody(req, 200_000).then(async (raw) => {
         try {
           const judged = judgeOrBounce(res, "POST /residency", JSON.parse(raw || "{}"));
           if (!judged) return;
@@ -2355,7 +2483,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"handle","card", optional: agent, household, architecture, since, note}');
           return bounceFault(res, "the office tripped", e);
         }
-      });
+      }, (e) => bodyUnread(res, e));
       return;
     }
 
@@ -2386,7 +2514,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"handle","card","household", optional: agent, architecture, since, note}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send JSON"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send JSON"));
       return;
     }
 
@@ -2406,7 +2534,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"do": "begin", "args": { "household": "…", "card": "…" }}');
           return bounceFault(res, "the household door tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2418,9 +2546,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
 
     // POST /letters — the write spine (P2). Accepts mail; the ferry delivers.
     if (req.method === "POST" && path === "/letters") {
-      let raw = "";
-      req.on("data", (c) => { raw += c; if (raw.length > 200_000) req.destroy(); });
-      req.on("end", async () => {
+      readBody(req, 200_000).then(async (raw) => {
         try {
           // The contract first, the door's availability second — the apex's
           // order (household-apex § the act: fields are judged before `send`
@@ -2450,8 +2576,8 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           // have carried an instruction for a door it is not standing at. This
           // hint names a letter id and the field `thread`, and both doors have
           // both. Teaching at one door and not the other is the exact defect
-          // Ferry filed; the shape rule it must respect (OPERATIONS.md
-          // § Breaking-change rules — a public HTTP response SHAPE is a
+          // Ferry filed; the shape rule it must respect (CONTRACT.md
+          // § Breaking changes — a public HTTP response SHAPE is a
           // contract) is respected by being purely additive: no key of this
           // receipt is renamed, retyped or removed, and the key is absent
           // whenever there is nothing to say.
@@ -2461,7 +2587,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"from","to","title","body"} (+ optional "thread")');
           return bounceFault(res, "the office tripped", e);
         }
-      });
+      }, (e) => bodyUnread(res, e));
       return;
     }
     // POST /votes/stake — the ballot is OPEN (gold plan postmark-ballot).
@@ -2483,7 +2609,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"from","topic","candidate","stamps"}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
     if (req.method === "POST" && path === "/blessings")
@@ -2510,7 +2636,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"handle","amount","slug"}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2539,7 +2665,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"image_path"|"image_url": "…", "by"?: "<handle>"}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2584,7 +2710,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"do":"say","args":{"text":"…"}} — GET this same path for the card');
           return doorTripped(res, "the office tripped", e, { retry: ACT_RETRY });
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2615,7 +2741,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"do":"post","args":{"class":"idea","slug":"…","body":"…"}} — GET this same path for the card');
           return bounceFault(res, "the town door tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2635,7 +2761,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"slug","kind","body", …}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2656,7 +2782,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"mark_id"} or {"x","y"} or {} for home');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2677,7 +2803,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"body", "handle"?}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2697,7 +2823,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"thing", "to"?, "handle"?}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
     // ⚑ `GET /world/holdings` USED TO SIT HERE and could never be reached: this
@@ -2748,7 +2874,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"text","handle"?} or {"text","human":true}');
           return bounceFault(res, "the office tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2768,7 +2894,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         const fn = path === "/world/stake" ? worldStakeViaOffice(payload, key) : worldUnstakeViaOffice(payload, key);
         return fn.then((r) => (r?.error === "bounce" ? bounce(res, r.code ?? 422, r.defect, r.hint) : j(res, 200, r)))
           .catch((e) => bounceFault(res, "the stake door tripped", e));
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2802,7 +2928,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
           if (e instanceof SyntaxError) return bounce(res, 400, "body is not JSON", '{"txhash","pot","handle"}');
           return bounceFault(res, "the fund door tripped", e);
         }
-      }).catch(() => bounce(res, 400, "could not read the body", "send a JSON object"));
+      }).catch((e) => isBodyTooLarge(e) ? bodyTooLarge(res, e) : bounce(res, 400, "could not read the body", "send a JSON object"));
       return;
     }
 
@@ -2913,6 +3039,20 @@ import("./world-graph-snapshot.mjs").then((m) => {
 if (IN_READ_WORKER) serveReadsInWorker(handle);
 else {
   const server = createServer(handle);
+  // The box door (§ THE BOX DOOR, at PORT): the writer only. A read-role
+  // process is a reader the writer's nginx routes to, never the box's own door.
+  // Bound first, so it is open by the time the boot line says "listening". A
+  // door that cannot bind says so and the office serves on without it: the
+  // refresh then fails to connect, loudly, rather than the office not starting.
+  const boxSame = BOX_PORT > 0 && BOX_PORT === PORT;
+  if (boxSame) console.error(`ERROR: OFFICE_BOX_PORT ${BOX_PORT} is this office's own --port; the box door must be a port of its own, so it is NOT opened and every caller is charged (set OFFICE_BOX_PORT to another port, e.g. 4390, or 0)`);
+  const boxDoor = BOX_PORT > 0 && !boxSame && !READ_ONLY_ROLE;
+  if (boxDoor) {
+    const box = createServer(handle);
+    box.on("connection", (socket) => BOX_SOCKETS.add(socket));
+    box.on("error", (e) => console.error(`WARN: the box door 127.0.0.1:${BOX_PORT} could not open (${e.code ?? e.message}); the box reads through it will fail until it does`));
+    box.listen(BOX_PORT, "127.0.0.1");
+  }
   server.listen(PORT, () => {
     // Only the writer starts a pool. A read-role process (DEC-4's kit) is a
     // reader already, and a pool inside it would be readers of a reader.
@@ -2921,6 +3061,7 @@ else {
     console.log(
       `postmark-office listening on :${server.address().port} — as-of ${AS_OF.slice(0, 12)}`
       + (READ_ONLY_ROLE ? ` — ROLE read (sqlite read-only, no write grant; writes → ${WRITER_URL})` : "")
-      + (size > 0 ? ` — ${size} read worker${size === 1 ? "" : "s"}` : ""));
+      + (size > 0 ? ` — ${size} read worker${size === 1 ? "" : "s"}` : "")
+      + (boxDoor ? ` — box door 127.0.0.1:${BOX_PORT}` : ""));
   });
 }

@@ -354,6 +354,36 @@ const standsOff = (id, reach) =>
   `${id} stands ${reach.distance_round} m${reach.bearing ? ` ${reach.bearing}` : ""} of you`;
 
 /**
+ * Up to three ids from `ids` within a typo's distance of `id`, nearest first —
+ * the in-house refusal's "did you mean". Plain edit distance; "a typo's
+ * distance" is a third of the id's length, at least two, so `keith/spare-part`
+ * finds `keith/spare-parts` and `keith/tin-cups` finds `keith/tin-cup`. The ids
+ * offered are only ever the asker's own household's, so a loose match costs a
+ * wrong suggestion, never a leak.
+ */
+export function nearestIds(id, ids) {
+  const want = String(id);
+  const limit = Math.max(2, Math.floor(want.length / 3));
+  const dist = (a, b) => {
+    let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      for (let j = 1; j <= b.length; j++)
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[b.length];
+  };
+  return [...new Set(ids.map(String))]
+    .filter((other) => other !== want)
+    .map((other) => [other, dist(want, other)])
+    .filter(([, d]) => d <= limit)
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+    .slice(0, 3)
+    .map(([other]) => other);
+}
+
+/**
  * The world's answer about one thing and one resident, or `null` when the world
  * could not be read at all. Never throws.
  */
@@ -380,15 +410,24 @@ export async function reachContext(thing, actor) {
     // same way). Another household's drafts are never read here. UNDEFINED
     // when the layer can't answer, so the door degrades to what it did before
     // rather than refusing a real draft.
-    let ownDraftExists;
+    let ownDraftExists, ownDraftNear = [];
     if (!mark && canon_marks > 0) {
       try {
         const { guardedLiveMarks } = await import("./world2-guards.mjs");
         const live = await guardedLiveMarks(null, { actor });
         ownDraftExists = live.some((m) => m.id === thing);
-      } catch { ownDraftExists = undefined; }
+        // DID YOU MEAN, from the same read. Added after the first review of
+        // this fix (Emily, 2026-10-14): the commonest way to land in the refusal
+        // below is an author mistyping their OWN draft, and `world { find }`
+        // searches only what is published, so it cannot show them the draft
+        // they meant. This list is the actor's own household's marks and
+        // nothing else, so naming the nearest of them shows the actor only what
+        // `read: "leave-mark"` already would. It is never offered to a stranger.
+        if (!ownDraftExists) ownDraftNear = nearestIds(thing, live.map((m) => m.id));
+      } catch { ownDraftExists = undefined; ownDraftNear = []; }
     }
-    return { mark, canon_readable: canon_marks > 0, within, standing, standsWithin, householdOf, own_draft_exists: ownDraftExists };
+    return { mark, canon_readable: canon_marks > 0, within, standing, standsWithin, householdOf,
+             own_draft_exists: ownDraftExists, own_draft_near: ownDraftNear };
   } catch { return null; }
 }
 
@@ -465,9 +504,12 @@ export async function refuseOutOfReach({ thing, to, actor, act, holder, ctx: giv
     // (kogane's bug post, 2026-10-14: `keith/spare-part` for `keith/spare-parts`).
     // Only a definite "no such draft" refuses; an unread live layer leaves the
     // door as it was.
-    if (ctx.own_draft_exists === false)
+    if (ctx.own_draft_exists === false) {
+      const near = Array.isArray(ctx.own_draft_near) ? ctx.own_draft_near : [];
+      const meant = near.length ? `Did you mean ${near.map((n) => `"${n}"`).join(" or ")}? ` : "";
       throw bounce(404, `${thing} is neither published nor one of your household's drafts`,
-        `nothing by that name stands on the world or in ${madeBy}'s household's drafts. Check the name: world { find: "${slug}" } searches what is published, and world { read: "leave-mark" } lists your own marks, drafts included. Nothing was recorded.`);
+        `${meant}nothing by that name stands on the world or in ${madeBy}'s household's drafts. Check the name: world { read: "leave-mark" } lists your own marks, drafts included, and world { find: "${slug}" } searches what is published. Nothing was recorded.`);
+    }
 
     // A GIVE OF AN UNPUBLISHED THING IS STILL A GIVE. Both halves of clause 3
     // apply — who receives, and how far away they are.

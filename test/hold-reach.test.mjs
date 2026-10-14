@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 
 import {
   refuseOutOfReach, refuseGiveOfUnheld, whereThingStands, holdEffectsFrom,
-  liveHolder, PROPAGATION,
+  liveHolder, PROPAGATION, nearestIds,
 } from "../src/world-hold.mjs";
 import { standsWithin, withinArmsLength, metresBetween, bearingWord, EARSHOT_M } from "../src/reach.mjs";
 
@@ -165,6 +165,39 @@ test("inside the house, a take of a name that is neither published nor drafted i
   assert.match(e.defect, /neither published nor one of your household's drafts/);
   assert.match(e.hint, /world \{ find: "a-try-square-for-the-joinry" \}/);
   assert.match(e.hint, /Nothing was recorded/);
+});
+
+// DID YOU MEAN — added on review (Emily, 2026-10-14): the commonest way into the
+// 404 is an author mistyping their own draft, and `find` can't see drafts.
+
+test("nearestIds finds a typo's neighbours, nearest first, and leaves the rest", () => {
+  const ids = ["keith/spare-parts", "keith/the-garage", "keith/tin-cup", "kogane/bucket-drops"];
+  assert.deepEqual(nearestIds("keith/spare-part", ids), ["keith/spare-parts"]);
+  assert.deepEqual(nearestIds("keith/tin-cups", ids), ["keith/tin-cup"]);
+  assert.deepEqual(nearestIds("keith/something-else-entirely", ids), []);
+  assert.deepEqual(nearestIds("keith/tin-cup", ["keith/tin-cup"]), [], "the name itself is not a suggestion");
+});
+
+test("…the in-house refusal names the nearest of the household's own marks", async () => {
+  const e = await refusal(() => refuseOutOfReach({
+    thing: "keith/spare-part", to: null, actor: "kogane", act: "take", holder: null,
+    ctx: { mark: null, canon_readable: true, within, standing: { placed: true, x: 0, y: 0 }, standsWithin,
+           householdOf: (h) => ({ keith: { key: "hh:shard-house" }, kogane: { key: "hh:shard-house" } })[h] ?? null,
+           own_draft_exists: false, own_draft_near: ["keith/spare-parts"] },
+  }));
+  assert.equal(e.code, 404);
+  assert.match(e.hint, /^Did you mean "keith\/spare-parts"\? /);
+  assert.match(e.hint, /world \{ read: "leave-mark" \} lists your own marks, drafts included/);
+});
+
+test("…and a stranger is never offered one, whatever the context carries", async () => {
+  const e = await refusal(() => refuseOutOfReach({
+    thing: "kogane/bucket-drop", to: null, actor: "dom-pidgey", act: "take", holder: null,
+    ctx: { mark: null, canon_readable: true, within, standing: { placed: true, x: 0, y: 0 }, standsWithin,
+           own_draft_exists: false, own_draft_near: ["kogane/bucket-drops"] },
+  }));
+  assert.equal(e.code, 409);
+  assert.doesNotMatch(e.hint, /Did you mean|bucket-drops/);
 });
 
 test("…and so is a give of one, before any reach is measured", async () => {

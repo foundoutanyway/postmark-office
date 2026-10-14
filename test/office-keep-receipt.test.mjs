@@ -108,25 +108,29 @@ if (process.env.STUB_APPEND && !(process.env.STUB_FAIL || "").split(",").include
   execFileSync("git", ["-C", clone, "push", "-q"]);
 }`),
   "world2/tools/stamp-lines.mjs": plain("sync"),
-  // The run prints its two soft steps' lines, as the real tool does (POS-612);
-  // STUB_CARRIED_FAIL / STUB_AMENDS_FAIL make one a non-fatal failure, which
-  // leaves the run's exit 0. `--soft-step <step>` is softStepStatus's shell
-  // contract on that output (stdin): wrote → ok, any other line → refused
-  // write-failed, no line → notrun. It records no call: it is a reading.
+  // The run prints its four soft steps' lines, as the real tool does (POS-612,
+  // POS-627); STUB_<STEP>_FAIL makes one a non-fatal failure, which leaves the
+  // run's exit 0. `--soft-step <step>` is softStepStatus's shell contract on
+  // that output (stdin): the step's done line (wrote, stocked, restored) → ok,
+  // any other line → refused write-failed, no line → notrun. It records no
+  // call: it is a reading.
   "world2/tools/settlements-backfill.mjs": `${PRELUDE}
 import { readFileSync } from "node:fs";
 const at = process.argv.indexOf("--soft-step");
 if (at !== -1) {
   const step = process.argv[at + 1];
   const line = readFileSync(0, "utf8").split("\\n").find((l) => l.startsWith(step + ": "));
-  console.log(!line ? "notrun" : line.startsWith(step + ": wrote ") ? "ok" : "refused write-failed");
+  const done = ["wrote", "stocked", "restored"].some((w) => line?.startsWith(step + ": " + w + " "));
+  console.log(!line ? "notrun" : done ? "ok" : "refused write-failed");
   process.exit(0);
 }
 trail("settlements");
 await outcome("settlements");
 console.log("0 rows written");
 console.log(process.env.STUB_CARRIED_FAIL ? "carried: NOT recorded (non-fatal) — stub" : "carried: wrote 0; the table holds 0");
+console.log(process.env.STUB_CHESTS_FAIL ? "chests: NOT stocked (non-fatal) — stub" : "chests: stocked 0");
 console.log(process.env.STUB_AMENDS_FAIL ? "amends: NOT recorded (non-fatal) — stub" : "amends: wrote 0; the table holds 0");
+console.log(process.env.STUB_DROPS_FAIL ? "drops: NOT reconciled (non-fatal) — stub" : "drops: restored 0");
 `,
   "world2/tools/position-snapshot.mjs": plain("positions", `console.log("positions: none owed");`),
   "deploy/publish-windows.mjs": plain("publish", `
@@ -258,7 +262,7 @@ const steps = (r) => Object.fromEntries(Object.entries(r.steps).map(([k, v]) => 
 const GREEN = {
   lock: "ok", pull: "ok", fetch: "ok", registry: "ok", settle: "ok", standing: "ok", gangway: "ok",
   mint: "ok", welcome: "ok", bugstage: "ok", ballots: "ok", verify: "ok", commit: "ok", push: "ok",
-  sync: "ok:switch-off", rollback: "ok:not-needed", snapshot: "ok", settlements: "ok", carried: "ok", amends: "ok", positions: "ok",
+  sync: "ok:switch-off", rollback: "ok:not-needed", snapshot: "ok", settlements: "ok", carried: "ok", chests: "ok", amends: "ok", drops: "ok", positions: "ok",
   hhkeys: "ok", hhkeys_log: "ok", publish: "ok",
 };
 const OWED = { STUB_APPEND: "mint row 3" };
@@ -308,11 +312,14 @@ const SOFT = [
   ["bugstage", { STUB_FAIL: "bugstage" }, { bugstage: "refused:exit:7" }],
   ["ballots", { STUB_FAIL: "ballots" }, { ballots: "refused:exit:7" }],
   // a failed run prints no soft-step lines, so carried and amends never ran
-  ["settlements", { STUB_FAIL: "settlements" }, { settlements: "refused:exit:7", carried: "notrun", amends: "notrun" }],
+  ["settlements", { STUB_FAIL: "settlements" }, { settlements: "refused:exit:7", carried: "notrun", chests: "notrun", amends: "notrun", drops: "notrun" }],
   // POS-612: each soft step's failure leaves the run's exit 0 and settlements ok,
   // and is recorded as its own step so the roll-call can alarm on it
   ["carried (non-fatal: settlements stays ok)", { STUB_CARRIED_FAIL: "1" }, { carried: "refused:write-failed" }],
   ["amends (non-fatal: settlements stays ok)", { STUB_AMENDS_FAIL: "1" }, { amends: "refused:write-failed" }],
+  // POS-627: the same for the chest stock and the orphaned set-downs
+  ["chests (non-fatal: settlements stays ok)", { STUB_CHESTS_FAIL: "1" }, { chests: "refused:write-failed" }],
+  ["drops (non-fatal: settlements stays ok)", { STUB_DROPS_FAIL: "1" }, { drops: "refused:write-failed" }],
   ["positions", { STUB_FAIL: "positions" }, { positions: "refused:exit:7" }],
   ["hhkeys (the predicate left no JSON: the append succeeds, the step is refused)", { STUB_FAIL: "hhkeys" }, { hhkeys: "refused:unchecked" }],
 ];

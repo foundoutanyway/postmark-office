@@ -178,7 +178,7 @@ test("UNIT: the roll-call's law row reads the law pen's own state file", () => {
  * Run the WHOLE shipped script against a stubbed tree and return the pen files
  * it invoked, in order, plus its exit code and the state files it wrote.
  */
-function runShipped(mode) {
+function runShipped(mode, { penBody = "echo stubbed-pen-ok\nexit 0" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "w2-ingest-modes-"));
   const ops = join(dir, "ops"), bin = join(dir, "bin"), lab = join(dir, "lab");
   for (const d of [ops, bin, lab, join(lab, "state"), join(dir, "office")]) mkdirSync(d, { recursive: true });
@@ -192,11 +192,12 @@ function runShipped(mode) {
   // It logs which checkout it was asked for, so a test can say whose law the pen read (POS-364).
   const refreshLog = join(dir, "refresh.log");
   writeFileSync(join(ops, "world2-refresh-clone.sh"), `#!/bin/bash\necho "$1" >> ${JSON.stringify(refreshLog)}\necho ${SHA}\n`);
-  // A `node` that records which pen it was asked to run and exits 0 — the pen
+  // A `node` that records which pen it was asked to run and, by default, exits 0
+  // (`penBody` replaces what it prints and how it exits: POS-619's refusal) — the pen
   // that did not really run. A `--blessed` run is logged with its flag, so the
   // law mode's two law-ingest runs can be told apart (POS-270).
   const log = join(dir, "calls.log");
-  writeFileSync(join(bin, "node"), `#!/bin/bash\ncase " $* " in *" --blessed "*) printf '%s --blessed\\n' "$1" ;; *) printf '%s\\n' "$1" ;; esac >> ${JSON.stringify(log)}\necho stubbed-pen-ok\nexit 0\n`);
+  writeFileSync(join(bin, "node"), `#!/bin/bash\ncase " $* " in *" --blessed "*) printf '%s --blessed\\n' "$1" ;; *) printf '%s\\n' "$1" ;; esac >> ${JSON.stringify(log)}\n${penBody}\n`);
   for (const f of ["world2-refresh-clone.sh", "world2-ingest.sh", "world2-lib.sh"]) chmodSync(join(ops, f), 0o755);
   chmodSync(join(bin, "node"), 0o755);
 
@@ -292,4 +293,37 @@ test("EXECUTED: an unknown mode exits 2 and writes no state at all", (t) => {
   assert.equal(code, 2, "an unknown mode did not exit 2 — `stamp` is the singular somebody will type");
   assert.match(stderr, /usage: world2-ingest\.sh \[law\|stamps\|both\]/);
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ── POS-619: a refused law is LOUD, never a quiet stall ─────────────────────
+// law-ingest refuses a law the parser would read diminished WHOLE (exit 1,
+// nothing written), so every law update waits until the mark is fixed. The
+// state file must say so in a field of its own, from its head: `detail` keeps
+// only the output's last 600 characters. The sentinel's law_pen probe pages on
+// it (tools/site-sentinel.mjs § 12, test/site-sentinel.test.mjs).
+test("EXECUTED: a REFUSED law reads law-failed, exits 1, and carries the refusal whole in its own field (POS-619)", (t) => {
+  if (!bashAvailable()) { t.skip("bash is not on PATH here"); return; }
+  const head = `REFUSED: the law at ${"0".repeat(40)} carries 1 mark(s) with a value the parser would silently lose, ` +
+    "so law_projection would hold less than the law says. Nothing was written; the law stays where it was (POS-619).";
+  const line = "  WORLD/marks/let-there-be-light/the-town-centre/the-keeping-works/postmark-node/mark/thing/consumable/candy/mark.md: " +
+    'dials: { stolen: true, clue: "No such thing as candy exists" } is not strict JSON, so the record keeps only its number pairs and ' +
+    'silently drops stolen, clue (it reads as {}) — write it as strict JSON, every key quoted: dials: { "stolen": true, "clue": "No such thing as candy exists" }';
+  // A noisy tail after it, long enough that `detail`'s last 600 characters lose the REFUSED line.
+  const noise = Array.from({ length: 12 }, (_, i) => `[law-ingest] a later line ${i} that pushes the head out of the tail`);
+  const out = join(mkdtempSync(join(tmpdir(), "w2-refusal-")), "pen-output.txt");
+  writeFileSync(out, [head, line, ...noise].join("\n") + "\n");
+  const { code, state } = runShipped("law", { penBody: `cat ${JSON.stringify(out)} >&2\nexit 1` });
+  rmSync(dirname(out), { recursive: true, force: true });
+  assert.equal(code, 1, "a refused law must fail the unit, so systemd's Result and the roll-call's ALARM-failed see it");
+  assert.equal(state.status, "law-failed");
+  assert.equal(state.law.exit, 1);
+  assert.ok(state.refusal.startsWith(`${head}\n${line}`), `the refusal rides whole, head first, with the lint's sentence:\n${state.refusal}`);
+  assert.ok(!state.detail.includes("REFUSED: the law"), "the premise: detail's tail alone would have lost the REFUSED line");
+});
+
+test("EXECUTED: a law run that succeeds carries no refusal field (POS-619)", (t) => {
+  if (!bashAvailable()) { t.skip("bash is not on PATH here"); return; }
+  const { code, state } = runShipped("law");
+  assert.equal(code, 0);
+  assert.equal(state.refusal, undefined);
 });

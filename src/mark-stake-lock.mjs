@@ -45,6 +45,7 @@
 // holding the mark's; the tick takes only drops' locks.
 
 import { UNIT_ACTION } from "./world-stacks.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 export const markLockKey = (id) => `wld27-mark:${String(id)}`;
 const LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1))";
@@ -146,7 +147,7 @@ export async function withMarkHeld(id, fn, { env = process.env, refusal = "nothi
     }
   } catch (e) {
     throw bounce(503, "the record could not be reached to order this change on the mark",
-      `${refusal} — try again (${String(e?.message ?? e).slice(0, 120)})`);
+      `${refusal} — try again; ${faultLogged("the record could not be reached to order this change on the mark", e)}`);
   }
   const key = markLockKey(id);
   let broken = false;
@@ -187,7 +188,7 @@ export const withdrawEscrowGuard = ({ mark, escrow }) => async (client) => {
   try { n = await escrow(mark); }
   catch (e) {
     throw bounce(503, `the stakes on "${mark}" could not be read`,
-      `a mark is withdrawn only when nothing is staked on it, and the ledger did not answer — your mark is exactly as it was; try again (${String(e?.defect ?? e?.message ?? e).slice(0, 120)})`);
+      `a mark is withdrawn only when nothing is staked on it, and the ledger did not answer — your mark is exactly as it was; try again; ${faultLogged(`the stakes on "${mark}" could not be read`, e)}`);
   }
   if (Number(n) > 0) throw bounce(409, `${n}✦ stand in escrow on "${mark}" — a staked mark cannot be withdrawn`,
     "a stake landed while the withdrawal was being made — your own stake comes back with world_unstake; another's must be unstaked by its owner. Nothing was withdrawn.");

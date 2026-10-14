@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { openDynamic } from "../src/dynamic-store.mjs";
 import {
   ACTION_AMEND, ACTION_LEAVE, ACTION_WITHDRAW, CLASS_FRAME, CLASS_MARK, WORLD_ANCHOR,
-  anchorAt, composeAnchor, journalHead, liveChildrenOf,
+  anchorAt, composeAnchor, filedPathOfAt, frozenFilingAt, journalHead, liveChildrenOf,
   liveMarks, pathFor, pinWitnesses, readJournal, replayDrafts, resetPathIndex,
 } from "../src/world-journal.mjs";
 // ── THE ROWS ARE SEEDED, NOT WRITTEN BY A DOOR (G1 / POS-156) ───────────────
@@ -1405,4 +1405,37 @@ test("POS-406 — a detail on a home on your household's ground is not told it i
   const commons = await withGuardsFlipped(guardStore({ identities: HOUSEMATES }), () => leaveMarkViaOffice(repo,
     { slug: "pos406-on-commons", ...detail, parent_id: "alpha/published-note" }, houseA));
   assert.ok(commons.publishing?.heads_up, "a detail on commons ground is still told escrow publishes it");
+});
+
+// ── THE FILING CACHE IS KEYED BY COMMIT, NOT BY THE NAME IT WAS ASKED BY ─────
+//
+// `world.mjs` asks the freeze and the path index by "refs/heads/main", and that
+// name points at a different tree after every crossing. Keyed on the name, the
+// answer read before main moved was handed back after it, until some caller
+// asking by a real commit happened to evict it. THE FLIP: key the cache on the
+// `sha` argument again and both halves of this red.
+test("THE FILING CACHE follows main: asked by name after main moves, the new commit answers", () => {
+  const r = mkdtempSync(join(tmpdir(), "postmark-filing-cache-"));
+  after(() => sweep(r));
+  const g = (...args) => execFileSync("git", ["-C", r, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const write = (path, text) => { mkdirSync(dirname(join(r, path)), { recursive: true }); writeFileSync(join(r, path), text); };
+  const commit = (msg) => { g("add", "-A"); g("-c", "user.email=t@postmark.test", "-c", "user.name=t", "commit", "-qm", msg); };
+  g("init", "-q", "-b", "main");
+  write("WORLD/filing-freeze.json", JSON.stringify({ marks: { "corwin/the-second-chair": "WORLD/marks/let-there-be-light/the-post-office/the-second-chair" } }));
+  write("WORLD/marks/corwin/a-stool/mark.md", "a stool\n");
+  commit("the freeze");
+
+  const MAIN = "refs/heads/main";
+  assert.equal(frozenFilingAt(r, MAIN).get("corwin/the-second-chair"), "WORLD/marks/let-there-be-light/the-post-office/the-second-chair/mark.md");
+  assert.equal(filedPathOfAt(r, MAIN)("corwin/a-lamp"), null, "the control: no lamp is filed yet");
+
+  // A crossing re-files the chair at its id (POS-441) and publishes a lamp.
+  write("WORLD/filing-freeze.json", JSON.stringify({ marks: { "corwin/the-second-chair": "WORLD/marks/corwin/the-second-chair" } }));
+  write("WORLD/marks/corwin/a-lamp/mark.md", "a lamp\n");
+  commit("a crossing");
+
+  assert.equal(frozenFilingAt(r, MAIN).get("corwin/the-second-chair"), "WORLD/marks/corwin/the-second-chair/mark.md",
+    "the freeze read before main moved was handed back after it");
+  assert.equal(filedPathOfAt(r, MAIN)("corwin/a-lamp"), "WORLD/marks/corwin/a-lamp/mark.md",
+    "the path index read before main moved was handed back after it");
 });

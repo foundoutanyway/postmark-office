@@ -109,6 +109,7 @@ import { stopDepartures } from "./world-movement.mjs";
 // The class every reader IS — 1.0's own constant, so the two apexes name the
 // same mark in `records` (world.mjs § markRecords).
 import { STRIDE_MARK_ID } from "./world-classes.mjs";
+import { faultLogged } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const state = { pool: null };
 
@@ -820,7 +821,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
       // A torn ingest is a REFUSAL, never a fold with whichever k came back
       // first — `stakesFromStore`'s rule, applied to one mark's slice.
       return { code: 503, body: { error: "bounce", defect: "the escrow projection cannot be folded at this sha",
-        hint: String(e?.message ?? e).slice(0, 240) } };
+        hint: faultLogged("the escrow projection cannot be folded at this sha", e) } }; // its error goes to the log (POS-578)
     }
 
     return { code: 200, body: {
@@ -904,7 +905,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     try { eng = await engine(); }
     catch (e) {
       return { code: 503, body: { error: "bounce", defect: "the world engine cannot be read at this office",
-        hint: `${String(e?.message ?? e).slice(0, 160)}. investigate is the engine's judgment about a mark and its neighbourhood; this door refuses rather than composing one of its own.` } };
+        hint: `${faultLogged("the world engine cannot be read at this office (investigate)", e)} investigate is the engine's judgment about a mark and its neighbourhood; this door refuses rather than composing one of its own.` } };
     }
 
     const world = eng.build.assembleWorld({ worldState, skeleton });
@@ -964,7 +965,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
         WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]);
     let derived;
     try { derived = live.departureRecords(rows); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: faultLogged("a departure act matches no known era", e) } }; }
     const all = derived.records.map((d) => ({
       iso: d.iso, handle: d.handle,
       from: d.from, toward: d.toward, at: d.at,
@@ -1025,7 +1026,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     const dep = await departuresForEndpoints(p);
     let derived;
     try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: faultLogged("a departure act matches no known era", e) } }; }
     const fc = live.fractionalCrossing(at.ms);
     return { code: 200, body: {
       what: "every walker's derived position at one instant — position is a function of (record, clock); nothing en route is stored",
@@ -1069,7 +1070,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     ]);
     let derived;
     try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: faultLogged("a departure act matches no known era", e) } }; }
     const world = live.worldFromRows({ marks: markRows, identities: idRows });
     const fc = live.fractionalCrossing(at.ms);
     const roll = rollRows.map((r) => r.handle);
@@ -1175,7 +1176,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     const dials = talk.sayDials(markRows.filter((m) => m.status === "standing"));
     let derived;
     try { derived = talk.voiceRecords(rows, { centreOf: (id) => centres.get(id) ?? null }); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a voice act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a voice act matches no known era", hint: faultLogged("a voice act matches no known era", e) } }; }
     const body = talk.conversationsOf(derived.voices, {
       now: at.ms,
       earshotM: dials.earshot_m.value,
@@ -1209,7 +1210,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
         WHERE action = ANY($1) ${live.PASSAGE_ORDER_SQL}`, [live.PASSAGE_ACTIONS]);
     let derived;
     try { derived = live.passageRecords(rows); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a passage act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a passage act matches no known era", hint: faultLogged("a passage act matches no known era", e) } }; }
     const fc = live.fractionalCrossing(at.ms);
     const occ = live.occupancyAt(derived.passages, fc);
     const handle = searchParams?.get("handle");
@@ -1322,7 +1323,7 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
   try { eng = await engine(); }
   catch (e) {
     return bounce(503, "the world engine cannot be read at this office",
-      `${String(e?.message ?? e).slice(0, 160)}. \`within\` is a containment chain and \`nearby\` a field of view; both are the engine's judgment. This door refuses rather than inventing a spine — a resident told they are somewhere they are not is worse than a resident told nothing.`);
+      `${faultLogged("the world engine cannot be read at this office (orient)", e)} \`within\` is a containment chain and \`nearby\` a field of view; both are the engine's judgment. This door refuses rather than inventing a spine — a resident told they are somewhere they are not is worse than a resident told nothing.`);
   }
 
   const world = eng.build.assembleWorld({ worldState, skeleton });

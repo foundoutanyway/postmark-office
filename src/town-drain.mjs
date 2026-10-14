@@ -40,7 +40,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
-  buildJoinFiles, gangwayState, planRegistryJoin,
+  buildJoinFiles, berthAshore, gangwayState, planRegistryJoin,
 } from "./residency.mjs";
 // The record's readers and the ceremony (POS-158). `ceremony.mjs` is safe to
 // import statically here: it reaches `residency.mjs` through
@@ -427,6 +427,10 @@ export async function writeTownDrain(clone, plan, { date, drainWith = collecting
       since: row.payload?.since,
       note: row.payload?.note,
     })) put(f.path, f.content);
+    // A row the gangway held boarded a berth at its door; settling it marks
+    // that berth ashore in the same crossing (POS-574, residency.mjs § berthAshore).
+    const berth = berthAshore(row.handle, { clone, date });
+    if (berth) put(berth.path, berth.content);
   }
 
   if (landed.length) {

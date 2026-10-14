@@ -561,7 +561,7 @@ const GREEN_TABLE = {
   "https://raw.githubusercontent.com/postmark-town/postmark/main/TOWN_BULLETIN/ferrys-daily.md": { status: 200, body: DAILY_MD },
   "https://api.github.com/repos/postmark-town/postmark/commits": { status: 200, body: JSON.stringify([{ commit: { committer: { date: "2026-08-25T06:00:00Z" } } }]) },
   // One read per watched workflow, by its file (the false DOWN of 2026-09-29).
-  "https://api.github.com/repos/keeminlee/postmark-site/actions/workflows/deploy.yml/runs": {
+  "https://api.github.com/repos/postmark-town/postmark-site/actions/workflows/deploy.yml/runs": {
     status: 200,
     body: JSON.stringify({ workflow_runs: [
       { name: "Deploy (snapshot -> dev, release -> prod)", status: "completed", conclusion: "success", created_at: "2026-08-25T11:44:00Z" },

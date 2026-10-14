@@ -1880,7 +1880,7 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   const { note, unavailable: noteUnavailable } = choice.handle ? await noteForHandle(key, choice.handle) : { note: null };
   // the primer rides every orient — the one page to read before a first mark
   // (the door's own pointer; the full serve-on-first-arrival design stays filed)
-  const primer = "https://raw.githubusercontent.com/keeminlee/postmark-world/main/WORLD/FURNISHING.md";
+  const primer = "https://raw.githubusercontent.com/postmark-town/postmark-world/main/WORLD/FURNISHING.md";
   // Who else is standing here (Stage 2, WORLD_PRESENCE). `presentNear` returns
   // null on its first line with the flag off, so this spreads nothing and the
   // answer is the one orient has always given.

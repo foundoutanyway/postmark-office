@@ -776,10 +776,18 @@ function groundRowOf(mod, mark, at, stands) {
 
 test("THE DOOR REFUSES AN AUTHOR GIVING THEIR OWN PRIVATE DRAFT AWAY — walk #10's end state, end to end", async () => {
   const { installHoldRecord } = await import("./acts-pen-stub.mjs");
-  const rec = await installHoldRecord();
+  const DRAFT = "wright/a-try-square-for-the-joinery";
+  // THE DRAFT IS ON THE DOCKET, because the door now asks. This test used to
+  // rest on the assumption kogane's 2026-10-14 bug posts removed — that any
+  // name canon doesn't carry is a draft — so step 1 "took" a draft that existed
+  // nowhere. The claim is filed under `solo:wright`, the spelling this stub's
+  // household resolver gives a resident with no registered house, which is
+  // what the door's own live read asks for.
+  const rec = await installHoldRecord({ claims: [{ id: "claim-try-square", slug: DRAFT, status: "draft",
+    household: "solo:wright", claimant: "wright", body: "a try-square for the joinery",
+    geometry: { kind: "sited", at: { x: 0, y: 0 }, extent: { w: 1, h: 1 } } }] });
   try {
     const { callHoldTool } = await import("../src/world-hold.mjs");
-    const DRAFT = "wright/a-try-square-for-the-joinery";
     const key = { handles: new Set(["wright"]) };
 
     // 1 · the author takes their own draft — clause 4 allows this, and it is

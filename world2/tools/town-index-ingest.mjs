@@ -345,14 +345,13 @@ async function writeLetters(client, town, history, tally, ids = null) {
   return { cands, touched, oldRows, derived: cands.length };
 }
 
-const likeEscape = (s) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
-
 /**
  * The threads a delta re-derives: every stored thread holding a letter in play
- * (found in the stored JSON: there is no reverse index, and the scan's cost is
- * measured on POS-523), and every thread of the reader's holding one of those
- * threads' letters or a letter in play. That closure carries a merge (a parent
- * that arrives) and a split (a bridge that goes). `ids` null is the whole table.
+ * (each stored row's letterIds asked as jsonb, one pass over town_threads per
+ * round: there is no reverse index, and the pass is measured on POS-523), and
+ * every thread of the reader's holding one of those threads' letters or a
+ * letter in play. That closure carries a merge (a parent that arrives) and a
+ * split (a bridge that goes). `ids` null is the whole table.
  */
 async function writeThreads(client, town, tally, ids = null) {
   const key = keyOf("threads");
@@ -386,17 +385,16 @@ async function writeThreads(client, town, tally, ids = null) {
     ask.forEach((x) => asked.add(x));
     if (ask.length) {
       const t0 = Date.now();
-      const rows = (await client.query("SELECT root, json, digest FROM town_threads WHERE json LIKE ANY($1::text[])",
-        [ask.map((id) => `%${likeEscape(JSON.stringify(id))}%`)])).rows;
+      // One pass over the table per round, whatever the number of ids: each
+      // row's letterIds read as jsonb and asked `?|` (a LIKE per id was one pass
+      // PER id: 1.2 s for a 19-commit delta on the real town, POS-523).
+      const rows = (await client.query(
+        "SELECT root, json, digest FROM town_threads WHERE (json::jsonb -> 'letterIds') ?| $1::text[]", [ask])).rows;
       scanMs += Date.now() - t0;
-      const asking = new Set(ask);
       for (const r of rows) {
         if (heldBy.has(r.root)) continue;
-        let letterIds;
-        try { letterIds = JSON.parse(r.json).letterIds ?? []; } catch { letterIds = []; }
-        if (!letterIds.some((x) => asking.has(x))) continue;          // the LIKE is a sieve; the JSON decides
         heldBy.set(r.root, r);
-        for (const y of letterIds) add(y);
+        for (const y of JSON.parse(r.json).letterIds ?? []) add(y);
       }
     }
     queue = grew;
@@ -425,12 +423,24 @@ export const LEDGER_PATH = "WHITE_PAGES/mail-ledger.md";
  * as it always has). No digest is stored: the head is the store's word that it
  * holds the ledger at head, and the seal's audit checks that word whole.
  */
-export function ledgerAppend(townRepo, head, sha) {
-  const blob = (rev) => { try { return git(townRepo, "rev-parse", "--verify", "-q", `${rev}:${LEDGER_PATH}`).trim() || null; } catch { return null; } };
-  const was = blob(head), now = blob(sha);
-  if (was === now) return { text: "", bytes: 0 };
-  const read = (id) => (id ? git(townRepo, "cat-file", "blob", id) : "").replace(/\r\n/g, "\n");
-  const a = read(was), b = read(now);
+export function ledgerAppend(townRepo, head, sha, changed = null) {
+  // A delta whose diff does not name the ledger read nothing (most do not: the
+  // ferry writes it twice a day). Else both blobs, in ONE git process.
+  if (changed && !changed.includes(LEDGER_PATH)) return { text: "", bytes: 0 };
+  const raw = execFileSync("git", ["-C", townRepo, "cat-file", "--batch"],
+    { input: `${head}:${LEDGER_PATH}\n${sha}:${LEDGER_PATH}\n`, maxBuffer: 512 * 1024 * 1024 });
+  const blobs = [];
+  for (let at = 0; blobs.length < 2;) {
+    const eol = raw.indexOf(10, at);
+    const [oid, type, size] = raw.subarray(at, eol).toString("utf8").split(" ");
+    if (type !== "blob") { blobs.push({ oid: null, text: "" }); at = eol + 1; continue; }   // "<name> missing": no ledger there
+    const n = Number(size);
+    blobs.push({ oid, text: raw.subarray(eol + 1, eol + 1 + n).toString("utf8").replace(/\r\n/g, "\n") });
+    at = eol + 1 + n + 1;
+  }
+  const [was, now] = blobs;
+  if (was.oid === now.oid) return { text: "", bytes: 0 };
+  const a = was.text, b = now.text;
   const onBoundary = a === "" || a.endsWith("\n") || b.length === a.length || b[a.length] === "\n";
   if (!b.startsWith(a) || !onBoundary) return null;
   return { text: b.slice(a.length), bytes: a.length + b.length };
@@ -458,8 +468,8 @@ async function ledgerWhole(client, town, tally) {
  * the new lines, which proof was taken, and the appended text (the mint's raw
  * lines are cut from the same text, src/mint-inputs.mjs).
  */
-async function writeLedger(client, townRepo, town, head, sha, tally) {
-  const append = ledgerAppend(townRepo, head, sha);
+async function writeLedger(client, townRepo, town, head, sha, changed, tally) {
+  const append = ledgerAppend(townRepo, head, sha, changed);
   const held = (await client.query("SELECT coalesce(max(seq), 0)::int n FROM town_ledger")).rows[0].n;
   if (append && town.ledger.length - held === parseLedger(append.text).length) {
     const newLines = ledgerLines({ ledger: town.ledger.slice(held) }).map((l, i) => [held + i + 1, ...l]);
@@ -500,7 +510,7 @@ export async function applyDelta(client, { townRepo, head, sha, log = quiet, aud
 
   // the mail ledger first (POS-523): its new deliveries place letters in their
   // threads, so their ids are in play below. Append-only; a changed past refuses.
-  const ledger = await writeLedger(client, townRepo, town, head, sha, tally);
+  const ledger = await writeLedger(client, townRepo, town, head, sha, changed, tally);
   const newLines = ledger.newLines;
   lap("ledger");
 

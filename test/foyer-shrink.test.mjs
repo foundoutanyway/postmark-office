@@ -988,14 +988,20 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   // postmark#3757), for the stakes segment's rule sentence, which now quotes
   // the sweep's whole rule (world unpublish-verdict.mjs § UNPUBLISH_RULE: "…
   // and its registered path is on main"). Diffed leaf by leaf BEFORE the
-  // capture, in two steps. At the OLD pin (17b64ef1) with this branch's code:
+  // capture, in two steps, each on a world clone built the way
+  // .github/scripts/suite-clones.sh builds CI's (origin/main AT the pin, no
+  // tag newer than it), because the page reads the world at its BLESSED ref
+  // and a pool tree's clone, re-pointed only at HEAD, kept its old origin/main
+  // and showed no move. (The first capture here was taken that way and CI
+  // red it.) At the OLD pin (17b64ef1, blessed S107) with this branch's code:
   // 1063 paths before, 1063 after, none removed or added, ONE changed,
   // `full.stakes.rule`. Then at the NEW pin (24f8b505, the head of
-  // postmark-world#208) against that: 0 paths moved. The slim skin drops
-  // `rule`, so it does not move at all.
+  // postmark-world#208, blessed S108) against that: 2 changed, both the
+  // world's own data at the pin, `stances.stances_awaiting` 62 -> 61 on each
+  // skin. The slim skin drops `rule`.
   //
   //   full  21974 -> 22001 (+27, +0.12%) = stakes.rule +27
-  //   slim  19467 -> 19467 (0)
+  //   slim  19467 -> 19467 (0; stances_awaiting is two digits either way)
   //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:

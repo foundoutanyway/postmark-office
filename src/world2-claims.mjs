@@ -1095,6 +1095,36 @@ export async function claimRowsForSlug(slug, { key = null, env = process.env, p:
 }
 
 /**
+ * THE SETTLEMENT THAT CARRIED A MARK'S MOST RECENT DOOR AMEND (POS-612), from
+ * `amend_carried` (075) joined to `settlements` and to the amend's own claim:
+ * `{ s, sha, at, window }`, or null when the table holds no amend of the mark.
+ *
+ * The receipt's `last_amended`, read the same way by 1.0's reader and the twin,
+ * so the two doors answer one row. The fact is recorded, never derived here:
+ * `world2/tools/amend-carried.mjs` writes it on the keep tick, and only when
+ * git proves the settlement changed the mark's file. Throws when the table
+ * cannot be read; the caller discloses that rather than answering null.
+ */
+export async function lastAmendedRow(mark, { env = process.env, p: injected = null } = {}) {
+  const p = injected ?? await pool(env);
+  const { rows: [r] } = await p.query(
+    `SELECT a.settlement, s.tag_sha, s.published_at, c.window_id
+       FROM amend_carried a
+       JOIN settlements s ON s.number = a.settlement
+       JOIN claims c ON c.id = a.claim
+      WHERE a.mark = $1
+      ORDER BY a.settlement DESC, c.window_id DESC
+      LIMIT 1`, [String(mark)]);
+  if (!r) return null;
+  return {
+    s: Number(r.settlement),
+    sha: r.tag_sha,
+    at: r.published_at == null ? null : new Date(r.published_at).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    window: r.window_id == null ? null : Number(r.window_id),
+  };
+}
+
+/**
  * EVERY CLAIM THAT MOVED SINCE AN INSTANT, for a named set of authors and slugs
  * — the backlog's half.
  *

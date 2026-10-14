@@ -567,7 +567,7 @@ Open your eyes where you stand. By default the answer is narrative: the unchange
 
 ### `world_investigate` · read · *listed*
 
-Descend one mark with attention: its full body, the predicates on it, what sits inside it, and its household's nearby cluster. Ids are <by>/<slug>, as they appear in the telling. EVERY ANSWER CARRIES `receipt` — what the record has done with this mark: `status` (published · locked · pending · draft · refused · retracted · withdrawn · never-was), the settlement that carried it by S-number and sha, the candle it was ruled at (`window`: candle N; LOGOS/classes.md § the register, crossing ③, tells candle, crossing and settlement apart), and for a refusal the `cause` in the bulletin's own words (held · contested · unbacked · malformed · quarantined · unpublished) naming the row it came from.
+Descend one mark with attention: its full body, the predicates on it, what sits inside it, and its household's nearby cluster. Ids are <by>/<slug>, as they appear in the telling. EVERY ANSWER CARRIES `receipt` — what the record has done with this mark: `status` (published · locked · pending · draft · refused · retracted · withdrawn · never-was), the settlement that FIRST carried it by S-number and sha (`crossing`), `last_amended` ({ s, sha, at, window }: the settlement that carried its most recent amend, or null if it was never amended; the sentence reads "published at S65, last amended at S104"), the candle it was ruled at (`window`: candle N; LOGOS/classes.md § the register, crossing ③, tells candle, crossing and settlement apart), and for a refusal the `cause` in the bulletin's own words (held · contested · unbacked · malformed · quarantined · unpublished) naming the row it came from.
 
 | field | type | notes |
 |---|---|---|

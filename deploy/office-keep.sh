@@ -341,6 +341,16 @@ if settled="$(node world2/tools/settlements-backfill.mjs --apply --prod --quiet 
 else
   keep_step settlements refused "exit:$?"; echo "[office-keep] settlements or carried rows NOT written (non-fatal) — $settled — the next tick tries again; world2/tools/settlements-backfill.mjs --verify and mark-carried-backfill.mjs --verify say where the tables stand" >&2
 fi
+# The same run's two soft steps get their OWN keep steps (POS-612, review-612):
+# each is non-fatal, so its failure leaves the run's exit 0 and `settlements ok`
+# above, and would otherwise reach no alarm. Read from the run's own lines
+# (`carried: …`, `amends: …`; settlements-backfill.mjs § softStepStatus): wrote
+# → ok; a failed, absent-table or capped step → refused; no line → notrun.
+# box-rollcall alarms on three scheduled ticks that are not ok (keep-history.mjs).
+# shellcheck disable=SC2046 # the status and its reason are two words on purpose
+keep_step carried $(printf '%s\n' "$settled" | node world2/tools/settlements-backfill.mjs --soft-step carried 2>/dev/null || echo notrun)
+# shellcheck disable=SC2046
+keep_step amends $(printf '%s\n' "$settled" | node world2/tools/settlements-backfill.mjs --soft-step amends 2>/dev/null || echo notrun)
 
 # ── the positions snapshot, once per clearing (POS-302, 053) ─────────────────
 # The newest closed window's snapshot of each resident's governing departure,

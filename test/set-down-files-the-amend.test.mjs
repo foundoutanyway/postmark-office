@@ -295,6 +295,73 @@ test("set down on ground that is not the author's, with no escrow readable: the 
   assert.doesNotMatch(hold.setDownNote(out), /canon moves it here/, "no promise of a move the verdict did not make");
 });
 
+// ── THE AUTHOR'S OWN DRAFT (postmark#3663, kogane) ──────────────────────────
+//
+// kogane folded draft things at the Well House, carried them to a shrine and
+// set them down before the crossing; they published back at the Well House.
+// The set-down read only canon, found nothing for an unpublished thing, and
+// filed nothing. A PRIVATE DRAFT is now re-sited in place: the same claim row,
+// at the place it was set down. A claim already PUT FORWARD waits on a ruling,
+// and the receipt says that instead of promising an amend that never comes.
+// THE FLIP: drop the live-claim read in `fileAuthorsAmend` and DRAFT reds on
+// "the set-down filed nothing".
+
+const CUP = "keith/a-tin-cup";
+const FOLD_AT = { x: 176, y: 425.5 };   // the Waiting Room: not Keith's ground, so the cup stays a draft
+const MOVED_AT = { x: 185, y: 430 };    // still the Waiting Room, a few steps over
+
+async function cupDraft(p) {
+  const world = await import("../src/world.mjs");
+  await world.leaveMarkViaOffice(repo, { by: "keith", slug: "a-tin-cup", at: FOLD_AT, extent: { w: 1, h: 1 },
+    kind: "sited", class: "thing", body: "A tin cup with a dent in the rim.", portable: true }, KEITH);
+  const rows = p.claims().filter((c) => c.slug === CUP);
+  assert.equal(rows.length, 1, `the cup is one claim: ${JSON.stringify(p.claims())}`);
+  assert.equal(rows[0].status, "draft", "with no stake on ground that is not Keith's, the cup is a private draft");
+  const { liveMarkOf } = await import("../world2/tools/guard-reads.mjs");
+  return liveMarkOf(rows[0]).mark;
+}
+
+test("DRAFT: Keith sets down his own private draft elsewhere, and the same claim is re-sited where he stood", async () => {
+  const p = await fresh();
+  const live = await cupDraft(p);
+  const out = await hold.fileSetDownAmend({
+    did: { thing: CUP, declared_by: "keith", at: "2026-10-10T23:45:10.654Z", did: "drop" },
+    stood: MOVED_AT, key: KEITH, actId: 16113, deps: { householdOf: HOUSES, mark: null, liveClaim: live },
+  });
+  assert.equal(out.amend.filed, true, `the set-down filed nothing: ${JSON.stringify(out)}`);
+  assert.equal(out.amend.draft, true);
+  assert.equal(p.rows().filter((a) => a.object === CUP).length, 0, "a private draft is no public deed: no act is mirrored until it is put forward");
+  // The newest claim for the cup is a private draft at the set-down place. (This
+  // in-memory pen answers every UPDATE with no rows, so it stands a second row
+  // where the real pen rewrites the first; second-amend-replaces-the-first.test.mjs
+  // proves the rewrite against the real store.)
+  const latest = p.claims().filter((c) => c.slug === CUP).at(-1);
+  assert.equal(latest.status, "draft");
+  assert.deepEqual(latest.geometry.at, MOVED_AT, "the draft now carries the place it was set down");
+  assert.equal(parse(latest.data)._set_down.act_id, "16113", "and names the drop that moved it");
+  const deferred = parse(latest.data)._deferred_act;
+  assert.equal(deferred.action, "amend", "the act it holds until it is put forward is Keith's amend");
+  assert.equal(deferred.actor, "keith");
+  assert.match(hold.setDownNote(out), /your private draft is re-sited here, and it publishes here when it is put forward/);
+});
+
+test("PUT FORWARD: a claim already on the docket is not re-sited here, and the receipt says so instead of promising an amend", async () => {
+  const p = await fresh();
+  const live = await cupDraft(p);
+  const before = JSON.stringify(p.claims());
+  const out = await hold.fileSetDownAmend({
+    did: { thing: CUP, declared_by: "keith", at: "2026-10-10T23:45:10.654Z", did: "drop" },
+    stood: MOVED_AT, key: KEITH, actId: 16113,
+    deps: { householdOf: HOUSES, mark: null, liveClaim: { ...live, claim_status: "pending", put_forward: true } },
+  });
+  assert.equal(out.amend.filed, false);
+  assert.equal(out.amend.put_forward_unpublished, true);
+  assert.equal(JSON.stringify(p.claims()), before, "nothing was written");
+  const note = hold.setDownNote(out);
+  assert.match(note, /put forward and not yet published, so it publishes where it was folded/);
+  assert.doesNotMatch(note, /until one is/, "no promise of an amend that will never be filed");
+});
+
 // ── FALSIFIER 2 · a stranger's set-down files nothing, and says so ──────────
 
 test("ANA DROPS KEITH'S STOOL: no amend, no claim, canon unchanged — and the receipt says it is unaccepted", async () => {

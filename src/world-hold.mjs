@@ -1065,8 +1065,26 @@ export async function fileSetDownAmend({ did, stood, key, actId = null, deps = {
  */
 export async function fileAuthorsAmend({ thing, stood, key, actor, actId = null, writtenAt = null, extra = {}, deps = {} }) {
   try {
-    const mark = deps.mark !== undefined ? deps.mark
+    let mark = deps.mark !== undefined ? deps.mark
       : await (async () => { const { worldMarkById } = await import("./world.mjs"); return (await worldMarkById(String(thing))).mark; })();
+    // ── THE AUTHOR'S OWN DRAFT (postmark#3663, kogane) ─────────────────────
+    //
+    // An unpublished thing may be taken and dropped inside its author's house
+    // (§ CLAUSE 4), but this read only ever asked canon, found nothing, and
+    // filed nothing: the claim kept the fold place and published there, and
+    // the set-down was lost. A PRIVATE DRAFT is the author's to re-site, so its
+    // live record is amended in place (the claims pen rewrites the author's
+    // own draft rather than adding a second). A claim already PUT FORWARD is
+    // on the docket, and re-siting it waits on a ruling; it says so instead of
+    // promising an amend that will never come.
+    let draft = false;
+    if (!mark) {
+      const live = deps.liveClaim !== undefined ? deps.liveClaim : await ownLiveClaim(thing, key, actor);
+      if (live?.claim_status === "draft") { mark = draftRecordOf(live); draft = true; }
+      else if (live && (live.claim_status === "pending" || live.put_forward === true))
+        return { filed: false, put_forward_unpublished: true,
+          why: `${thing} is put forward and not yet published, and re-siting a claim already on the docket waits on a ruling (postmark#3663)` };
+    }
     const built = setDownAmend({ thing, mark, stood, actor, actId, writtenAt });
     if (built.refused) return { filed: false, why: built.refused };
     const leave = deps.leave ?? (async (payload, k, opts) => {
@@ -1077,11 +1095,32 @@ export async function fileAuthorsAmend({ thing, stood, key, actor, actId = null,
     if (res?.error) return { filed: false, why: `the amend door answered: ${res.defect ?? res.error}` };
     return {
       filed: true, mark: res?.id ?? String(thing), seq: res?.seq ?? null, put_forward: res?.put_forward === true,
+      ...(draft ? { draft: true } : {}),
       ...(res?.put_forward === true ? {} : { to_publish: res?.to_publish ?? null }),
     };
   } catch (e) {
     return { filed: false, why: `the amend door refused: ${String(e?.defect ?? e?.message ?? e).slice(0, 200)}` };
   }
+}
+
+/** The author's own live claim on `thing` (draft or pending), or null when none or unreadable. */
+async function ownLiveClaim(thing, key, actor) {
+  try {
+    const { guardedLiveMarks } = await import("./world2-guards.mjs");
+    const live = await guardedLiveMarks(null, { household: key?.household, actor });
+    return (live ?? []).find((m) => m?.id === String(thing)) ?? null;
+  } catch { return null; }
+}
+
+/**
+ * A live claim's record as `setDownAmend` reads a canon one: the fields the
+ * live read adds about the CLAIM (its row, its status, its slug and sequence,
+ * whether it is put forward) are not lines the author wrote, so they are not
+ * carried into the amend.
+ */
+const LIVE_ONLY = Object.freeze(["slug", "seq", "put_forward", "claim_id", "claim_status", "amend"]);
+export function draftRecordOf(live) {
+  return Object.fromEntries(Object.entries(live ?? {}).filter(([k]) => !LIVE_ONLY.includes(k)));
 }
 
 // ── THE AUTHOR'S HOUSE ANSWERS A STRANGER'S SET-DOWN (POS-138, ruled 10:1x) ──
@@ -1134,8 +1173,12 @@ export function setDownNote(setDown) {
   if (!a) return `${lead}.`;
   if (a.filed && a.put_forward)
     return `${lead}; the amend that re-sites the mark is filed${a.seq != null ? ` (act ${a.seq})` : ""}, and canon moves it here at the next crossing.`;
+  if (a.filed && a.draft)
+    return `${lead}; your private draft is re-sited here, and it publishes here when it is put forward.`;
   if (a.filed)
     return `${lead}; the amend that re-sites the mark is filed as ${setDown.made_by}'s private draft — no escrow behind it clears the ground it now stands on, so canon keeps it where it was folded until it is put forward.`;
+  if (a.put_forward_unpublished)
+    return `${lead}; it is put forward and not yet published, so it publishes where it was folded — re-siting a claim already on the docket waits on a ruling (postmark#3663).`;
   if (setDown.whose === "another household's")
     return `${lead} — but ${setDown.made_by} made it, and a set-down by another household moves nothing in canon on its own: it reads as set down by you, unaccepted, and canon stays where ${setDown.made_by} put it.`;
   return `${lead}; no amend was filed (${a.why}), so canon keeps it where it was folded and the set-down is the read's answer until one is.`;

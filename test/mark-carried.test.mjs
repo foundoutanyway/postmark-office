@@ -118,7 +118,7 @@ const carriedRows = () => owner(async (c) => (await c.query("SELECT mark, settle
 
 test("the backfill refuses on a planted disagreement — a settlements row whose sha is not the tag's — and writes nothing", { skip }, async () => {
   await owner(async (c) => {
-    await c.query("TRUNCATE mark_carried, settlements");
+    await c.query("TRUNCATE mark_carried, amend_carried, settlements");
     await settleRows(c);
     await c.query("UPDATE settlements SET tag_sha = $1 WHERE number = 2", ["f".repeat(40)]);
   });
@@ -131,7 +131,7 @@ test("the backfill refuses on a planted disagreement — a settlements row whose
 });
 
 test("the backfill fills every answerable mark from 1.0's answer, and the one with no file stays without a row", { skip }, async () => {
-  await owner(async (c) => { await c.query("TRUNCATE mark_carried, settlements"); await settleRows(c); });
+  await owner(async (c) => { await c.query("TRUNCATE mark_carried, amend_carried, settlements"); await settleRows(c); });
   const r = await asApi((c) => recordCarried(c, world, { apply: true }));
   assert.equal(r.verdict, "ok");
   assert.deepEqual(await carriedRows(), ["wright/the-gate@S2", "wright/the-lamp@S1"], "the amended lamp is S1's, not the amend's");

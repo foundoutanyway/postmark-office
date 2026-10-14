@@ -17,8 +17,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { stampAshore, berthAshore } from "../src/residency.mjs";
-import { openOauthDb, mintBerth, berthArrivals } from "../src/oauth.mjs";
-import { watchOfficeBerths, berthsFromHere, OFFICE_BASE } from "../tools/harbor-watch.mjs";
+import { openOauthDb, mintBerth, berthArrivals, arrivalsReader } from "../src/oauth.mjs";
+import { watchOfficeBerths, watch1f916, berthsFromHere, OFFICE_BASE, CHARTERED_SHORES } from "../tools/harbor-watch.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "postmark-harbor-signs-"));
 const odb = openOauthDb(join(dir, "oauth.db"));
@@ -71,7 +71,8 @@ test("S4 · berthAshore: the card a road is writing, or the berth standing in th
 });
 
 test("S5 · berthArrivals counts keyless berths by claimed town: ever, live, co-signed; no claim is not a town", async () => {
-  for (const [slug, town] of [["voyager-a", "1f3d9"], ["voyager-b", "1f3d9"], ["voyager-c", "1f3d9"], ["forum-one", "1f916"], ["local-one", null]])
+  for (const [slug, town] of [["voyager-a", "1f3d9"], ["voyager-b", "1f3d9"], ["voyager-c", "1f3d9"], ["forum-one", "1f916"], ["local-one", null],
+    ["graffiti-a", "buy-my-coin.example"], ["graffiti-b", "ai-village"]])
     await mintBerth(odb, slug, town);
   odb.prepare("UPDATE berths SET expires = 1 WHERE slug = 'voyager-b'").run();
   odb.prepare("UPDATE berths SET cosigned_gh_id = 7, cosigned_gh_login = 'someone', cosigned_at = 1 WHERE slug = 'voyager-c'").run();
@@ -79,7 +80,38 @@ test("S5 · berthArrivals counts keyless berths by claimed town: ever, live, co-
   assert.deepEqual(await berthArrivals(odb), {
     "1f3d9": { ever: 3, live: 2, cosigned: 1 },
     "1f916": { ever: 1, live: 1, cosigned: 0 },
-  }, "an expired berth is still ever; a co-signed one is still counted where it sailed from");
+    other: { ever: 2, live: 2, cosigned: 0 },
+  }, "an expired berth is still ever; a co-signed one is still counted where it sailed from; an unchartered claim is counted, never named");
+});
+
+test("S5b · only a chartered town is named: the list is the harbor watch's own, and other is always there", async () => {
+  assert.deepEqual([...CHARTERED_SHORES].sort(), ["1f3d9", "1f916"], "the shores harbor-watch reads, the hub excluded");
+  const fresh = openOauthDb(join(dir, "fresh.db"));
+  try {
+    await mintBerth(fresh, "only-graffiti", "postmark");
+    assert.deepEqual(await berthArrivals(fresh), { other: { ever: 1, live: 1, cosigned: 0 } },
+      "even the hub's own name is not a chartered SHORE: a claim to have sailed from here is folded too");
+  } finally { fresh.close(); }
+});
+
+test("S5c · the count is read at most once a minute, and a store that cannot answer logs once a minute, not per hit", async () => {
+  let t = 0, reads = 0, fail = false;
+  const logged = [];
+  const read = async () => { reads++; if (fail) throw new Error("store down"); return { other: { ever: reads, live: 0, cosigned: 0 } }; };
+  const get = arrivalsReader({ read, ttlMs: 60_000, clock: () => t, log: (l) => logged.push(l) });
+
+  const first = await get(null);
+  t = 59_999;
+  assert.deepEqual(await get(null), first, "inside the minute: the held answer");
+  assert.equal(reads, 1, "one GROUP BY, whatever the traffic");
+  t = 60_000;
+  assert.equal((await get(null)).by_from_town.other.ever, 2, "a minute on: read again");
+
+  fail = true; t = 120_000;
+  assert.equal(await get(null), null, "an outage answers null");
+  for (const at of [120_001, 150_000, 179_999]) { t = at; assert.equal(await get(null), null); }
+  assert.equal(logged.length, 1, "and is said once in that minute, not once per hit");
+  assert.match(logged[0], /store down/);
 });
 
 test("S6 · harbor-watch reads the count over the office's public door, and every chartered town gets one, zeros included", async () => {
@@ -92,6 +124,17 @@ test("S6 · harbor-watch reads the count over the office's public door, and ever
   assert.deepEqual(asked, [`${OFFICE_BASE}/berth`], "GET /berth on the public door, no key");
   assert.deepEqual(berthsFromHere(by, "1f3d9"), { ever: 4, live: 1, cosigned: 2 });
   assert.deepEqual(berthsFromHere(by, "1f916"), { ever: 0, live: 0, cosigned: 0 }, "a town nobody claimed reads zeros, which is true");
+});
+
+test("S7b · every read the watch makes has a deadline: a door that never answers is that lane's error", async () => {
+  const hanging = (_url, opts) => new Promise((_ok, no) => opts.signal.addEventListener("abort", () => no(opts.signal.reason)));
+  await assert.rejects(watchOfficeBerths({ fetchImpl: hanging, timeoutMs: 50 }), (e) => e.name === "TimeoutError");
+
+  const signals = [];
+  const recording = async (_url, opts) => { signals.push(opts.signal); return { ok: true, json: async () => ({ comments: [] }) }; };
+  await watch1f916({ fetchImpl: recording });
+  assert.equal(signals.length, 2, "both of the forum's reads");
+  for (const s of signals) assert.ok(s instanceof AbortSignal, "and each carries the deadline");
 });
 
 test("S7 · an office that cannot count is an error, never a zero", async () => {

@@ -33,7 +33,7 @@ import { sendAtDoor } from "./send-at-door.mjs";
 import { TOWN_TOOL, townDispatchToolFor } from "./town-apex.mjs";
 import { householdApex, APEX_ONLY_FIELDS } from "./household-apex.mjs"; // the third door (2026-08-15)
 import { readBody, isBodyTooLarge, refuseTooLarge } from "./body.mjs";
-import { handleOauth, oauthLookup, oauthSchema, mintHouseholdKey, keyLookup, mintBerth, berthArrivals, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims, SignInUnreadable } from "./oauth.mjs";
+import { handleOauth, oauthLookup, oauthSchema, mintHouseholdKey, keyLookup, mintBerth, arrivalsReader, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN, mintClaim, claimLookup, claimState, claimCosignUrlFor, claimStateUrlFor, sweepClaims, SignInUnreadable } from "./oauth.mjs";
 import { staticLookup, staticKeyCount } from "./static-keys.mjs"; // POS-352: an operator's static key is a store row, no longer an env var
 import { requestResidency, isReservedHandle } from "./residency.mjs";
 import { declareViaOffice, SETTLING_ASHORE } from "./declare.mjs";
@@ -552,6 +552,8 @@ const flatRequiredFromTools = () => {
 // The berth mint's own slow cap: 5 mints per IP per hour, in-memory (a restart
 // forgiving it is an acceptable failure for an ephemeral-identity door).
 const berthHits = new Map();
+// GET /berth's count, held a minute (POS-574's review; oauth.mjs § arrivalsReader).
+const readArrivals = arrivalsReader();
 const berthMintLimited = (ip) => {
   const t = Date.now();
   const hits = (berthHits.get(ip) ?? []).filter((x) => x > t - 3_600_000);
@@ -1258,19 +1260,16 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
   //
   // And who berthed from where (POS-574): counts of keyless berths by the town
   // each one claimed, which tools/harbor-watch.mjs reads over this same public
-  // door for the harbor's snapshot. A count that cannot be read is null and one
-  // logged line; the rules still answer.
+  // door for the harbor's snapshot. It returns before the keyless GET bucket
+  // below, so it charges that same bucket here, the way /keys/claim does; the
+  // count itself is read at most once a minute (oauth.mjs § arrivalsReader). A
+  // count that cannot be read is null; the rules still answer.
   if (path === "/berth" && req.method === "GET") {
-    let arrivals = null;
-    try {
-      arrivals = {
-        by_from_town: await berthArrivals(odb),
-        note: "keyless berths by the town each one claimed to sail from: ever minted, live now (unexpired), co-signed into a house. Counts only; a from_town is a claim, not a paper.",
-      };
-    } catch (e) {
-      console.error(`[berth] the arrivals count could not be read: ${String(e?.message ?? e).slice(0, 200)}`);
+    if (!IN_READ_WORKER && !boxLocal(req, BOX_SOCKETS)) {
+      const limited = bouncer.checkKeyless({ ip: clientIp(req), verb: "GET /berth" });
+      if (limited) return rateResponse(res, limited);
     }
-    return j(res, 200, { visitor_rules: VISITOR_RULES, arrivals });
+    return j(res, 200, { visitor_rules: VISITOR_RULES, arrivals: await readArrivals(odb) });
   }
 
   // ── POST /berth · agent-first arrival (ruled 2026-08-15) ──────────────────

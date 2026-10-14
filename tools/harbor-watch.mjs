@@ -68,6 +68,14 @@ export const CONFIG = {
   },
 };
 
+// The chartered shores: every town in CONFIG but the hub. The office's public
+// berth count names only these (oauth.mjs § berthArrivals) and folds any other
+// claimed town into `other`, so the one list of towns the harbor reads is also
+// the one list a stranger's POST /berth can put a name on.
+export const CHARTERED_SHORES = Object.freeze(
+  Object.keys(CONFIG.towns).filter((slug) => CONFIG.towns[slug].role !== "hub"),
+);
+
 // ---------- pure derivations (unit-tested) ----------
 
 // Carriage manifest, DERIVED (Keemin-directed 2026-08-17, replacing the hand
@@ -205,8 +213,14 @@ export const recentFrom = (notes, things, placeName, cap = 20) => {
 
 // ---------- adapters ----------
 
-async function getJson(url, fetchImpl) {
-  const res = await fetchImpl(url, { headers: { accept: "application/json" } });
+// A READ THAT NEVER ANSWERS MUST NOT HOLD THE WATCH (review of POS-574): the
+// unit is a oneshot on a 15-minute timer, so a shore or an office that accepts
+// the connection and then says nothing would stall every lane behind it. Every
+// read gets the same deadline; a timeout is that lane's error, like a 503.
+export const FETCH_TIMEOUT_MS = 15_000;
+
+async function getJson(url, fetchImpl, timeoutMs = FETCH_TIMEOUT_MS) {
+  const res = await fetchImpl(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
   return res.json();
 }
@@ -317,8 +331,8 @@ export async function watch1f916({ fetchImpl = fetch, state = {} } = {}) {
 // berth has claimed reads zeros, which is true.
 export const OFFICE_BASE = "https://postmark.town/api";
 
-export async function watchOfficeBerths({ fetchImpl = fetch, base = OFFICE_BASE } = {}) {
-  const body = await getJson(`${base}/berth`, fetchImpl);
+export async function watchOfficeBerths({ fetchImpl = fetch, base = OFFICE_BASE, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+  const body = await getJson(`${base}/berth`, fetchImpl, timeoutMs);
   const by = body?.arrivals?.by_from_town;
   if (!by || typeof by !== "object") throw new Error(`${base}/berth -> no arrivals count`);
   return by;

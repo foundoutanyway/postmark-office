@@ -81,6 +81,9 @@ const PUBLISHED = [
   { id: "ana/the-orchard", by: "ana", kind: "parcel", tier: "home", at: ANA_AT, extent: { w: 5, h: 5 }, body: "an orchard" },
   { id: "postmaster/the-waiting-room", by: "postmaster", kind: "sited", tier: "market", at: WAITING_ROOM_AT, extent: { w: 30, h: 30 }, body: "the waiting room" },
   stoolRecord,
+  // Zed's cup (THE NOTE): a thing that stands, far from every parcel, so a
+  // set-down of it can be answered and zed still holds no ground.
+  { id: "zed/a-cup", by: "zed", kind: "sited", tier: "home", class: "thing", at: { x: -6000, y: 6000 }, extent: { w: 1, h: 1 }, body: "a cup" },
 ];
 
 put(repo, "tools/world-build.mjs", `export function assembleWorld({ worldState, skeleton }) { return { ...worldState, skeleton }; }\n`);
@@ -856,6 +859,25 @@ test("PICKED UP: once the stool is in somebody's hands again, nothing waits", as
   const free = await stance.setDownsAwaiting(["keith"], {
     marks: PUBLISHED, stances: [], deps: { rowsForMakers: async () => new Map([[STOOL, rec]]) } });
   assert.equal(free.rows.length, 1, "the same record with no live holder still waits — the control");
+});
+
+// ── SWEPT (little-bird's box of nine) ────────────────────────────────────────
+//
+// neth set down little-bird/a-box-of-nine-at-grove-wharf on 2026-09-26; the box
+// was swept at S86 (a commons mark at ✦0), and the stances read went on listing
+// the set-down with an answer the stance door refused 404, "no mark". The read
+// lists a set-down only when the thing is among the marks the answer door looks
+// in. THE FLIP: drop the `if (!mark) continue` and SWEPT reds.
+test("SWEPT: a set-down of a thing that no longer stands does not wait on a word the door would refuse", async () => {
+  const p = await fresh();
+  await anaDrops(p);
+  const rows = await underRecord(() => guards.setDownRowsForMakers(["keith"]));
+  const rec = rows.get(STOOL);
+  const ask = (marks) => stance.setDownsAwaiting(["keith"], { marks, stances: [], deps: { rowsForMakers: async () => new Map([[STOOL, rec]]) } });
+  assert.equal((await ask(PUBLISHED)).rows.length, 1, "the control: while the stool stands, its set-down waits");
+  const swept = await ask(PUBLISHED.filter((m) => m.id !== STOOL));
+  assert.deepEqual(swept.rows, [], "the stool left canon, so there is nothing to welcome or oppose");
+  assert.equal(swept.unavailable, undefined, "an empty group here is an answer, not a failure to read");
 });
 
 test("OWN DROP: Keith setting down his own stool never waits on his house's word", async () => {

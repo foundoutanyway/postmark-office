@@ -1218,6 +1218,13 @@ export async function setDownsAwaiting(handles, { marks = [], stances = [], deps
     });
     if (!sd.drop || !makers.includes(String(sd.madeBy))) continue;
     if (hold.setDownAnswer({ stances, thing, dropSeq: sd.drop.seq ?? null, madeBy: sd.madeBy, householdOf: sd.householdOf })) continue;
+    // A SET-DOWN OF A THING THAT IS NOT STANDING CANNOT BE ANSWERED. `marks` is
+    // the stances read's own `worldForStances` list, the one the answer door
+    // looks `on` up in, so a thing missing here bounces 404 there. little-bird's
+    // box of nine was swept at S86 (a commons mark at ✦0) after neth set it
+    // down, and this group kept offering a welcome the door could only refuse.
+    // The row comes back by itself if the thing stands again.
+    if (!mark) continue;
     const canon = mark?.at && Number.isFinite(Number(mark.at.x)) && Number.isFinite(Number(mark.at.y))
       ? { x: Number(mark.at.x), y: Number(mark.at.y) } : null;
     rows.push({

@@ -414,12 +414,21 @@ const FROZEN = {
   "postmaster/the-waiting-room": "WORLD/marks/postmaster/the-waiting-room-parcel/the-waiting-room",
 };
 const WHY_NO_WORLD = WORLD ? false : "no world checkout found (set POSTMARK_WORLD_CLONE) — C needs the real fold";
+// world main with the stool still in the garage (office test/clone-pins.json's
+// world pin until 2026-10-13, postmark-world#191's merge)
+const CANON_REF = "ddc8cdd2ab2dcb01cfbfdc4e9993d16fd576ed85";
 const json = (v) => `${JSON.stringify(v, null, 2)}\n`;
 
 function worldOfTheQuestion() {
   const dir = mkdtempSync(join(tmpdir(), "pos451-print-"));
   const g = (...a) => execFileSync("git", ["-C", dir, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  const show = (p) => execFileSync("git", ["-C", WORLD, "show", `HEAD:${p}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // THE WORLD AS IT STOOD BEFORE KEITH'S SET-DOWN LANDED. This case asks the
+  // question of the stool in his garage, and since his amend reached world main
+  // the clone's HEAD has it in the Waiting Room, so the control read HEAD and
+  // went red on the first PR to move the world pin past it (WLD-5, 2026-10-13).
+  // The files are read at CANON_REF, the pin before that move, which every
+  // later pin holds in its history.
+  const show = (p) => execFileSync("git", ["-C", WORLD, "show", `${CANON_REF}:${p}`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   cpSync(join(WORLD, "tools"), join(dir, "tools"), { recursive: true });
   put(dir, "package.json", JSON.stringify({ name: "world-fixture", type: "module" }));
   put(dir, "WORLD/skeleton.json", json({ features: [], physics_registry: {} }));

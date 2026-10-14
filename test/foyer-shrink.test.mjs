@@ -952,6 +952,22 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //   full  21848 -> 21924 (+76, +0.35%) = stances +76
   //   slim  19341 -> 19417 (+76, +0.39%) = stances +76
   //
+  // ⚠ AND RE-CAPTURED A TWELFTH TIME, 2026-10-13 (lane plumb-wld5, WLD-5),
+  // because the PR moved the world pin, ddc8cdd2 -> b4e1ab9e (the head of
+  // postmark-world#199, over main d080dcf6), as the tenth note says a pin move
+  // must. The code was cleared by the diff itself, run leaf by leaf BEFORE the
+  // capture: 1043 paths before, 1045 after, 2 removed, 4 added, 100 changed,
+  // and NOT ONE outside `stances`, the world's own data at the pin: a newer
+  // mark, keith/waiting-room-stool-2026-09-10 (Keith's set-down, POS-451),
+  // now heads `stances.awaiting` and the five rows shift down by one;
+  // `stances_awaiting` 61 -> 62. (This lane's office changes touch no doorstep
+  // segment: the crossings, the exit card, the walk fence, the resident reads.)
+  //
+  // Measured from the file:
+  //
+  //   full  21924 -> 21974 (+50, +0.23%) = stances +50
+  //   slim  19417 -> 19467 (+50, +0.26%) = stances +50
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,

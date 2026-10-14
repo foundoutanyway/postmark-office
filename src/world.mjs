@@ -68,7 +68,7 @@ import { worldGraphSnapshot } from "./world-graph-snapshot.mjs"; // the world gr
 import { emissionsEnabled } from "./dynamic-store.mjs"; // stage 2: the dynamic layer's flag
 import { world2Enabled } from "./world2-acts.mjs"; // the write-path closure: is the shadow mirror on at all
 import { VESSEL_HANDLE, ridesTheVessel } from "./dynamic-entities.mjs"; // the aboard test, one home for two readers
-import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, movementV2Enabled, roadTerms, storedDepartures, storedGoverningDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
+import { carriersFrom, carriersWithDisclosure, heardFromV2, inRect, movementStandpoint, leavingWhileOccupying, walkFenceRefusal, movementV2Enabled, roadTerms, storedDepartures, storedGoverningDepartures, storedRecordsFor, vehicleStandpoint, vesselPositionAt as vesselFromTimetable, vesselServiceFrom, worldHasVehicle } from "./world-movement.mjs"; // stage D: carriers carry, frames compose; #2986: aboard is occupancy
 import { arrivedNotice, doorstepTransport, isVehicleStop, rideStateFrom, stopAnnotationFor, stopUnderfoot, transportAt } from "./world-ride.mjs"; // #2986 § 11: the derived visibility of a vehicle, off the same timetable; POS-165: the walk verb asks the same predicate the ride verb does
 import { findMarks } from "./world-find.mjs"; // find a mark by name from anywhere (2026-09-26)
 import { byBand, presenceEnabled, presentNear, near as presenceNear, everyone as presenceEveryone, PRESENCE_DIALS } from "./dynamic-presence.mjs"; // stage 2: residents revealed to each other
@@ -181,6 +181,46 @@ async function world() {
   _worlds.set(selected.ref, { sha: selected.sha, world: assembled });
   _places.clear(); // place words are a fold over these marks — a new world, new names
   return assembled;
+}
+
+// ── WHAT THIS STANDPOINT SEES INSIDE A DUNGEON (WLD-5, Darko 2026-10-13 20:31) ──
+//
+// The world tools' ONE function, `standpointSight` (postmark-world
+// tools/portals.mjs), asked here for every resident read: orient, the eyes,
+// investigate (the apex's mark: focus) and find. The spectator World page asks
+// the same function, and this office keeps no copy of the rule. From outside, a
+// dungeon reads as its own mark alone; inside, the room you entered and what it
+// holds. A household's own marks are always its own to see.
+//
+// A world with no dungeon comes back as the SAME object from the function's
+// first, standpoint-free answer, so no ledger is read for it, and a clone that
+// predates the function has no dungeon class to hide anything with.
+async function sightFor(w, handle, key = null) {
+  const { verbs } = await mods();
+  if (typeof verbs.standpointSight !== "function" || verbs.standpointSight(w, {}) === w) return w;
+  const who = String(handle ?? "").trim();
+  let stack = [];
+  if (who) {
+    const { crossingLaw } = await import("./world-crossings.mjs");
+    const { crossingDeps } = await import("./world-apex.mjs");
+    const law = await crossingLaw(WORLD_CLONE).catch(() => null);
+    stack = law?.thresholds ? await occupiedNowBy(who, law.thresholds, crossingDeps()).catch(() => []) : [];
+  }
+  return sightedWorld(w, { verbs, handle: who, stack, key });
+}
+
+/** The pure half of sightFor, so a test can hand it the clone's verbs: the
+ *  standpoint's stack becomes the occupancy the one function reads, and the
+ *  key's own residents keep their marks. */
+export function sightedWorld(w, { verbs, handle = null, stack = [], key = null } = {}) {
+  if (typeof verbs?.standpointSight !== "function") return w;
+  const who = String(handle ?? "").trim();
+  const own = new Set([...(key?.handles ?? []), ...(who ? [who] : [])]);
+  return verbs.standpointSight(w, {
+    occupancy: who ? new Map([[who, [...stack]]]) : null,
+    handle: who || null,
+    keep: (m) => own.has(m.by),
+  });
 }
 
 // The Origin — {0,0}, where the ferry lands; the grid origin and the default
@@ -1813,7 +1853,7 @@ export async function worldAir(oriented) {
 export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce; // a multi-resident key must name a handle
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const { verbs } = await mods();
   const at = choice.coords ?? await standCoords(choice.handle, w);
   const crossing = crossingOf(args);
@@ -2069,7 +2109,7 @@ export async function markRecords(ids = [], w = null) {
 export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce;
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const { verbs } = await mods();
   const at = choice.coords ?? await standCoords(choice.handle, w);
   const crossing = crossingOf(args);
@@ -2303,7 +2343,7 @@ export async function markImageBytes(url, { fetchImpl = null, maxBytes = INVESTI
 
 export async function worldInvestigate(args = {}, key = null) {
   if (!args.mark) return { error: "bounce", defect: "which mark?", hint: "pass mark: '<by>/<slug>' (ids in /world/state; the telling's [id] tags)" };
-  const w = await world();
+  const w = await sightFor(await world(), chooseStandpoint(args, key).handle ?? null, key);
   const { verbs } = await mods();
   const depth = Number.isFinite(Number(args.depth)) ? Number(args.depth) : 1;
   const r = verbs.investigate(String(args.mark), w, { depth });
@@ -2412,7 +2452,7 @@ export async function worldFind(args = {}, key = null, { words } = {}) {
     hint: "name the mark you are looking for: world { find: \"snug\" } — a name, a slug or an id (GET /world/find?q=snug over plain HTTP)" };
   const choice = chooseStandpoint({ handle: args.handle }, key);
   if (choice.bounce) return choice.bounce;
-  const w = await world();
+  const w = await sightFor(await world(), choice.handle, key);
   const at = choice.handle ? await standCoords(choice.handle, w) : null;
   let service = null;
   try {
@@ -5323,6 +5363,11 @@ export async function walkViaOffice(worldClone, payload = {}, key = null) {
       // the same world the enter door adjudicates against (deps.world().marks).
       const w = stack.length ? await deps.world() : null;
       const byId = new Map((w?.marks ?? []).map((m) => [m.id, m]));
+      // ── THE WALK INSIDE A DUNGEON IS FENCED TO THE ROOM YOU ENTERED (WLD-5,
+      // G4). Asked before DEC-5 could offer `exit: true`, because a dungeon
+      // offers no exit at all; world-movement.mjs § walkFenceRefusal holds it.
+      const fenced = w ? walkFenceRefusal({ stack, toward, marks: w.marks ?? [], verbs: law.verbs }) : null;
+      if (fenced) throw bounce(403, fenced.defect, fenced.hint, fenced.fields);
       const leaving = leavingWhileOccupying(stack, toward, (pt, id) => { const m = byId.get(id); return m ? law.verbs.pointWithinMark(pt, m) : null; });
       // ── A WALK DECLARED ABOARD IS THE CHOICE TO GO ASHORE (#2986) ────────
       //

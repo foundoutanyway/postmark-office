@@ -92,6 +92,7 @@ import { resolve } from "node:path";
 
 import { SETTLEMENT_TAG, isRepoRoot } from "../../src/settlements.mjs";
 import { recordCarried, receiptLine, TICK_CAP } from "./mark-carried-backfill.mjs";
+import { recordAmendsCarried, amendsLine, TICK_CAP as AMENDS_CAP } from "./amend-carried.mjs";
 import { stockChests } from "./chest-stock.mjs";
 import { recoverOrphanDrops } from "../../src/drop-recovery.mjs";
 import { currentCrossing } from "../../src/crossings.mjs";
@@ -194,6 +195,23 @@ export async function carriedOnTick(client, repo) {
   } catch (e) {
     if (e?.code === "42P01") return { verdict: "absent", line: "carried: no `mark_carried` table yet (049 not applied) — nothing recorded" };
     return { verdict: "error", line: `carried: NOT recorded (non-fatal) — ${String(e?.message ?? e).slice(0, 200)}` };
+  }
+}
+
+/**
+ * WHICH SETTLEMENT CARRIED EACH DOOR AMEND (POS-612, 075): amend-carried.mjs §
+ * recordAmendsCarried on the same connection and clone, capped like the carried
+ * step. Its own failures are one named line and never undo the rows above; a
+ * store without 075 says so. It reads claims and settlements, not mark_carried,
+ * so it does not wait on the carried step.
+ */
+export async function amendsOnTick(client, repo, { record = recordAmendsCarried } = {}) {
+  try {
+    const r = await record(client, repo, { apply: true, cap: AMENDS_CAP });
+    return { verdict: r.verdict, line: amendsLine(r) };
+  } catch (e) {
+    if (e?.code === "42P01") return { verdict: "absent", line: "amends: no `amend_carried` table yet (075 not applied) — nothing recorded" };
+    return { verdict: "error", line: `amends: NOT recorded (non-fatal) — ${String(e?.message ?? e).slice(0, 200)}` };
   }
 }
 
@@ -311,7 +329,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     const text = render(plan, extra, { dbName: who.d, user: who.u, repo, mode });
     if (!json && !quiet) console.log(text);
 
-    let wrote = 0, verdict = "ok", carried = null, drops = null;
+    let wrote = 0, verdict = "ok", carried = null, drops = null, amends = null;
     if (quiet && !apply && !verify) console.log(text.split(NL)[1]);   // the census line, nothing else
     if (conflicts.length) {
       verdict = "CONFLICT";
@@ -357,6 +375,10 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
       // refused or skipped stocks nothing and says why; the next tick tries again.
       const chests = await chestsAfterCarried(client, carried);
       if (!json) console.log(chests.line);
+      // WHICH SETTLEMENT CARRIED EACH DOOR AMEND (POS-612, 075): the receipt's
+      // `last_amended`. Non-fatal; an unproven amend is named, never written.
+      amends = await amendsOnTick(client, repo);
+      if (!json) console.log(amends.line);
       if (carried.verdict === "DISAGREE") verdict = "CONFLICT";
     } else if (verify) {
       const missing = fresh.map((r) => r.number);
@@ -383,7 +405,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).p
     receipt = { mode, verdict, db: who.d, user: who.u, repo, tags: derived.length, new: fresh.length, present: plan.filter((r) => r.state === "present").length,
       drift: drift.map((r) => r.number), conflict: conflicts.map((r) => r.number), extra, wrote, compared: plan.length,
       rows: plan.map((r) => ({ number: r.number, state: r.state, tag_sha: r.tag_sha, published_at: iso(r.published_at), window_id: r.window_id, blessed_at: iso(r.blessed_at) })),
-      ...(carried ? { carried: carried.line } : {}), ...(drops ? { drops: drops.line } : {}) };
+      ...(carried ? { carried: carried.line } : {}), ...(amends ? { amends: amends.line } : {}), ...(drops ? { drops: drops.line } : {}) };
   } finally {
     await client.end();
   }

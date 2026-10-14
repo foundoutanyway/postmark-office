@@ -40,6 +40,10 @@ lawful AS (
     -- each mark, written once from the same clone and connection as the
     -- settlement row above; INSERT only, because that fact never moves.
     ('office_api',   'mark_carried',     'INSERT'),
+    -- 075_amend_carried.sql (POS-612). Which settlement carried each door amend,
+    -- written on the same tick from the same clone and connection, and only when
+    -- git proves that settlement changed the mark's file; INSERT only.
+    ('office_api',   'amend_carried',    'INSERT'),
     -- 053_position_snapshots.sql (POS-302). Each resident's governing departure,
     -- kept once per clearing from the keep tick's own connection; INSERT only,
     -- because a snapshot is written once and never moves.

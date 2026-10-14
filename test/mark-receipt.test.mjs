@@ -559,3 +559,64 @@ test("the guess-nothing rule is UNTOUCHED for the next unclassified check", () =
   assert.equal(cause, null);
   assert.equal(cause_row, 'claims.refusal_check = "some-check-the-founder-has-not-ruled-on: with a detail"');
 });
+
+// ── THE LAST AMEND (POS-612, ruled by Darko 2026-10-14) ─────────────────────
+//
+// keith/waiting-room-stool-2026-09-10 was first carried at S65 (fc74bf68). Keith's
+// amend (act 16921, claim 08a6b024) locked at candle 244 and S104 (a7215b3e)
+// carried it. On 10-14 the receipt still read "published at S65 (fc74bf68)", and
+// it was misread as an amend that never landed. `last_amended` names the
+// settlement that carried the most recent amend, and the sentence names both:
+// "published at S65, last amended at S104". `crossing` stays the first carriage,
+// because `mark_carried` (049) is checked against it on every keep tick.
+//
+// THE CAN-FAIL FLIP: in receiptFrom's published branch, make `amended` always
+// null. The first test goes red on its `says`.
+const STOOL = "keith/waiting-room-stool-2026-09-10";
+const S65 = { s: 65, sha: "fc74bf68909d701f2342b62f2e3f3b16b7aec4ca", at: null };
+const S104_AMEND = { s: 104, sha: "a7215b3ea9a1de16ac038c68f8f16be8de3de653", at: "2026-10-12T06:01:14Z", window: 244 };
+
+test("POS-612 · keith's stool: published at S65, last amended at S104; crossing stays S65 and status stays published", () => {
+  const r = receiptFrom({ id: STOOL, canon: { id: STOOL }, published_at: S65, settlement: S65, claims: [], last_amended: S104_AMEND });
+  assert.equal(r.says, "published at S65, last amended at S104", "short: no shas, no dates, no candle in the sentence");
+  assert.deepEqual(r.last_amended, S104_AMEND, "the sha, the date and the candle are in the field");
+  assert.deepEqual(r.crossing, S65, "crossing is the FIRST carriage: mark_carried is checked against it on the keep tick");
+  assert.equal(r.settlement_sha, S65.sha);
+  assert.equal(r.status, "published", "the enum callers branch on does not move");
+  assert.equal(r.amends, undefined, "nothing is disclosed when the table was read");
+});
+
+test("POS-612 · never amended: the sentence is today's, byte for byte, and last_amended is null", () => {
+  const r = receiptFrom({ id: ID, canon: CANON, published_at: S59, settlement: S59, claims: [], last_amended: null });
+  assert.equal(r.says, "published at S59 (5c2321ae) on 2026-09-06T05:45:00Z");
+  assert.equal(r.last_amended, null);
+});
+
+test("POS-612 · an amend the first carriage itself carried is not a later version", () => {
+  const r = receiptFrom({ id: STOOL, canon: { id: STOOL }, published_at: S65, settlement: S65, claims: [], last_amended: { ...S104_AMEND, s: 65 } });
+  assert.equal(r.last_amended, null);
+  assert.equal(r.says, "published at S65 (fc74bf68)");
+});
+
+test("POS-612 · amend_carried unread: the sentence promises nothing about amends, and the receipt says it could not look", () => {
+  const r = receiptFrom({ id: STOOL, canon: { id: STOOL }, published_at: S65, settlement: S65, claims: [], amends_unread: "the store did not answer" });
+  assert.equal(r.last_amended, null);
+  assert.equal(r.says, "published at S65 (fc74bf68)");
+  assert.deepEqual(Object.keys(r.amends), ["readable", "reason"]);
+  assert.equal(r.amends.readable, false);
+  assert.match(r.amends.reason, /could not read amend_carried \(the store did not answer\)/);
+});
+
+test("POS-612 · tags unreadable but an amend recorded: it names the amend and invents no first S-number", () => {
+  const r = receiptFrom({ id: STOOL, canon: { id: STOOL }, published_at: null, settlement: null, claims: [], last_amended: S104_AMEND });
+  assert.match(r.says, /^published, last amended at S104 — /);
+  assert.match(r.says, /could not be read from the tags/);
+  assert.doesNotMatch(r.says.replace("S104", ""), /S\d/);
+});
+
+test("POS-612 · last_amended belongs to the published tense only", () => {
+  for (const status of ["locked", "pending", "refused"]) {
+    const r = receiptFrom({ id: ID, canon: null, settlement: S59, claims: [claim({ status })], last_amended: S104_AMEND });
+    assert.equal("last_amended" in r, false, status);
+  }
+});

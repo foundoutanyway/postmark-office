@@ -114,6 +114,8 @@ async function withRecord(dir, failing, fn) {
       if (failing === "before" && mine && /INSERT INTO households\b/i.test(text)) throw new Error("permission denied for table households");
       if (failing === "partial" && mine && /INSERT INTO household_pins\b/i.test(text)) throw new Error("permission denied for table household_pins");
       if (failing === "both" && /INSERT INTO households\b/i.test(text)) throw new Error("permission denied for table households");
+      if (failing === "middle" && JSON.stringify(params ?? []).includes('"midjoin"') && /INSERT INTO households\b/i.test(text))
+        throw new Error("permission denied for table households");
       return seeded.query(text, params);
     },
   };
@@ -231,6 +233,56 @@ test("DIFFERENT HOUSES: a stall in one house leaves the other's re-keys whole", 
   const touched = await crossOnce(town, db, { date: D, failing: "before" });
   assert.deepEqual(touched.stalled.map(({ row }) => row.handle), ["firstjoin"]);
   assert.deepEqual(keyLines(town.dir), [`- ${D} · registry: yardjoin = hh:yard`, `- ${D} · registry: gamma = hh:yard`]);
+});
+
+// ═══ POS-339: a stall in the MIDDLE of the crossing, then the town's verifier ═
+//
+// Every signature binds the whole prefix before it (the seal chain), so a batch
+// signed over the whole plan and appended without a stalled row's lines leaves
+// every later line's signature over lines that are not there. Until #3429
+// (10-05) the drain did exactly that: it signed the plan once, before the store
+// loop, and appended the landed rows' lines by seq. Prod ran it from
+// release/2026-w41 to w41.2, and the reproduction below red there with
+// "line 4: SIGNATURE FAILS" at lastjoin's line. POS-600's second decision signs
+// only the batch that landed; this holds it.
+// THE CAN-FAIL FLIP: in writeTownDrain, append the preflight's whole-plan
+// signatures filtered by the landed seqs in place of `approved`; this reds with
+// SIGNATURE FAILS on the first line after the stalled join's.
+
+test("POS-339: three joins, the middle stalls at the store; the lines that land verify, and only theirs are written", { skip: SKIP }, async () => {
+  const town = sealedTown({
+    houses: {
+      ...PORCH().houses,
+      yard: { name: "Yard", accounts: [{ login: "yard-gh", id: 777 }], residents: ["gamma"] },
+      cedar: { name: "Cedar", accounts: [{ login: "cedar-gh", id: 888 }], residents: ["delta"] },
+    },
+    pins: { ...PORCH().pins, gamma: { id: 777 }, delta: { id: 888 } },
+    rooms: ["alpha", "beta", "gamma", "delta"],
+  });
+  const db = odb();
+  await appendTownJournal(db, joinRow("firstjoin"));
+  await appendTownJournal(db, joinRow("midjoin", { household: "yard", ghId: "777", ghLogin: "yard-gh", payload: { household: "Yard", card: "m" } }));
+  await appendTownJournal(db, joinRow("lastjoin", { household: "cedar", ghId: "888", ghLogin: "cedar-gh", payload: { household: "Cedar", card: "l" } }));
+  const prefix = ledgerOf(town.dir);
+
+  const touched = await crossOnce(town, db, { date: D, failing: "middle" });
+  assert.deepEqual((touched.stalled ?? []).map(({ row }) => row.handle), ["midjoin"], "the middle join stalled at the store");
+  assert.equal(touched.keyHeld, undefined, "nothing was held by the key judgment");
+  assert.deepEqual(VERIFY.verifyStampLedger(town.dir).problems ?? [], [],
+    "every appended line's signature verifies over the ledger as it stands, the lines after the stall included");
+  assert.deepEqual(keyLines(town.dir), [
+    line(D, "firstjoin"), line(D, "alpha"), line(D, "beta"),
+    `- ${D} · registry: lastjoin = hh:cedar`, `- ${D} · registry: delta = hh:cedar`,
+  ], "the first and last joins' lines, in order; none for the stalled join or its house");
+  assert.ok(ledgerOf(town.dir).startsWith(prefix.trimEnd()), "the prior ledger bytes are unchanged");
+  assert.equal(existsSync(join(town.dir, "WHITE_PAGES", "midjoin", "ADDRESS.md")), false, "no card for the stalled joiner");
+
+  // the next crossing lands the held row, and the whole ledger still verifies
+  const again = await crossOnce(town, db, { date: D1 });
+  assert.equal((again.stalled ?? []).length, 0);
+  assert.deepEqual(keyLines(town.dir).filter((l) => l.startsWith(`- ${D1} `)),
+    [`- ${D1} · registry: midjoin = hh:yard`, `- ${D1} · registry: gamma = hh:yard`], "the retry writes the held join's lines");
+  assert.deepEqual(VERIFY.verifyStampLedger(town.dir).problems ?? [], []);
 });
 
 // ═══ the second decision refuses or throws: EVERY landed join is held ═══════

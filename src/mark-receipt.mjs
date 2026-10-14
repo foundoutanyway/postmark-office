@@ -639,7 +639,7 @@ export async function readMarkReceipt(id, { repo, key = null, canon = null, publ
     id: markId, canon: canonRow, published_at: carried, claims,
     sketchbook, withdrawn, settlement,
     // ⚑ NOTHING RECORDS THE SITE PIN, and this is the honest null rather than a
-    // guess. `site_pin` is the `postmark-world` version `keeminlee/postmark-site`
+    // guess. `site_pin` is the `postmark-world` version `postmark-town/postmark-site`
     // is built against; the office holds no clone of the site and no record of
     // its pin, so the one field of the plan's receipt shape that the store
     // cannot derive is this one. It is a FINDING, not a schema change: either

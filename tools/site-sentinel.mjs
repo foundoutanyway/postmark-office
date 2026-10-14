@@ -214,7 +214,7 @@ export const CONFIG = {
   dailyServed: "https://postmark.town/daily/ferrys-daily.html",
   dailySource: "https://raw.githubusercontent.com/postmark-town/postmark/main/TOWN_BULLETIN/ferrys-daily.md",
 
-  siteRepo: { owner: "keeminlee", name: "postmark-site" },
+  siteRepo: { owner: "postmark-town", name: "postmark-site" },
   townRepo: { owner: "postmark-town", name: "postmark" },
   dailyPath: "TOWN_BULLETIN/ferrys-daily.md",
 

@@ -180,7 +180,8 @@ const KIND_NAME = Object.freeze({ comment: "an issue comment", issue: "an issue"
 export const FOUNDER_ACCOUNTS = Object.freeze({ 306351151: "wright-starforge", 67605380: "keeminlee" });
 export const FOUNDER_HANDLES = Object.freeze(["wright", "keemin"]);
 
-const REPO = "([A-Za-z0-9._-]+)";
+// A repo name never starts with a dot, so `.` and `..` can never steer the API path (review-649 § 6).
+const REPO = "([A-Za-z0-9_-][A-Za-z0-9._-]*)";
 const COMMENT_LINK_RE = new RegExp(`^https://github\\.com/postmark-town/${REPO}/issues/(\\d+)#issuecomment-(\\d+)$`);
 const ISSUE_LINK_RE = new RegExp(`^https://github\\.com/postmark-town/${REPO}/issues/(\\d+)$`);
 const PULL_LINK_RE = new RegExp(`^https://github\\.com/postmark-town/${REPO}/pull/(\\d+)$`);

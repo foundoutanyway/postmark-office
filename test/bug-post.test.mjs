@@ -1030,3 +1030,60 @@ test("14 · the recredit's own law: wright and keemin only, a note, recredit tru
   await refusedNothing(t, rc({ credit: "wright", link: comment("wright") }), 422, /^briefed on "kinofire\/false-sweep-warning" already credits wright a recredit names someone else/);
   await refusedNothing(t, rc({ link: KINO_PLAN }), 422, /^a recredit names whom it credits/);
 });
+
+// ── 15 · the GitHub read's token, and the links it may follow (POS-649 follow-ups, review-649 §§ 4 and 6) ──
+
+const { githubAuthorOf } = await import("../src/bug-credit.mjs");
+const { judgeEarnedLink } = await import("../src/bugs.mjs");
+const { mkdtempSync, writeFileSync: writeFile, rmSync: rmTree } = await import("node:fs");
+const { tmpdir } = await import("node:os");
+const { join: joinPath } = await import("node:path");
+
+/** A fetch that answers `statuses` in turn and records each call's url and headers. */
+function recordingFetch(statuses) {
+  const calls = [];
+  const fetchImpl = async (url, { headers }) => {
+    const status = statuses[calls.length] ?? 200;
+    calls.push({ url, headers: { ...headers } });
+    return { status, ok: status >= 200 && status < 300,
+      json: async () => ({ id: 7, issue_url: "https://api.github.com/repos/postmark-town/postmark/issues/3500", user: { id: 1001, login: "harbor-human" } }) };
+  };
+  return { calls, fetchImpl };
+}
+const LINKED = (() => { const e = judgeEarnedLink("diagnosed", "https://github.com/postmark-town/postmark/issues/3500#issuecomment-7"); return { to: "diagnosed", link: e.link, earned: e.ref }; })();
+
+test("15 · the read token goes to api.github.com only: never to another base, and a refused token (401) is retried once, keyless", async () => {
+  const dir = mkdtempSync(joinPath(tmpdir(), "bug-credit-token-"));
+  const tokenFile = joinPath(dir, "token");
+  writeFile(tokenFile, "tok-not-a-secret\n");
+  try {
+    // another base (the tests' stub, the dev office's): no authorization at all
+    const elsewhere = recordingFetch([200]);
+    await githubAuthorOf(LINKED, { env: { GITHUB_READ_TOKEN_FILE: tokenFile, GITHUB_API_URL: "http://127.0.0.1:9" }, fetchImpl: elsewhere.fetchImpl });
+    assert.equal(elsewhere.calls.length, 1);
+    assert.equal(elsewhere.calls[0].headers.authorization, undefined, "the token went to a base that is not api.github.com");
+    // api.github.com: the token, once
+    const there = recordingFetch([200]);
+    assert.deepEqual(await githubAuthorOf(LINKED, { env: { GITHUB_READ_TOKEN_FILE: tokenFile }, fetchImpl: there.fetchImpl }), { id: 1001, login: "harbor-human" });
+    assert.deepEqual(there.calls.map((c) => [c.url, c.headers.authorization]),
+      [["https://api.github.com/repos/postmark-town/postmark/issues/comments/7", "Bearer tok-not-a-secret"]]);
+    // a refused token: one keyless retry, which answers
+    const refused = recordingFetch([401, 200]);
+    assert.deepEqual(await githubAuthorOf(LINKED, { env: { GITHUB_READ_TOKEN_FILE: tokenFile }, fetchImpl: refused.fetchImpl }), { id: 1001, login: "harbor-human" });
+    assert.deepEqual(refused.calls.map((c) => c.headers.authorization), ["Bearer tok-not-a-secret", undefined]);
+    // the keyless retry refused too: no pass on doubt, and no third call
+    const both = recordingFetch([401, 403]);
+    await assert.rejects(githubAuthorOf(LINKED, { env: { GITHUB_READ_TOKEN_FILE: tokenFile }, fetchImpl: both.fetchImpl }), (e) => e.code === 503 && /GitHub could not be read/.test(e.defect));
+    assert.equal(both.calls.length, 2);
+    // no token file: keyless from the start, and a 401 then is not retried
+    const none = recordingFetch([401]);
+    await assert.rejects(githubAuthorOf(LINKED, { env: { GITHUB_READ_TOKEN_FILE: joinPath(dir, "absent") }, fetchImpl: none.fetchImpl }), (e) => e.code === 503);
+    assert.deepEqual(none.calls.map((c) => c.headers.authorization), [undefined]);
+  } finally { rmTree(dir, { recursive: true, force: true }); }
+});
+
+test("15 · a repo name that is a dot, or starts with one, is no link the office reads", () => {
+  for (const link of ["https://github.com/postmark-town/../pull/5", "https://github.com/postmark-town/./pull/5", "https://github.com/postmark-town/.hidden/pull/5"])
+    assert.throws(() => judgeEarnedLink("fixed", link), (e) => e.code === 422 && /fixed's link is not one the office can read/.test(e.defect), link);
+  assert.equal(judgeEarnedLink("fixed", "https://github.com/postmark-town/postmark.town-site/pull/5").ref.repo, "postmark.town-site", "a dot inside a name stays legal");
+});

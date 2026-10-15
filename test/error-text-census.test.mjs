@@ -108,7 +108,7 @@ const ALLOWED = {
   "world-settlement.mjs": [4, DISCLOSURE],
   "world-stance.mjs": [6, `${OWN}: PenUnreachableError's ruled sentence (x3); and ${DISCLOSURE}`],
   "world-units.mjs": [3, DISCLOSURE],
-  "world.mjs": [13, `${OWN}: PenUnreachableError's ruled sentence (x4); a walk's entry refusal relayed in its receipt (named in the PR); and ${DISCLOSURE}`],
+  "world.mjs": [12, `${OWN}: PenUnreachableError's ruled sentence (x4); and ${DISCLOSURE}. A walk's entry refusal moved to arrival-entries.mjs § refusalOf, which relays a refusal by its defect and logs anything else (WLD-5)`],
   "world2-acts.mjs": [2, `${OWN}: a status field; and ${DISCLOSURE}`],
   "world2-fold.mjs": [1, DISCLOSURE],
   "world2-guards.mjs": [1, DISCLOSURE],

@@ -163,6 +163,10 @@
           "sync",
           "rollback",
           "settlements",
+          "carried",
+          "chests",
+          "amends",
+          "drops",
           "positions",
           "hhkeys",
           "hhkeys_log"
@@ -527,10 +531,10 @@
       "heartbeat": {
         "kind": "state_file",
         "path": "/srv/world2-lab/state/ingest-law.json",
-        "stamp_field": "at",
+        "stamp_field": "ok_at",
         "stale_after_minutes": 45
       },
-      "stale_means": "The rulebook copy stops advancing and the store answers under a law the tree has amended. This is the alarm postmark#2893 asked for, and it is worth saying WHY it had to be asked for: the designed guard is the clearing's refusal on a NULL world-law pin, and a pin that was written once and then froze is never null — so between 09-05 and 09-19 nothing anywhere went red while law_projection fell 37 commits behind. The allowance is 45 minutes, three ticks: one missed fire is weather, three is the rail. THIS FILE IS THIS UNIT'S ALONE and that is the point — the parked poll writes /srv/world2-lab/state/ingest.json, so a heartbeat here can never go green on a run that was not the law pen's. Read the `law.sha` line beside the stamp: a fresh `at` with an ALARM-failed exit means the pen ran and could not ingest, and the detail names which. A law the parser would read diminished is REFUSED whole (POS-619): status `law-failed`, and the state's own `refusal` field carries the REFUSED line and the lint's sentence per mark; every law update waits until the mark is fixed. site-sentinel's law_pen probe pages on the same file (DOWN on any failed run, STALE past 45 min), deliberately duplicating this row from the alarm route."
+      "stale_means": "The rulebook copy stops advancing and the store answers under a law the tree has amended. This is the alarm postmark#2893 asked for, and it is worth saying WHY it had to be asked for: the designed guard is the clearing's refusal on a NULL world-law pin, and a pin that was written once and then froze is never null — so between 09-05 and 09-19 nothing anywhere went red while law_projection fell 37 commits behind. The allowance is 45 minutes, three ticks: one missed fire is weather, three is the rail. THIS FILE IS THIS UNIT'S ALONE and that is the point — the parked poll writes /srv/world2-lab/state/ingest.json, so a heartbeat here can never go green on a run that was not the law pen's. Read the `law.sha` line beside the stamp: a fresh `at` with an ALARM-failed exit means the pen ran and could not ingest, and the detail names which. A law the parser would read diminished is REFUSED whole (POS-619): status `law-failed`, and the state's own `refusal` field carries the REFUSED line and the lint's sentence per mark; every law update waits until the mark is fixed. site-sentinel's law_pen probe pages on the same file (DOWN on any failed run, STALE past 45 min), deliberately duplicating this row from the alarm route. THE STAMP IS ok_at, NOT at (POS-628, 2026-10-14): `at` is written on every run, refused and held ones included, so it proves only that the timer fires; `ok_at` is written when a run ends `ok` and carried forward otherwise, so three unhealthy runs in a row read stale here. A refusal still reads ALARM-failed at once (the unit exits 1). A HELD PIN exits 0 (status `law-pin-held`; the state's `pin` field names the sha it stays at and why), and it is what this stamp exists to catch: from 2026-10-11 15:04Z the pin sat at b0db90f behind seven settlements while this row read green on `at` (POS-635, a shallow world-blessed checkout)."
     },
     {
       "unit": "postmark-earpiece.timer",

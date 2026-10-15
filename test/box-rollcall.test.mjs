@@ -599,6 +599,26 @@ test("FALSIFIER (e): a timer firing on time into a service that FAILS is ALARM-f
   assert.match(row.reason, /journalctl -u postmark-harbor-watch\.service/);
 });
 
+test("POS-628: the law row's stamp is ok_at — a held pin (exit 0, a fresh `at`) three ticks running is ALARM-stale", () => {
+  // From 2026-10-11 15:04Z the law pen held the clearing's pin at b0db90f on
+  // every run, exited 0, and stamped `at`: the row read green for three days.
+  const LAW = "postmark-world2-law-ingest.timer";
+  const m = manifest();
+  const hb = m.units.find((r) => r.unit === LAW).heartbeat;
+  assert.equal(hb.stamp_field, "ok_at", "the law row reads `at`, which every run writes, the held and refused ones included");
+  const stateAt = (okAgoMin) => mutate(healthy(m), (s) => {
+    s.files[hb.path].text = JSON.stringify({
+      at: new Date(T0 - 2 * MINUTE).toISOString(), mode: "law", status: "law-pin-held",
+      ok_at: new Date(T0 - okAgoMin * MINUTE).toISOString(),
+      pin: { state: "held", sha: "b0db90f0644ee4a0719f4d02c3c4e3b2cc10fe22" },
+    });
+  });
+  const held = rowFor(rollcall(m, stateAt(50), T0), LAW);
+  assert.equal(held.verdict, ALARM_STALE, `a pin held for 50 minutes read ${held.verdict}: ${held.reason}`);
+  assert.match(held.reason, /law-pin-held/, "the reason names the held pin from the row's stale_means");
+  assert.equal(rowFor(rollcall(m, stateAt(20), T0), LAW).verdict, OK, "one held tick is weather, not the rail");
+});
+
 test("FALSIFIER (f): a state file that does not exist is ALARM-noheartbeat, not ALARM-stale", () => {
   // These are different findings and want different hands: stale means it ran
   // and stopped, absent means it may never have run at all. Collapsing them

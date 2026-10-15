@@ -984,6 +984,38 @@ test("F7c5 · THE MORNING PAGE DID NOT FATTEN — the doorstep bundle is byte-id
   //   full  21924 -> 21974 (+50, +0.23%) = stances +50
   //   slim  19417 -> 19467 (+50, +0.26%) = stances +50
   //
+  // ⚠ AND RE-CAPTURED A THIRTEENTH TIME, 2026-10-14 (lane plumb-arrival, WLD-5),
+  // because the PR moved the world pin, 17b64ef1 -> 01f7c83e (the head of
+  // postmark-world#206, over main 9988b669; then to its merge bdbf1061, which
+  // moved nothing here: F7c5 green on a CI-shaped clone), as the tenth note says a pin move
+  // must. The code was cleared first: at this PR's head with a CI-shaped clone at
+  // the OLD pin (suite-clones.sh's fetch), F7c5 is green. Then the diff, leaf by
+  // leaf at the new pin BEFORE the capture: 1063 paths before and after, NONE
+  // removed or added, 2 changed, both the world's own data at the pin (the new
+  // pin's history carries settlement/S108): `stances.stances_awaiting` 62 -> 61
+  // on both skins.
+  //
+  // Measured from the file:
+  //
+  //   full  21974 -> 21974 (+0) · slim  19467 -> 19467 (+0)
+  //
+  // ⚠ AND RE-CAPTURED A FOURTEENTH TIME, 2026-10-14 (lane plumb-bugs-a,
+  // postmark#3757), for the stakes segment's rule sentence, which is now
+  // Darko's plain sentence (WLD-51, 14:31 EDT), world unpublish-verdict.mjs §
+  // UNPUBLISH_RULE verbatim: "At each settlement, a commons mark with no stamps
+  // behind it leaves the world. A mark standing on your household's ground or
+  // the town's never does, whatever it was first filed as." The world pin moved
+  // bdbf1061 -> c098ecfd (the head of postmark-world#212, tools/ only, blessed
+  // S108 on both). Diffed leaf by leaf BEFORE the capture, on CI-shaped clones
+  // (suite-clones.sh's fetch; a pool tree's clone re-pointed only at HEAD keeps
+  // its old origin/main and shows no move, which red this lane's first try):
+  // against the thirteenth capture, 1063 paths before and after, NONE removed
+  // or added, ONE changed, `full.stakes.rule`. The slim skin drops `rule`.
+  // Re-checked at #218's merge, eb8428e2 (the world pin since POS-637 PR-A2): 0 paths moved.
+  //
+  //   full  21974 -> 21905 (-69, -0.31%) = stakes.rule -69
+  //   slim  19467 -> 19467 (0)
+  //
   // So the assertion below is the one that actually carries the promise, and it
   // is stated separately so a future regeneration cannot quietly absorb a card:
   assert.equal(JSON.stringify(now).includes('"card"'), false,
@@ -1514,4 +1546,22 @@ test("F17c · a GOOD store renders with NO warning — the stamp is a disclosure
 test("F14 · the capability index is generated from the acts table, so it cannot name an act the door will not dispatch", () => {
   assert.deepEqual(capabilityIndex().map((a) => a.act), [...HOUSEHOLD_DISPATCHABLE]);
   for (const { teaches } of capabilityIndex()) assert.ok(teaches && teaches.length > 10);
+});
+
+// ── POS-632: explain: covers the household's bare read, every shape ─────────
+test("explain: every key of the household's bare read (full, slim, h1, h2; resident, berth, visitor, anonymous; with the world-write budget) has a row", async () => {
+  const { unexplained } = await import("../src/read-grammar.mjs");
+  const budget = { worldWriteBudget: () => ({ used: 0, cap: 200, per: "hour", resets_at: "2026-10-15T02:00:00.000Z" }) };
+  const BERTH = { berth: true, slug: "newcomer" };
+  const VISITOR = { visitor: true, ghLogin: "someone", handles: new Set() };
+  for (const [who, key] of [["resident", KEY], ["berth", BERTH], ["visitor", VISITOR], ["anonymous", null]])
+    for (const extra of [{}, { slim: true }, { slim: true, readShape: "h1" }, { slim: true, readShape: "h2" }, { slim: true, ...budget }]) {
+      const bare = await householdApex({}, key, ctx(extra));
+      assert.ok(!bare.error, `the bare read answers (${who} ${JSON.stringify(extra)})`);
+      assert.deepEqual(unexplained("household", bare, 1), [], `household ${who} ${JSON.stringify(extra)}`);
+    }
+  const withBudget = await householdApex({}, KEY, ctx({ slim: true, ...budget }));
+  assert.ok("world_writes" in withBudget, "the budget case does carry world_writes, so the row is held");
+  const ex = await householdApex({ explain: "papers" }, KEY, ctx({ slim: true }));
+  assert.equal(ex.explains, "papers");
 });

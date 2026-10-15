@@ -72,10 +72,11 @@ export async function crossingLaw(worldClone) {
 // after the door's reads and just before the verb writes the rows, and both
 // stamps come from that one reading.
 //
-// `deps.now(ms)` names the ferry for that reading. enter_on_arrival replaces
-// it with the walk's arrival (world.mjs § THE ENTRY LEG) and ignores the
-// reading, so its rows keep the arrival as their ferry and their write as their
-// iso, as before. With no `deps.now`, the ferry is the ferry's own clock. The
+// `deps.now(ms)` names the ferry for that reading. The walk's pre-check for
+// enter_on_arrival replaces it with the walk's arrival and writes nothing
+// (arrival-entries.mjs § entryAtTheWalk); the entry itself is made at arrival
+// by the arrival tick, stamped now (WLD-5). With no `deps.now`, the ferry is
+// the ferry's own clock. The
 // old fallback here divided the epoch milliseconds by a half-day, which is
 // about 40,000 crossings ahead (the DEC-5 clock bug, kept as a default).
 export function passageInstant(thresholds, deps = {}) {
@@ -556,9 +557,10 @@ export async function enterViaOffice(worldClone, payload = {}, key = null, deps 
   // — the same record every reader already derives from — never by a second pen.
   // Order: the entry first (the act the resident asked for), then the stop; a stop
   // that fails to write is REPORTED on the answer, never swallowed, because that is
-  // exactly the ghost. `walking`/`stop` are deps so the arrival-bundled entry
-  // (world.mjs § walkViaOffice, enter_on_arrival — the walk has already arrived) and
-  // the tests can leave them out; a standing resident's entry writes nothing.
+  // exactly the ghost. `walking`/`stop` are deps so the walk's pre-check
+  // (arrival-entries.mjs § entryAtTheWalk, which writes nothing) and the tests can
+  // leave them out; a standing resident's entry writes nothing. The arrival tick
+  // passes both, and an arrived walk answers `live: false`, so it stops nobody.
   let walkEnded = null;
   if (answer.rows.length && answer.entered.length && deps.walking && deps.stop) {
     const walk = await deps.walking(who).catch(() => null);

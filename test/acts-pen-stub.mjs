@@ -221,6 +221,15 @@ export function makeActsPen({ households = [], pins = [], meta = [], claims = []
       const open = state.windows[state.windows.length - 1];
       return { rows: open ? [{ id: open.id }] : [], rowCount: open ? 1 : 0 };
     }
+    if (/^SELECT/i.test(q) && /FROM claims WHERE slug = \$1/i.test(q)) {
+      // THE DOCKET FOR ONE SLUG, every status (`claimRowsForSlug`, which the
+      // receipt reads and the hold door asks when the live layer says no —
+      // a LOCKED claim is in neither live status). It names `window_id` in its
+      // column list, so without this branch the supersession matcher below
+      // took it for its own question and answered nothing.
+      const rows = state.claims.filter((c) => c.slug === params[0]);
+      return { rows: rows.map((c) => ({ ...c })), rowCount: rows.length };
+    }
     if (/^SELECT/i.test(q) && /FROM claims/i.test(q)) {
       // The amend's supersession lookup is a different question with different
       // arguments ("is there a PENDING claim for this slug in this window");

@@ -1008,3 +1008,15 @@ test("heardAt: hears what is in earshot of a point, newest last, and marks nobod
   const listen = await store.hear("sitter");
   assert.ok(!listen.listeners.includes("anyone-who-only-looked"));
 });
+
+test("earshotSnapshot: memoised for a second, so a burst of handed reads shares one walk; a voice after it is heard on the next", async () => {
+  const { store, tick } = bench({ near: { x: 0, y: 20 }, late: { x: 0, y: 10 } });
+  await store.say("near", "first");
+  const a = await store.earshotSnapshot();
+  assert.equal(await store.earshotSnapshot(), a, "within the second: the same snapshot");
+  tick(15000); // past the flood rule and the memo
+  await store.say("late", "second");
+  const b = await store.earshotSnapshot();
+  assert.notEqual(b, a);
+  assert.deepEqual((await store.heardAt({ x: 0, y: 0 }, { snapshot: b })).map((v) => v.said), ["first", "second"]);
+});

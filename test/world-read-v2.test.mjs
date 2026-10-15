@@ -131,6 +131,6 @@ test("activeOf: one query for the crowd, public acts only, and a store that cann
   assert.equal(asked.params[2], ACTIVE_WINDOW_MS / 1000);
   assert.deepEqual(r.active.get("a"), { action: "say", at: NOW });
   assert.match((await activeOf(["a"], { query: async () => null })).unavailable, /store/);
-  assert.match((await activeOf(["a"], { query: async () => { throw new Error("gone"); } })).unavailable, /gone/);
+  assert.match((await activeOf(["a"], { query: async () => { throw new Error("gone"); } })).unavailable, /could not be read/);
   assert.equal((await activeOf([], { query: async () => { throw new Error("never asked"); } })).active.size, 0);
 });

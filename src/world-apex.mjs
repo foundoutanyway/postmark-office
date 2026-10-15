@@ -2221,8 +2221,9 @@ async function apexRead(args, key, ctx = {}) {
     const amb = gatherActions(store.db, { spineIds, reachIds });
     rows = amb.rows;
     const ground = gatherGroundActions(store.db, { spineIds, reachIds });
-    holdings = await holdingsFor(args, key);
-    const held = gatherHeldActions(store.db, holdings);
+    // v2 keeps what the held channel read (its `you.holding`), in the awaited
+    // form test/hold-wirings.test.mjs pins (POS-153 b2).
+    const held = gatherHeldActions(store.db, await holdingsFor(args, key).then((h) => (holdings = h)));
     const houseOf = await worldHouseholds(); // POS-350: the store's identities, read once for every ground below
     // THE SEAT, and the read must gather it the same way the act does — "read:
     // is every action's shadow ... anything you can do, you can read, and never

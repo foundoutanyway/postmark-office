@@ -317,6 +317,8 @@ export async function activeOf(handles, { query } = {}) {
     if (rows == null) return { active: new Map(), unavailable: "who acted is read from the store, which this office does not hold" };
     return { active: new Map(rows.map((r) => [r.handle, { action: r.action, at: r.at instanceof Date ? r.at.getTime() : r.at }])) };
   } catch (e) {
-    return { active: new Map(), unavailable: `who acted could not be read (${String(e?.message ?? e).slice(0, 100)})` };
+    // The why goes to the log; the answer says only what is missing (POS-578's rule).
+    console.error(`[world] v2: who acted could not be read (${String(e?.message ?? e).slice(0, 160)})`);
+    return { active: new Map(), unavailable: "who acted could not be read this time; the crowd is still counted" };
   }
 }

@@ -43,7 +43,7 @@ import { IDENTITIES_SQL } from "./world2-fold.mjs"; // POS-350: the household gr
 import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt, nextCrossingAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock; POS-632: v2's next crossing
 import { cardsSchemaAt, describeAt, readShape, shapeRead, READ_SHAPES } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
-import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, BLOCK_READS, blockFields } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
+import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, markIdsShown, BLOCK_READS, blockFields } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
 import { explainAnswer, explainPath, encodeCursor, decodeCursor, CURSOR_RENAMES_UNTIL, moreLine } from "./read-grammar.mjs"; // POS-632: explain:, the read grammar's one table; the one cursor; the more line
 import { entityKindOf, investigateResident, RECENT_SQL, RECENT_CAP } from "./world-investigate-entity.mjs"; // POS-632 PR-4: the entity read
 import { PUBLIC_ACTS as PUBLIC_ACTS_FOR_INVESTIGATE, ACTIVE_WINDOW_MS as ACTIVE_WINDOW_FOR_INVESTIGATE } from "./world-read-v2.mjs"; // POS-632 PR-4: the entity read's public acts and window
@@ -77,7 +77,7 @@ import {
   actsHaveNonce,
   markCentreOf, // POS-632 PR-3: the live lines are placed by their anchors, as the save places them
   markRows, // POS-632: marks shown with their whole bodies (Darko 22:33)
-  innermostPlaceAt, // POS-632 PR-4: a place line carries its innermost place, whole
+  placeMarksAt, // POS-632: the marks place words name, as rows (v2 you.near; PR-4 every place line)
 } from "./world.mjs";
 // v2.2 §B — the frame block and the three-shelf delta. Both compose the one
 // standpoint derivation; neither derives a position of its own.
@@ -1839,7 +1839,7 @@ async function investigateOn(args, oriented) {
       return holdingsOf(await storeAttachmentRows(), h);
     },
     placeOf: (r) => composeAnchor({ anchor: r.at_anchor, dx: r.at_dx, dy: r.at_dy }, centreOf),
-    innermost: (p) => innermostPlaceAt(p),
+    placeMarks: (p) => placeMarksAt(p),
     marksOf: (ids) => markRows(ids),
   });
 }
@@ -2545,11 +2545,14 @@ async function apexRead(args, key, ctx = {}) {
       const ids = new Set([...spine.map((m) => m.id), ...(seen._fov?.rows ?? []).map((r) => r.id)]);
       events = eventsHere(await calendarAtOffice({}, { now: nowMs }), { at: { x: answer.standpoint?.x, y: answer.standpoint?.y }, ids });
     } catch { events = []; }
-    // The marks this read names beyond the view (the spine, the events' places,
-    // the departures' destinations), each with its whole body, read once.
-    const shownIds = [...spine.map((m) => m.id), ...events.map((e) => e.place?.mark).filter(Boolean),
-      ...((departures?.next ?? []).map((d) => d.toward).filter(Boolean))];
-    const marks = new Map((await markRows([...new Set(shownIds)]).catch(() => [])).map((r) => [r.id, r]));
+    // The marks this read names beyond the view, each with its whole body, read
+    // once: world-read-v2.mjs § markIdsShown is the one list shapeV2 bodies.
+    const shownIds = markIdsShown({ spine, events, departures, frame, standpoint: answer.standpoint, happened });
+    const marks = new Map((await markRows(shownIds).catch(() => [])).map((r) => [r.id, r]));
+    // On open ground the words name the place you are near: it rides as a row too.
+    const at = { x: answer.standpoint?.x, y: answer.standpoint?.y };
+    const here = await placeWords(at);
+    const near = /^near /.test(here ?? "") ? (await placeMarksAt(at).catch(() => ({}))).near ?? null : null;
     const shaped = shapeV2({
       deep,
       marks,
@@ -2558,7 +2561,8 @@ async function apexRead(args, key, ctx = {}) {
       handle: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null,
       standpoint: answer.standpoint,
       spine,
-      here: await placeWords({ x: answer.standpoint?.x, y: answer.standpoint?.y }),
+      here,
+      near,
       holdings,
       stancesAwaiting: stances?.stances_awaiting ?? 0,
       note: oriented.note,

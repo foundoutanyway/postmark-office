@@ -956,20 +956,32 @@ export function placeWordsFrom(marks, { x, y }, verbs) {
   // Class-keyed, not size-keyed — a bench is ground, a giant sculpture is not.
   // Filtered BEFORE the chain so the nest is built over ground alone; the full
   // list still names things (a naming mark may name anything).
-  const ground = marks.filter((m) => m?.class !== "thing");
-  const spine = verbs.containmentChain({ x, y }, ground).filter((m) => m.id !== WORLD_FRAME);
+  const { spine, near } = placeMarksFrom(marks, { x, y }, verbs);
   if (spine.length) {
     const inner = markName(spine[spine.length - 1], marks);
     const outer = markName(spine[0], marks);
     return inner === outer ? inner : `${inner}, ${outer}`;
   }
+  return near ? `near ${markName(near, marks)}` : "open ground";
+}
+
+/**
+ * The marks place words name: the containment spine over ground (root first,
+ * the world frame left out), else the nearest sited mark or parcel within
+ * PLACE_NEAR_M. One derivation for the words and for the rows a read shows
+ * beside them (POS-632: a mark named is shown whole).
+ */
+export function placeMarksFrom(marks, { x, y }, verbs) {
+  const ground = marks.filter((m) => m?.class !== "thing");
+  const spine = verbs.containmentChain({ x, y }, ground).filter((m) => m.id !== WORLD_FRAME);
+  if (spine.length) return { spine, near: null };
   let best = null, bd = Infinity;
   for (const m of ground) {
     if (!m.at || !(m.kind === "sited" || m.kind === "parcel")) continue;
     const d = Math.hypot(m.at.x - x, m.at.y - y);
     if (d < bd) { bd = d; best = m; }
   }
-  return best && bd <= PLACE_NEAR_M ? `near ${markName(best, marks)}` : "open ground";
+  return { spine, near: best && bd <= PLACE_NEAR_M ? best : null };
 }
 
 // THE ONE READ SERVED FROM THE STORE IN STAGE 1, and it is the honest choice
@@ -2110,14 +2122,19 @@ export async function markRows(ids = [], w = null) {
   return out;
 }
 
-/** The innermost place standing at a point, as a mark row with its whole body, or null on open ground. */
-export async function innermostPlaceAt({ x, y } = {}) {
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+/**
+ * The marks a place line names, each with its whole body: `{ within: [rows] }`
+ * root first (as v2's you.within), or `{ near: row }` on open ground beside a
+ * place, or {} on open ground. The same derivation as placeWords (§ placeMarksFrom).
+ */
+export async function placeMarksAt({ x, y } = {}) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return {};
   const w = await world();
   const { verbs } = await mods();
-  const ground = (w.marks ?? []).filter((m) => m?.class !== "thing");
-  const inner = verbs.containmentChain({ x, y }, ground).filter((m) => m.id !== WORLD_FRAME).at(-1);
-  return inner ? { id: inner.id, name: markName(inner, w.marks ?? []), body: inner.body ?? "" } : null;
+  const marks = w.marks ?? [];
+  const row = (m) => ({ id: m.id, name: markName(m, marks), body: m.body ?? "" });
+  const { spine, near } = placeMarksFrom(marks, { x, y }, verbs);
+  return spine.length ? { within: spine.map(row) } : near ? { near: row(near) } : {};
 }
 
 /** THE PRESENCE CHAIN, for v2 (POS-632): v2's `who` splits everyone within reach, uncapped and without place words. */

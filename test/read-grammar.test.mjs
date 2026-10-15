@@ -51,7 +51,7 @@ test("explain answers docs in one shape, a wildcard covers data-named keys, and 
 test("coverage: every key of a full v2 world read, to depth 2, has a row", () => {
   const full = shapeV2({
     deep: null, handle: "wright", standpoint: { x: 1, y: 2, seat: {}, arrival: {}, enters_on_arrival: {} }, spine: [{ id: "a", body: "b" }],
-    here: "here", holdings: ["x"], stancesAwaiting: 3, note: "n", frame: { vessel: "v" }, crossing: 250, nextCrossingIn: "1h 00m",
+    here: "here", near: { id: "n/m", name: "M", body: "b" }, holdings: ["x"], stancesAwaiting: 3, note: "n", frame: { vessel: "v" }, crossing: 250, nextCrossingIn: "1h 00m",
     air: "air", canon: "S1", nextSettlement: "06:00Z", sinceCrossing: 249,
     happened: { to_you: { complete: true }, around_you: { count: 0, events: [] } },
     viewRows: [{ id: "a/b", name: "B", bearing: "N", band: "close by", distM: 5, weight: 20, lifted: true, image: true }],

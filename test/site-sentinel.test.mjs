@@ -1836,7 +1836,7 @@ test("§13 G1: the handler did not act when a step before `linear` failed, at a 
   assert.match(checkout.reason, /its linear step was skipped \(a step before it failed\): Process completed with exit code 2; the reason is in the job summary — /);
   const startup = classifyLinearHandler({ repo: "postmark", runs: [LH_RUN({ conclusion: "startup_failure" })], jobs: [] });
   assert.equal(startup.verdict, "DOWN");
-  assert.match(startup.reason, /was "startup_failure" and its linear step never ran: the reason is in the job summary/);
+  assert.equal(startup.reason, `the handler could not act in postmark: the last finished run was "startup_failure" and the run never started a job — ${LH_URL("postmark-world")}`, "no jobs, so no job summary to point at (review N2)");
   const timeout = classifyLinearHandler({ repo: "postmark", runs: [LH_RUN({ conclusion: "timed_out" })], jobs: [LH_JOB({ linear: "cancelled", conclusion: "timed_out" })] });
   assert.equal(timeout.verdict, "DOWN");
 });
@@ -1854,7 +1854,7 @@ test("§13 a 404 is two answers: no run yet is INFO, a repo the token cannot see
   assert.equal(classifyLinearHandler({ repo: "postmark-office", notFound: true, repoVisible: true }).verdict, "INFO");
   const blind = classifyLinearHandler({ repo: "postmark-telemetry", notFound: true, repoVisible: false });
   assert.equal(blind.verdict, "UNKNOWN");
-  assert.match(blind.reason, /cannot see postmark-telemetry \(404\).*needs Actions: read on it/);
+  assert.match(blind.reason, /cannot see postmark-telemetry \(404\).*needs Actions: read and Checks: read on it/);
   assert.equal(classifyLinearHandler({ repo: "postmark-telemetry", notFound: true, repoVisible: null }).verdict, "UNKNOWN");
   assert.equal(classifyLinearHandler({ repo: "postmark-world", haveToken: false, runs: [LH_RUN()] }).verdict, "UNKNOWN");
   assert.equal(classifyLinearHandler({ repo: "postmark-world", readError: "GET x -> HTTP 502" }).verdict, "UNKNOWN");
@@ -1946,10 +1946,54 @@ test("§13 THE TICK: a repo with no run yet is INFO, the private repo the token 
     // telemetry: both 404 (the token cannot see a private repo)
     "https://api.github.com/repos/postmark-town/postmark-telemetry/actions/workflows/linear-handler.yml/runs": { status: 404, body: "{}" },
   };
-  const { probes, alerts } = await tick({ token: FIXTURE_TOKEN, fetchImpl: stubFetch(table), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  const f = countingFetch(table);
+  const { probes, alerts } = await tick({ token: FIXTURE_TOKEN, fetchImpl: f, exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  assert.equal(f.handler().length, 8, "each workflow 404 costs one repo read, every tick: the budget's upper end is 12");
   assert.equal(probes.find((p) => p.key === "linear_handler_postmark_office").verdict, "INFO");
   const tel = probes.find((p) => p.key === "linear_handler_postmark_telemetry");
   assert.equal(tel.verdict, "UNKNOWN");
   assert.match(tel.reason, /needs Actions: read/);
   assert.equal(alerts.length, 0);
+});
+
+test("§13 the memory is keyed by ATTEMPT: a re-run that fails only on its done line is read again and goes OK", async () => {
+  const one = await tick({ token: FIXTURE_TOKEN, fetchImpl: stubFetch(WORLD_DOWN), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  assert.equal(one.probes.find((p) => p.key === "linear_handler_postmark_world").verdict, "DOWN");
+  // The same run id comes back as attempt 2: `linear` succeeded, the done line failed.
+  const rerun = { ...WORLD_DOWN,
+    ...lhRuns("postmark-world", [LH_RUN({ run_attempt: 2 })]),
+    "https://api.github.com/repos/postmark-town/postmark-world/actions/runs/38663576279/jobs": { status: 200, body: JSON.stringify({ jobs: [LH_JOB({ linear: "success", doneLine: "failure" })] }) },
+  };
+  const f = countingFetch(rerun);
+  const two = await tick({ token: FIXTURE_TOKEN, fetchImpl: f, exec: stubExec(), state: one.nextState, nowMs: T0 + 10 * MINUTE, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  const row = two.probes.find((p) => p.key === "linear_handler_postmark_world");
+  assert.equal(row.verdict, "OK", "attempt 1's DOWN must not be served for attempt 2");
+  assert.match(row.reason, /failed on its done line/);
+  assert.ok(f.handler().some((u) => u.endsWith("/actions/runs/38663576279/jobs")), "the new attempt's jobs are read");
+  assert.deepEqual(two.alerts.map((a) => `${a.key}:${a.alert.kind}`), ["linear_handler_postmark_world:recovered"]);
+  assert.equal(two.nextState.stamps.linear_handler["postmark-world"].attempt, 2);
+});
+
+test("§13 an annotations read refused with a 4xx (no Checks: read) is asked ONCE: the row is remembered and still DOWN", async () => {
+  const noChecks = { ...WORLD_DOWN, "https://api.github.com/repos/postmark-town/postmark-world/check-runs/116190227156/annotations": { status: 403, body: "{}" } };
+  const one = await tick({ token: FIXTURE_TOKEN, fetchImpl: stubFetch(noChecks), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  const row = one.probes.find((p) => p.key === "linear_handler_postmark_world");
+  assert.equal(row.verdict, "DOWN", "a token without Checks still alarms");
+  assert.match(row.reason, /its linear step was "failure": the reason is in the job summary — https:/);
+  assert.equal(one.nextState.stamps.linear_handler["postmark-world"].run_id, 38663576279);
+  const f = countingFetch(noChecks);
+  await tick({ token: FIXTURE_TOKEN, fetchImpl: f, exec: stubExec(), state: one.nextState, nowMs: T0 + 10 * MINUTE, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  assert.equal(f.handler().length, 6, "no jobs and no annotations read on the next tick");
+});
+
+test("§13 N1: a failed runs read keeps the repo's memory, so the blip costs no re-read when GitHub answers again", async () => {
+  const one = await tick({ token: FIXTURE_TOKEN, fetchImpl: stubFetch(WORLD_DOWN), exec: stubExec(), state: {}, nowMs: T0, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  const blip = { ...WORLD_DOWN, "https://api.github.com/repos/postmark-town/postmark-world/actions/workflows/linear-handler.yml/runs": { status: 502, body: "" } };
+  const two = await tick({ token: FIXTURE_TOKEN, fetchImpl: stubFetch(blip), exec: stubExec(), state: one.nextState, nowMs: T0 + 10 * MINUTE, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  assert.equal(two.probes.find((p) => p.key === "linear_handler_postmark_world").verdict, "UNKNOWN");
+  assert.deepEqual(two.nextState.stamps.linear_handler["postmark-world"], one.nextState.stamps.linear_handler["postmark-world"]);
+  const f = countingFetch(WORLD_DOWN);
+  const three = await tick({ token: FIXTURE_TOKEN, fetchImpl: f, exec: stubExec(), state: two.nextState, nowMs: T0 + 20 * MINUTE, config: FIXTURE_CONFIG, readDisk: GREEN_DISK });
+  assert.equal(three.probes.find((p) => p.key === "linear_handler_postmark_world").verdict, "DOWN");
+  assert.equal(f.handler().length, 6, "the remembered attempt is not read again");
 });

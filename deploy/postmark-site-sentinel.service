@@ -51,7 +51,8 @@ EnvironmentFile=-/etc/postmark-sentinel.env
 # GitHub's 60-requests-per-hour anonymous budget and merely spend less of the
 # box's shared allowance when the token is present. §13 (the Linear handler)
 # reads only with it, and its postmark-telemetry row needs the token to carry
-# Actions: read on that private repo (POS-631).
+# Actions: read AND Checks: read on that private repo (POS-631): Actions for
+# the runs and jobs, Checks for the annotations a failed run's reason comes from.
 Environment=SENTINEL_GITHUB_TOKEN_FILE=/srv/postmark-office/git-metrics-token
 # §8's clone. Named here rather than read from /etc/postmark-office.env, which
 # carries the office's keys and which this watch has no business loading. The

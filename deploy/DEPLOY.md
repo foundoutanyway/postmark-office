@@ -1050,12 +1050,18 @@ cat /srv/postmark-sentinel/status.json | head -40
   answering `304 Not Modified` still spends one of the 60 — ETags buy bandwidth
   here, not budget.)*
 - **§13, the Linear handler, reads only with the token** (POS-631). It makes one
-  runs read per handler repo per tick (six, 36/hour against the token's
-  5,000/hour), plus a jobs read and an annotations read once for each new failed
-  run, which it remembers in its state. With no token its six rows read UNKNOWN
+  runs read per handler repo per tick, plus one repo read per tick for each repo
+  whose workflow answers 404 (a caller not yet on its default branch, or a repo
+  the token cannot see): 6 to 12 reads a tick, 36 to 72 an hour, against the
+  token's 5,000/hour. A jobs read and an annotations read come once for each new
+  failed run, which it remembers in its state. With no token its six rows read UNKNOWN
   and it spends nothing, so the keyless budget above is unchanged.
   postmark-telemetry is private. Its row reads UNKNOWN ("needs Actions: read")
-  until the token is given **Actions: read on postmark-town/postmark-telemetry**.
+  until the token is given **Actions: read AND Checks: read on
+  postmark-town/postmark-telemetry**: Actions for the runs and jobs, Checks for
+  the annotations a failed run's reason is read from. A token without Checks
+  still alarms; it costs that one annotations read once per failed run, and the
+  reason falls back to the run URL.
   The token is a fine-grained PAT, and only its owner can edit it.
 - **Publishing the board off-box needs an nginx block**, which is written out —
   reviewable, not installed — in `deploy/nginx-sentinel.conf.snippet`. The

@@ -50,10 +50,12 @@
 //    spends no REST budget at all. (§11 adds one compare call per NEW sweep-
 //    and-tag pair, remembered in its state, so a few a day, never one a tick.)
 //    §13, the Linear handler, reads ONLY WITH THE TOKEN (POS-631, W4): one runs
-//    read per handler repo, six a tick (36/hour against the token's 5,000),
-//    plus a jobs and an annotations read once per NEW failed run, remembered
-//    in its state. Keyless, it spends nothing and its rows read UNKNOWN, so
-//    the two reads above keep the anonymous 60.
+//    read per handler repo, six a tick, and one more repo read every tick for
+//    each repo whose workflow 404s (a caller not yet on its default branch, or
+//    a repo the token cannot see): 6 to 12 a tick, 36 to 72 an hour, against
+//    the token's 5,000. Plus a jobs and an annotations read once per NEW
+//    failed run, remembered in its state. Keyless, it spends nothing and its
+//    rows read UNKNOWN, so the two reads above keep the anonymous 60.
 //
 // 2. PROD DOES NOT BUILD FROM MAIN, so "deployed sha vs main tip" is not a
 //    staleness test — it is a permanent false alarm. deploy.yml's release lane
@@ -377,7 +379,8 @@ export const CONFIG = {
   // §13 — the Linear handler (POS-631). Every repo that carries the caller,
   // one row each (W1: alerts are per row, so one shared row would hide a second
   // repo failing behind the first). postmark-telemetry is private: its row
-  // reads UNKNOWN until the token has Actions: read on it.
+  // reads UNKNOWN until the token has Actions: read on it (and Checks: read, for
+  // the annotations a failed run's reason comes from).
   linearHandler: {
     keyPrefix: "linear_handler",
     owner: "postmark-town",
@@ -1134,7 +1137,7 @@ export function classifyLinearHandler({ repo, haveToken = true, readError = null
   if (!haveToken) return { verdict: "UNKNOWN", reason: `no GitHub token, so ${repo}'s handler runs are unread: this probe reads only with the token, which leaves the keyless budget to the others` };
   if (notFound) {
     if (repoVisible === true) return { verdict: "INFO", reason: `no handler run in ${repo} yet: its caller is not on the default branch, or no PR event has come since it landed` };
-    if (repoVisible === false) return { verdict: "UNKNOWN", reason: `the sentinel's token cannot see ${repo} (404), so its handler runs are unread: the token needs Actions: read on it` };
+    if (repoVisible === false) return { verdict: "UNKNOWN", reason: `the sentinel's token cannot see ${repo} (404), so its handler runs are unread: the token needs Actions: read and Checks: read on it` };
     return { verdict: "UNKNOWN", reason: `${repo}'s handler workflow answered 404, and the repo itself could not be read to say why` };
   }
   if (readError) return { verdict: "UNKNOWN", reason: `GitHub did not answer for ${repo}'s handler runs: ${firstLine(readError).slice(0, 160)}` };
@@ -1155,9 +1158,11 @@ export function classifyLinearHandler({ repo, haveToken = true, readError = null
     return { verdict: "OK", reason: `the last finished run failed on its done line, which is the PR author's to fix and never an alarm (${run.created_at}) — ${url}`, detail: { ...detail, step: "success" } };
   }
   const what = !ours ? "never ran" : ours.conclusion === "skipped" ? "was skipped (a step before it failed)" : `was "${ours.conclusion ?? ours.status}"`;
+  // No jobs at all (a startup_failure): there is no job summary to point at (review N2).
+  const why = (jobs ?? []).length ? `its ${step} step ${what}: ${handlerFailureLine(annotations)}` : "the run never started a job";
   return {
     verdict: "DOWN",
-    reason: `the handler could not act in ${repo}: the last finished run was "${run.conclusion}" and its ${step} step ${what}: ${handlerFailureLine(annotations)} — ${url}`,
+    reason: `the handler could not act in ${repo}: the last finished run was "${run.conclusion}" and ${why} — ${url}`,
     detail: { ...detail, step: ours?.conclusion ?? null },
   };
 }
@@ -1965,13 +1970,15 @@ export async function tick({
             catch (e2) { repoVisible = e2.status === 404 ? false : null; }
           } else readError = e.message;
         }
+        // One GitHub blip must not cost a re-read: the memory outlives an unread tick (review N1).
+        if (readError && memo[repo]) nextMemo[repo] = memo[repo];
         const run = notFound || readError ? null : runs.find((r) => r?.status === "completed" && !INDECISIVE.has(r?.conclusion));
         const seen = memo[repo];
         if (run && run.conclusion !== "success" && seen && seen.run_id === run.id && seen.attempt === (run.run_attempt ?? 1)) {
           row = { verdict: seen.verdict, reason: seen.reason, detail: seen.detail };
           nextMemo[repo] = seen;
         } else {
-          let jobs = null, annotations = null;
+          let jobs = null, annotations = null, annotationsRefused = false;
           if (run && run.conclusion !== "success") {
             try { jobs = (await ghJson(`${base}/actions/runs/${run.id}/jobs`, { fetchImpl, token }))?.jobs ?? []; }
             catch (e) { notes.push(`${repo} handler jobs unread: ${e.message}`); }
@@ -1979,11 +1986,16 @@ export async function tick({
             const ok = (failed?.steps ?? []).find((s) => s?.name === lh.step)?.conclusion === "success";
             if (failed?.id != null && !ok) {
               try { annotations = await ghJson(`${base}/check-runs/${failed.id}/annotations`, { fetchImpl, token }); }
-              catch (e) { notes.push(`${repo} handler annotations unread: ${e.message}`); }
+              catch (e) {
+                notes.push(`${repo} handler annotations unread: ${e.message}`);
+                // A 4xx is the token's answer (no Checks: read), and it will not change by asking again.
+                annotationsRefused = e.status >= 400 && e.status < 500;
+              }
             }
             row = classifyLinearHandler({ repo, runs, jobs, annotations, step: lh.step });
-            // Remembered only once both reads answered, so an unread one is asked again next tick.
-            if (jobs != null && (row.verdict !== "DOWN" || annotations != null || failed?.id == null)) {
+            // Remembered once both reads answered (a 4xx on the annotations counts as an answer), so
+            // only an unread one is asked again next tick.
+            if (jobs != null && (row.verdict !== "DOWN" || annotations != null || annotationsRefused || failed?.id == null)) {
               nextMemo[repo] = { run_id: run.id, attempt: run.run_attempt ?? 1, verdict: row.verdict, reason: row.reason, detail: row.detail };
             }
           } else {

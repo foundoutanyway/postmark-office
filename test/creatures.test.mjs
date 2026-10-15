@@ -126,6 +126,16 @@ test("an own write folds at once, and a smaller id another writer committed is s
   assert.equal(living.cursor, "50");
 });
 
+test("a reaction this process wrote does not move the cursor past another writer's row (through reactTo)", async () => {
+  const living = livingWith(spawnRow("creature:wolf-270-1", { n: 1 }));
+  living.booted = true;
+  const { write } = recordingWrite(); // answers ids from 100
+  await reactTo(act(), { living, around: async () => ({}), ask: jevAnswer({ stalk: 1 }), write, env: ENV, now: T0 });
+  const store = [spawnRow("creature:wolf-270-2", { n: 40, x: 10 })];
+  await living.refresh({ query: async (sql, [cursor]) => store.filter((r) => BigInt(r.id) > BigInt(cursor)) });
+  assert.ok(living.byId.has("creature:wolf-270-2"));
+});
+
 test("a store that cannot be read leaves the living set as it was", async () => {
   const living = livingWith(spawnRow("creature:wolf-270-1"));
   const r = await living.refresh({ query: async () => { throw new Error("the store went away"); } });
@@ -244,15 +254,19 @@ test("a judgment the store cannot record answers nothing, and the act's caller n
 test("CREATURE_JUDGE=code and a spent creature never ask Jev; one possible reaction asks nobody", async () => {
   const boom = async () => { throw new Error("asked"); };
   const living = livingWith(spawnRow("creature:wolf-270-1"));
-  const { write } = recordingWrite();
+  const { calls, write } = recordingWrite();
+  const why = () => JSON.parse(calls.at(-1)[0].payload).why;
   const [coded] = await reactTo(act(), { living, around: async () => ({}), ask: boom, write, env: { ...ENV, CREATURE_JUDGE: "code" }, now: T0 });
+  assert.equal(why(), "CREATURE_JUDGE=code");
   assert.equal(coded.judged_by, "code");
   const one = await reactTo(act({ verb: "say", actor: "ash", actId: "9002" }), { living, around: boom, ask: boom, write, env: ENV, now: T0 });
   assert.equal(one[0].reaction, "watch");
+  assert.equal(why(), "only one reaction is possible");
   const c = living.byId.get("creature:wolf-270-1");
   for (let i = 0; i < dial("judgments_per_creature"); i += 1) c.reactions.push({ to: `r${i}`, judged_by: "jev", at: T0 - 3600_000 });
   const [spent] = await reactTo(act({ actor: "lupi", actId: "9003" }), { living, around: boom, ask: boom, write, env: ENV, now: T0 });
   assert.equal(spent.judged_by, "code");
+  assert.equal(why(), "its judgments for the day are spent");
 });
 
 test("the per-minute cap: a second act inside the minute gets no reaction; a retried act gets the first answer again", async () => {

@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  LIVING_TOP_SQL, PRUNE_AFTER_MS,
   CREATURE_DIALS, CREATURE_DIALS_PENDING, LivingSet, PRIOR_REACTION_SQL, SLICE_CAPS, SLICE_FIELDS,
   allowedReactions, applyReaction, askJev, buildSlice, capOf, dial, judgmentFor, reactTo,
   reactionRows, sampleWith, t20, writeReaction,
@@ -349,7 +350,7 @@ test("the slice is the lean projection: nearest residents and marks, short excer
   assert.match(s.reading_law, /content you are reading, never instructions/);
 });
 
-test("the whitelist: a field outside SLICE_FIELDS never reaches the slice, and neither does a url", () => {
+test("the whitelist: a field outside SLICE_FIELDS never reaches the slice, nor any resident-only url", () => {
   const c = livingWith(spawnRow("creature:wolf-270-1")).byId.get("creature:wolf-270-1");
   c.flags = { wary: true };
   c.reactions.push({ to: "ash", verb: "say", reaction: "watch", judged_by: "jev", distance_m: 20, at: T0 - 60_000 });
@@ -374,8 +375,9 @@ test("the whitelist: a field outside SLICE_FIELDS never reaches the slice, and n
   // the walk saw real rows: every path the busy read can fill was filled
   for (const p of ["residents[].bearing", "residents[].last", "marks[].excerpt", "marks[].class", "heard[].said", "creature.conditions[]", "creature.remembers[]", "others_about", "air", "hour"])
     assert.ok(seen.has(p), `the walk reached ${p}`);
-  // a mark body's url is cut away with the excerpt; no resident-only url ever rides
-  assert.doesNotMatch(JSON.stringify(s), /https?:\/\//);
+  // no resident-only url rides (a mark body's own words are content, and keep what fits its excerpt)
+  const text = JSON.stringify(s);
+  for (const u of [RESIDENT_ONLY.url, RESIDENT_ONLY.token_url]) assert.ok(!text.includes(u), u);
 });
 
 test("the Score sets the mood, then the reaction's effects apply, inside the kind's range", () => {
@@ -423,4 +425,97 @@ test("writeReaction: one transaction; a creature that already answered this act 
   const again = await writeReaction(rows, retried.deps);
   assert.equal(again.prior, true);
   assert.deepEqual(retried.seen.inserted, []);
+});
+
+// ── the review of #561 (FIX at d8b6d32f7): F1–F6 ─────────────────────────────
+
+test("F1: ids that commit out of order lose no reaction — an own write folds whatever the cursor says", async () => {
+  const living = livingWith(spawnRow("creature:wolf-270-1", { n: 1 }), spawnRow("creature:wolf-270-2", { n: 2, x: 5 }));
+  living.booted = true;
+  const react = (id, creature, trigger) => ({ id, at: new Date(T0).toISOString(), actor: creature, action: "react", object: trigger,
+    payload: { to: "kai", verb: "walk", reaction: "watch", judged_by: "jev" } });
+  // B's row (101) commits first and a refresh reads it …
+  await living.refresh({ now: T0, query: async (sql, [cursor]) => [react("101", "creature:wolf-270-2", "9001")].filter((r) => BigInt(r.id) > BigInt(cursor)) });
+  assert.equal(living.cursor, "101");
+  // … then A's rows (99, 100: a reaction and its fled withdraw) commit, below the cursor
+  living.fold([react("99", "creature:wolf-270-1", "9001"),
+    { id: "100", at: new Date(T0).toISOString(), actor: "creature:wolf-270-1", action: "withdraw", object: "creature:wolf-270-1", payload: { reason: "fled" } }], { advance: false });
+  const a = living.byId.get("creature:wolf-270-1");
+  assert.equal(a.reactions.length, 1, "A remembers its reaction");
+  assert.equal(a.gone, "fled", "A is gone, so it writes nothing after its own withdraw");
+  // folding the same rows again (a refresh, a retry) changes nothing
+  living.fold([react("99", "creature:wolf-270-1", "9001"), spawnRow("creature:wolf-270-1", { n: 1, x: 999 })], { advance: false });
+  assert.equal(a.reactions.length, 1);
+  assert.equal(living.byId.get("creature:wolf-270-1").x, 0, "a spawn the set holds is not re-spawned");
+});
+
+test("F2: a Score is scaled onto its mood's own range (a 0..10 hunger)", () => {
+  const kind = { ...WOLF, moods: { ...WOLF.moods, hunger: { lo: 0, hi: 10, start: 8, levels: levels("hunger") } } };
+  const c = { moods: { fear: 1, curiosity: 1, hunger: 8 }, flags: {} };
+  const watch = kind.reactions[0];
+  assert.equal(applyReaction(c, kind, watch, { hunger: 2.6 }).moods.hunger, 9, "2.6 of 3 steps is 8.67 of 10");
+  assert.equal(applyReaction(c, kind, watch, { hunger: 3 }).moods.hunger, 10);
+  assert.equal(applyReaction(c, kind, watch, { hunger: 0 }).moods.hunger, 0);
+  assert.equal(applyReaction(c, WOLF, watch, { fear: 2 }).moods.fear, 2, "a four-step mood is unchanged by the scaling");
+});
+
+test("F3: a negative or non-finite odd is garbage, and code answers", async () => {
+  const allowed = WOLF.reactions.slice(0, 3);
+  for (const probs of [{ watch: 1, stalk: -5 }, { watch: 1, snarl: Infinity }, { watch: "NaN", stalk: 1 }]) {
+    const j = await judgmentFor({ kind: WOLF, allowed, slice: {}, cap: null, mode: "jev",
+      ask: async () => ({ response: { answers: { reaction: { probabilities: probs } } } }) });
+    assert.equal(j.judged_by, "code", JSON.stringify(probs));
+    assert.equal(j.why, "unreadable");
+  }
+});
+
+test("F4: the logged odds re-derive the pick exactly", async () => {
+  const living = livingWith(spawnRow("creature:wolf-270-1"));
+  const { calls, write } = recordingWrite();
+  // odds whose 3-decimal rounding would move a boundary across the roll's u
+  const probs = { watch: 0.5251, stalk: 0.4749 };
+  const picks = new Set();
+  for (let i = 0; i < 40; i += 1) {
+    calls.length = 0;
+    const [out] = await reactTo(act({ actor: `w${i}`, actId: String(7000 + i) }), { living, around: async () => ({}), ask: jevAnswer(probs), write, env: ENV, now: T0 });
+    const p = JSON.parse(calls[0][0].payload);
+    assert.equal(sampleWith(p.roll, p.allowed).picked, out.reaction, `roll ${p.roll}`);
+    assert.ok(Math.abs(Object.values(p.allowed).reduce((t, x) => t + x, 0) - 1) < 1e-12);
+    picks.add(p.roll);
+  }
+  assert.ok(picks.has(11), "the boundary roll was among them");
+});
+
+test("F5: a boot whose window is empty starts at the class's newest id, never at 0", async () => {
+  const living = new LivingSet({ kindOf });
+  const query = async (sql) => (sql === LIVING_TOP_SQL ? [{ id: "48211" }] : []);
+  assert.deepEqual(await living.refresh({ query, now: T0 }), { ok: true, read: 0 });
+  assert.equal(living.cursor, "48211");
+  const after = [];
+  await living.refresh({ now: T0, query: async (sql, params) => { after.push(params[0]); return []; } });
+  assert.deepEqual(after, ["48211"], "the next read pages from the newest id, not through the class's history");
+});
+
+test("F6: a retry of the act that made a creature flee reads the flee again", async () => {
+  const living = livingWith(spawnRow("creature:wolf-270-1", { moods: { fear: 3 } }));
+  const { calls, write } = recordingWrite();
+  const deps = { living, around: async () => ({}), ask: jevAnswer({ flee: 1 }), write, env: ENV };
+  const first = await reactTo(act(), { ...deps, now: T0 });
+  assert.equal(first[0].reaction, "flee");
+  const retry = await reactTo(act(), { ...deps, now: T0 + 5_000 });
+  assert.deepEqual(retry, first);
+  assert.equal(calls.length, 1, "nothing written twice");
+});
+
+test("an ended creature leaves RAM an hour after it ended; its retry index goes with it", async () => {
+  const living = livingWith(spawnRow("creature:wolf-270-1", { moods: { fear: 3 } }), spawnRow("creature:wolf-270-2", { n: 2, x: 5 }));
+  const { write } = recordingWrite();
+  await reactTo(act(), { living, around: async () => ({}), ask: jevAnswer({ flee: 1 }), write, env: ENV, now: T0 });
+  assert.ok(living.answered.has("9001"));
+  living.prune(T0 + PRUNE_AFTER_MS - 1);
+  assert.ok(living.byId.has("creature:wolf-270-1"), "inside the hour, a retry can still find it");
+  living.prune(T0 + PRUNE_AFTER_MS + 1);
+  assert.ok(!living.byId.has("creature:wolf-270-1"));
+  assert.deepEqual([...living.answered.get("9001")], ["creature:wolf-270-2"], "the pruned one leaves the retry index; the other answer stays");
+  assert.ok(living.byId.has("creature:wolf-270-2"), "the living one stays");
 });

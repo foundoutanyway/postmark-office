@@ -168,7 +168,10 @@ export const LIVING_SQL = `SELECT id::text AS id, at, actor, action, object, pay
 // living creature or its memory (a span plus an hour of slack).
 export const LIVING_BOOT_SQL = `SELECT id::text AS id, at, actor, action, object, payload FROM acts
   WHERE class = '${CREATURE_CLASS}' AND at > now() - make_interval(secs => $1) ORDER BY id`;
+export const LIVING_TOP_SQL = `SELECT max(id)::text AS id FROM acts WHERE class = '${CREATURE_CLASS}'`;
 export const LIVING_BATCH = 2000;
+/** How long an ended creature stays in RAM (a retry of its last act still finds its answer). */
+export const PRUNE_AFTER_MS = 3600_000;
 
 /**
  * The creatures this process knows, folded from their rows. A creature is
@@ -179,33 +182,32 @@ export class LivingSet {
   constructor({ kindOf = () => null } = {}) {
     this.kindOf = kindOf;
     this.byId = new Map();
+    this.answered = new Map(); // trigger act id → the creatures that answered it (a retry's lookup)
     this.cursor = "0";
-    this.ahead = new Set(); // ids folded from this process's own writes, past the cursor
     this.booted = false;
   }
 
   /**
-   * Fold rows; a row already folded is ignored. The store's rows (`advance`)
-   * move the cursor. The process's own writes do not: a row another writer
-   * committed with a smaller id must still be read by the next refresh, so an
-   * own write is remembered by id until the cursor passes it.
+   * Fold rows. Folding is idempotent by CONTENT, not by id (review of #561,
+   * F1): a spawn the set already holds, a reaction to a trigger the creature
+   * already answered, and a second withdraw are each ignored. Ids commit out
+   * of order (two creatures reacting at once), so the store's rows
+   * (`advance`) move the cursor, and the process's own writes fold whatever
+   * the cursor says: a refresh that already read past them can never read
+   * them again.
    */
   fold(rows = [], { advance = true } = {}) {
     for (const r of rows) {
-      const id = BigInt(r.id);
-      if (id <= BigInt(this.cursor)) continue;
-      const folded = this.ahead.has(String(r.id));
       if (advance) {
+        if (BigInt(r.id) <= BigInt(this.cursor)) continue;
         this.cursor = String(r.id);
-        for (const a of this.ahead) if (BigInt(a) <= id) this.ahead.delete(a);
-      } else if (!folded) this.ahead.add(String(r.id));
-      if (folded) continue;
+      }
       const p = asPayload(r.payload);
-      if (r.action === SPAWN_ACTION) this.#spawn(r, p);
+      if (r.action === SPAWN_ACTION) { if (!this.byId.has(r.object)) this.#spawn(r, p); }
       else if (r.action === REACT_ACTION) this.#react(r, p);
       else if (r.action === WITHDRAW_ACTION) {
         const c = this.byId.get(r.object);
-        if (c) { c.gone = DESPAWN_REASONS.includes(p.reason) ? p.reason : (p.reason ?? "gone"); c.gone_at = msOf(r.at); }
+        if (c && !c.gone) { c.gone = DESPAWN_REASONS.includes(p.reason) ? p.reason : (p.reason ?? "gone"); c.gone_at = msOf(r.at); }
       }
     }
     return this;
@@ -227,7 +229,9 @@ export class LivingSet {
 
   #react(r, p) {
     const c = this.byId.get(r.actor);
-    if (!c) return;
+    if (!c || c.reactions.some((x) => x.act === String(r.object))) return;
+    const by = this.answered.get(String(r.object)) ?? new Set();
+    this.answered.set(String(r.object), by.add(c.id));
     if (p.moods_after && typeof p.moods_after === "object") Object.assign(c.moods, p.moods_after);
     if (p.flags_after && typeof p.flags_after === "object") c.flags = { ...p.flags_after };
     c.reactions.push({ act: r.object, to: p.to, verb: p.verb, reaction: p.reaction, roll: p.roll, judged_by: p.judged_by,
@@ -251,14 +255,36 @@ export class LivingSet {
     return out.sort((a, b) => a.distance_m - b.distance_m).slice(0, most);
   }
 
+  /** A creature gone or faded more than PRUNE_AFTER_MS ago leaves RAM; its rows stay on the record. */
+  prune(now = Date.now()) {
+    for (const [id, c] of this.byId) {
+      const ended = c.gone ? (c.gone_at ?? c.fades_at) : c.fades_at;
+      if (ended >= now - PRUNE_AFTER_MS) continue;
+      this.byId.delete(id);
+      for (const r of c.reactions) {
+        const by = this.answered.get(r.act);
+        if (by?.delete(id) && !by.size) this.answered.delete(r.act);
+      }
+    }
+    return this;
+  }
+
   /** Catch up with the store. A failed read leaves the set as it was (the next tick retries). */
-  async refresh({ query = actsQuery, spanS = 13 * 3600 } = {}) {
+  async refresh({ query = actsQuery, spanS = 13 * 3600, now = Date.now() } = {}) {
     try {
       if (!this.booted) {
         const rows = await query(LIVING_BOOT_SQL, [spanS]);
         if (rows == null) return { ok: false, why: "the store is not switched on here" };
         this.fold(rows);
+        // A quiet window leaves the cursor at 0, and the next refresh would page
+        // through every creature row ever written (review of #561, F5): start
+        // at the class's newest id instead.
+        if (!rows.length) {
+          const [top] = (await query(LIVING_TOP_SQL, [])) ?? [];
+          if (top?.id != null && BigInt(top.id) > BigInt(this.cursor)) this.cursor = String(top.id);
+        }
         this.booted = true;
+        this.prune(now);
         return { ok: true, read: rows.length };
       }
       let read = 0;
@@ -267,7 +293,7 @@ export class LivingSet {
         if (rows == null) return { ok: false, why: "the store is not switched on here" };
         this.fold(rows);
         read += rows.length;
-        if (rows.length < LIVING_BATCH) return { ok: true, read };
+        if (rows.length < LIVING_BATCH) { this.prune(now); return { ok: true, read }; }
       }
     } catch (e) {
       return { ok: false, why: faultLogged("the creatures' living set could not be read", e) };
@@ -503,7 +529,10 @@ export async function judgmentFor({ kind, allowed, slice, cap, mode, ask }) {
     const names = new Set(allowed.map((r) => r.name));
     if (!probs || typeof probs !== "object" || !Object.keys(probs).some((k) => names.has(k)))
       return code("unreadable");
-    const probabilities = Object.fromEntries(allowed.map((r) => [r.name, Number(probs[r.name]) || 0]));
+    // A negative or non-finite odd is garbage, and garbage falls to code (review of #561, F3).
+    const odd = (v) => (v == null ? 0 : Number(v));
+    if (allowed.some((r) => { const v = odd(probs[r.name]); return !Number.isFinite(v) || v < 0; })) return code("unreadable");
+    const probabilities = Object.fromEntries(allowed.map((r) => [r.name, odd(probs[r.name])]));
     if (!Object.values(probabilities).some((p) => p > 0)) return code("unreadable");
     const scores = {};
     for (const m of Object.keys(kind.moods ?? {}))
@@ -518,13 +547,17 @@ export async function judgmentFor({ kind, allowed, slice, cap, mode, ask }) {
 
 const clamp = (v, d) => Math.max(d.lo, Math.min(d.hi, v));
 
-/** W6's order: each Score sets its mood, then the picked reaction's effects apply. Pure. */
+/** W6's order: each Score sets its mood (scaled onto its range), then the picked reaction's effects apply. Pure. */
 export function applyReaction(creature, kind, reaction, scores = {}) {
   const moods = { ...creature.moods };
   const flags = { ...creature.flags };
-  for (const [m, s] of Object.entries(scores)) {
+  // A Score lies on [0, levels − 1]; it is scaled onto the mood's own range,
+  // which need not span four steps (review of #561, F2: a 0..10 hunger).
+  for (const [m, sc] of Object.entries(scores)) {
     const d = kind.moods?.[m];
-    if (d) moods[m] = clamp(d.lo + Math.round(s), d);
+    if (!d) continue;
+    const steps = Math.max(1, (d.levels?.length ?? 4) - 1);
+    moods[m] = clamp(d.lo + Math.round((sc / steps) * (d.hi - d.lo)), d);
   }
   let flees = false;
   for (const e of reaction?.effects ?? []) {
@@ -539,6 +572,12 @@ export function applyReaction(creature, kind, reaction, scores = {}) {
 /** The line: the kind's template with the actor named. Never model prose. */
 export const lineOf = (reaction, actor) => String(reaction?.says ?? "").replaceAll("{actor}", actor);
 
+/** The odds over `allowed`, summing to 1, unrounded. */
+function normalized(allowed, probabilities) {
+  const total = allowed.reduce((t, r) => t + (probabilities[r.name] ?? 0), 0) || 1;
+  return Object.fromEntries(allowed.map((r) => [r.name, (probabilities[r.name] ?? 0) / total]));
+}
+
 /** The reaction row's payload (W4): the record of the exchange, never Jev's slice. */
 export function reactionPayload({ act, distance_m, approaching, reaction, roll, judgment, allowed, after, slice }) {
   const sliceText = slice ? JSON.stringify(slice) : null;
@@ -551,7 +590,9 @@ export function reactionPayload({ act, distance_m, approaching, reaction, roll, 
     roll,
     judged_by: judgment.judged_by,
     ...(judgment.why ? { why: judgment.why } : {}),
-    allowed: Object.fromEntries(allowed.map((r) => [r.name, Math.round((judgment.probabilities[r.name] ?? 0) * 1000) / 1000])),
+    // the exact odds, normalized as the sampler reads them, so the pick re-derives
+    // from the row with `sampleWith(roll, allowed)` (review of #561, F4)
+    allowed: normalized(allowed, judgment.probabilities),
     moods_after: after.moods,
     flags_after: after.flags,
     ...(judgment.latency_ms != null ? { latency_ms: judgment.latency_ms } : {}),
@@ -631,6 +672,12 @@ export async function reactTo(act, deps = {}) {
   if (!living?.byId?.size || !act?.point || !Number.isFinite(act.point.x) || !Number.isFinite(act.point.y)) return [];
   const now = deps.now ?? Date.now();
   const near = living.inRing(act.point, { now });
+  // a retry of an act a creature already answered reads that answer, even from
+  // a creature that has since fled or faded (review of #561, F6)
+  for (const id of living.answered.get(String(act.actId)) ?? []) {
+    const c = living.byId.get(id);
+    if (c && !near.some((n) => n.creature === c)) near.push({ creature: c, distance_m: distanceM(act.point, c) });
+  }
   if (!near.length) return [];
   const turns = near.map(({ creature, distance_m }) => serialized(creature.id, () =>
     creatureTurn(creature, act, distance_m, { ...deps, env, mode, now: deps.now ?? Date.now() })));
@@ -641,15 +688,17 @@ export async function reactTo(act, deps = {}) {
 async function creatureTurn(creature, act, distance_m, deps) {
   try {
     const { living, kindOf = living.kindOf, mode, now } = deps;
-    if (creature.gone || creature.fades_at <= now) return null; // it fled while this act waited its turn
     const kind = kindOf(creature.kind);
     if (!kind) return null;
-    // a retried act: the creature already answered it, so the answer is the one on the record
+    // A retried act: the creature already answered it, so the answer is the one
+    // on the record — asked before "is it gone", so a retry of the act that made
+    // it flee still reads the flee (review of #561, F6).
     const known = creature.reactions.find((r) => r.act === String(act.actId));
     if (known) {
       const r = kind.reactions.find((x) => x.name === known.reaction);
       return r ? answerOf({ id: creature.id, kind: creature.kind, line: lineOf(r, act.actor), reaction: r.name, roll: known.roll ?? t20(creature.id, act.actId, act.atIso), judged_by: known.judged_by }) : null;
     }
+    if (creature.gone || creature.fades_at <= now) return null; // it fled while this act waited its turn
     const cap = capOf(creature, act.actor, { now });
     if (cap === "minute") return null;
     const approaching = act.approaching ?? approachingOf(act.point, act.toward, creature);

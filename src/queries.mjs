@@ -700,11 +700,12 @@ export const outboxSettled = (db, handle) =>
 // REST all along; MCP callers only ever see the body, which is where the
 // readers that needed it live.
 export function letterList(db, opts = {}) {
-  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
+  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), letterPageCap(opts));
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const asOf = indexAsOf(db);
   const where = [];
   const params = [];
+  if (opts.ids?.length) { where.push(`id IN (${opts.ids.map(() => "?").join(",")})`); params.push(...opts.ids); }
   if (opts.resident) { where.push("(from_h = ? OR to_h = ?)"); params.push(opts.resident, opts.resident); }
   if (opts.region) {
     const handles = regionResidents(db, opts.region);
@@ -749,8 +750,32 @@ export function letterList(db, opts = {}) {
   // in hand — because cached readers read it. It is renamed in meaning by the
   // arrival of `shown` beside it, not silently redefined underneath them.
   const total = Object.values(db.prepare(`SELECT COUNT(*) AS n FROM letters ${clause}`).get(...params))[0];
-  return letterListPage({ total, rows, limit, offset, full: opts.full, asOf });
+  return letterListPage({ total, rows, limit, offset, full: opts.full, digests: opts.digests, asOf });
 }
+
+// ── THE LETTERS SINCE LAST TIME (Darko 2026-10-13) ───────────────────────────
+//
+// The site refresh re-read the whole corpus with bodies every pass: ~27 pages,
+// ~13 MB. Two filters let it read only what moved:
+//
+//   ?digests=1  each letter as { id, digest } and nothing else, up to 5000 a
+//               page. The digest is the sha256 of the letter's `full=1` answer
+//               itself (letterDigest), so two equal digests are two equal
+//               answers, whether the row moved or the office's shaping did.
+//   ?ids=a,b,c  only those letters (up to 200), with every other filter as usual.
+//
+// The reader keeps last pass's digests and asks `full=1&ids=` for the ids that
+// are new or whose digest moved. Not a date cursor, because a letter is not
+// fixed once dated: the ferry MOVES it outbox → inbox at delivery (path, box and
+// delivered_at change), and a letter merged late carries an older date than
+// letters already read. A digest sees both.
+export const LETTER_DIGEST_PAGE = 5000;
+export const LETTER_IDS_MAX = 200;
+export const letterPageCap = (opts) => (opts.digests ? LETTER_DIGEST_PAGE : 200);
+const fullLetter = (r) => ({ ...JSON.parse(r.json), ...excerpt(r) });
+export const letterDigest = (r) => createHash("sha256")
+  .update(JSON.stringify(fullLetter(r)), "utf8")
+  .digest("hex").slice(0, 32);
 
 /** letterList's answer for a region that names nobody. Shared with the store's twin. */
 export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
@@ -761,15 +786,16 @@ export const letterListNoRegion = ({ limit, offset, asOf, region }) =>
  * date, thread, delivered_at, json) and the filter's total. Shared with the
  * store's twin.
  */
-export function letterListPage({ total, rows, limit, offset, full, asOf }) {
-  const shape = full ? (r) => ({ ...JSON.parse(r.json), ...excerpt(r) }) : excerpt;
+export function letterListPage({ total, rows, limit, offset, full, digests, asOf }) {
+  const shape = digests ? (r) => ({ id: r.id, digest: letterDigest(r) })
+    : full ? fullLetter : excerpt;
   const next = offset + rows.length;
   const complete = next >= total;
   return {
     total, shown: rows.length, count: rows.length, limit, offset, complete,
     ...(complete ? {} : { next_offset: next,
-      more_note: `${total - next} further letter${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to 200)` }),
-    ...(full ? { full: true } : {}),
+      more_note: `${total - next} further letter${total - next === 1 ? "" : "s"} match this filter — call again with offset: ${next} (limit up to ${letterPageCap({ digests })})` }),
+    ...(digests ? { digests: true } : full ? { full: true } : {}),
     as_of: asOf, letters: rows.map(shape),
   };
 }

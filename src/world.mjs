@@ -1889,7 +1889,7 @@ export async function worldOrient(args = {}, key = null, { roll = [], crowd = fa
   // without place words (its rows say distance, bearing and what they are
   // doing, never where). v1 asks exactly as it always did.
   const present = await presentNear(at, {
-    ...(crowd ? { limit: Infinity } : { place: (p) => placeWords(p) }),
+    ...(crowd ? crowdPresence() : { place: (p) => placeWords(p) }),
     // ⚑ AVAILABLE IS PARKED (2026-09-10, the founder's word). `the-town/available`
     // was world#19, reverted off the record; the derived was voices.mjs's to
     // compute and this door's only to inject. With the injection gone the
@@ -2092,6 +2092,27 @@ async function groundMarkIds(w) {
  * catches a genuinely broken read is the one that compares the response's own
  * named ids against these keys, and it lives beside the doors, not here.
  */
+/**
+ * MARKS SHOWN WITH THEIR BODIES (Darko, 2026-10-14 22:33: "every read that shows
+ * a mark includes its WHOLE body"). { id, name, body } for each id the fold knows,
+ * in order: the name is the mark's naming mark, else its slug in words, and the
+ * body is whole (≤150 characters by the class grammar, never cut here).
+ */
+export async function markRows(ids = [], w = null) {
+  w ??= await world();
+  let byId = _byIds.get(w);
+  if (!byId) _byIds.set(w, byId = new Map((w?.marks ?? []).map((m) => [m.id, m])));
+  const out = [];
+  for (const id of ids) {
+    const m = byId.get(id);
+    if (m) out.push({ id, name: markName(m, w.marks ?? []), body: m.body ?? "" });
+  }
+  return out;
+}
+
+/** THE PRESENCE CHAIN, for v2 (POS-632): v2's `who` splits everyone within reach, uncapped and without place words. */
+export const crowdPresence = () => ({ limit: Infinity });
+
 export async function markRecords(ids = [], w = null) {
   w ??= await world();   // cached by ref+sha; the apex has no world of its own in hand
   let byId = _byIds.get(w);
@@ -2207,7 +2228,7 @@ export async function worldEyes(args = {}, key = null, { roll = [], v2 = false, 
   // composes its answer field by field and only v2's shaping reads this.
   const v2Rows = v2 ? [...(r.fov?.carried ?? []), ...(r.fov?.far ?? [])].map((o) => {
     const mark = markById.get(o.id);
-    return { id: o.id, name: o.far && o.label ? o.label : markName(mark ?? { id: o.id }, w.marks ?? []),
+    return { id: o.id, name: o.far && o.label ? o.label : markName(mark ?? { id: o.id }, w.marks ?? []), body: mark?.body ?? o.body ?? "",
       bearing: o.bearing, band: o.band, distM: o.distM, weight: o.weight ?? mark?.weight ?? 0,
       ...(o.lifted ? { lifted: true } : {}), ...(typeof mark?.image === "string" ? { image: true } : {}) };
   }) : null;

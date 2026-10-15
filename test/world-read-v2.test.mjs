@@ -125,7 +125,8 @@ test("G4: happened with no cursor names where it reaches back to; an unread delt
 
 test("the assembled read: you, now, view, who, can, law in order; no URL; happened always", () => {
   const v2 = shapeV2({
-    handle: "wright", standpoint: { x: -318, y: 211, seat: { ground: "x" } }, spine: [{ id: "a", body: "A." }, { id: "b", body: "The reach." }],
+    handle: "wright", standpoint: { x: -318, y: 211, seat: { ground: "x" } }, spine: [{ id: "the-town/the-town-centre" }, { id: "the-town/the-quay-reach" }],
+    marks: new Map([["the-town/the-town-centre", { id: "the-town/the-town-centre", name: "the Town Centre", body: "A." }], ["the-town/the-quay-reach", { id: "the-town/the-quay-reach", name: "the Quay Reach", body: "The reach." }]]),
     here: "the Quay Reach, the Town Centre", holdings: [], stancesAwaiting: 55, note: null, crossing: 250, nextCrossingIn: "11h 52m",
     canon: "S109", nextSettlement: "06:00Z", happened: null, sinceCrossing: 249, viewRows: [], crowd: [], active: new Map(), nowMs: NOW, entries: [{ action: "say" }],
   });
@@ -134,6 +135,12 @@ test("the assembled read: you, now, view, who, can, law in order; no URL; happen
   assert.ok(!("here_body" in v2.you), "here_body repeated the innermost; within carries it");
   assert.deepEqual(unbodied(v2), [], "no mark is shown without its body");
   const dark = shapeV2({ standpoint: { x: 0, y: 0 }, spine: [], crossing: 1, entries: [], canUnavailable: "the world store is not open" });
+  // open ground: the place the words say you are near rides as a row (review-559 Addendum 3)
+  const gauge = { id: "histor-reeves/the-gauge-house", name: "the Gauge House", body: "A low brick house." };
+  const open = shapeV2({ standpoint: { x: 0, y: 0 }, spine: [], here: "near the Gauge House", near: gauge, crossing: 1, entries: [] });
+  assert.deepEqual(open.you.near, gauge);
+  assert.deepEqual(unbodied(open), []);
+  assert.deepEqual(unbodied({ ...open, you: { ...open.you, near: undefined } }), ['you.here: names "the Gauge House" with no row of it beside the words'], "the check reads the words");
   assert.deepEqual(dark.can, { unavailable: "the world store is not open" }, "an unreadable class layer is said, never an empty can (review-555 § 1)");
   assert.deepEqual(v2.you.seat, { ground: { id: "x", name: "x", body: "" } }, "G1: the seat is said on you, its ground a row");
   assert.deepEqual(v2.you.waiting_on_you, { stances: 55, read: 'household { read: "stances" }' });

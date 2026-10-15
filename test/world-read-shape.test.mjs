@@ -60,6 +60,9 @@ before(() => {
     // record holds no acts; the active split is test/world-read-v2.test.mjs's.
     if (/CROSS JOIN LATERAL \(SELECT action, at FROM acts/.test(text)) return { rows: [] };
     if (/^SELECT max\(id\)::text AS hw FROM acts$/.test(text)) return { rows: [{ hw: LIVE.hw }] };
+    if (/^SELECT action, at, at_anchor, at_dx, at_dy FROM acts WHERE actor = \$1/.test(text))
+      return { rows: [{ action: "say", at: new Date(Date.now() - 4 * 60000), at_anchor: KOGANE_PARCEL, at_dx: 0, at_dy: 0 },
+        { action: "note-to-self", at: new Date(Date.now() - 5 * 60000), at_anchor: KOGANE_PARCEL, at_dx: 0, at_dy: 0 }] };
     if (/FROM acts WHERE id > \$1::bigint AND action = ANY/.test(text)) return { rows: LIVE.rows.filter((r) => Number(r.id) > Number(params[0])) };
     if (/FROM acts WHERE action = ANY\(\$1::text\[\]\) ORDER BY id DESC/.test(text)) return { rows: [...LIVE.rows].reverse() };
     // The apex asks the store whose household each ground is (POS-350). This
@@ -265,10 +268,27 @@ test("PR-3: every v2 read hands back a cursor; passing it back reads only what c
   } finally { setEnv("WORLD_MOVEMENT_V2", undefined); LIVE.rows = []; LIVE.hw = null; }
 });
 
+test("PR-4: investigate: on a resident rides the bare read, v1 and v2, with public acts only", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  for (const shape of [undefined, "v2"]) {
+    const r = await worldApex({ handle: WHO, investigate: WHO, ...(shape ? { read_shape: shape } : {}) }, KEY, {});
+    assert.ok(!r.error, JSON.stringify(r).slice(0, 300));
+    assert.equal(r.investigated?.kind, "resident", `investigated rides ${shape ?? "v0"}`);
+    assert.deepEqual(r.investigated.recent.acts.map((a) => a.did), ["said something"], "the say as the fact of it; the note never");
+    assert.ok(!JSON.stringify(r.investigated).includes("note-to-self"));
+  }
+  assert.ok(!("investigated" in await v2At()), "absent when not asked");
+  assert.equal((await worldApex({ handle: WHO, investigate: KOGANE_PARCEL }, KEY, {})).code, 422, "a mark is mark:'s");
+  assert.equal((await worldApex({ handle: WHO, investigate: WHO, mark: KOGANE_PARCEL }, KEY, {})).code, 422, "one focus at a time");
+  assert.equal((await worldApex({ handle: WHO, investigate: WHO, read: "view" }, KEY, {})).code, 422);
+  const critter = await v2At({ investigate: "creature/mist-hare-7" });
+  assert.match(critter.investigated.unavailable, /WLD-46/);
+});
+
 test("explain: every key of the real v2 read at the rig's standpoint has a row", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const { unexplained } = await import("../src/read-grammar.mjs");
   assert.deepEqual(unexplained("world", await v2At(), 2), []);
   assert.deepEqual(unexplained("world", await v2At({ diagnostics: true }), 2), []);
+  assert.deepEqual(unexplained("world", await v2At({ investigate: WHO }), 2), []);
 });
 
 test("v1: the description says the lean read and its size, and cards takes \"full\"", () => {

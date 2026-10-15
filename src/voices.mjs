@@ -312,6 +312,9 @@ function threadOf(cluster, { live, voiceCap }) {
 // between cases would get whichever value the first import happened to see. So
 // the caller hands over a predicate, this module asks it every time, and voices
 // itself stays innocent of what a flag is.
+/** How long the main thread's carried earshot is reused (POS-632 W4). */
+export const EARSHOT_MEMO_MS = 1000;
+
 export function createVoices({
   standpoint,
   place = async () => null,
@@ -522,7 +525,7 @@ export function createVoices({
   // call, as it always paid; the push (say-push.mjs) builds one per landed
   // voice and hands it to every waiter, which is what keeps fifty open waiters
   // at one room per voice rather than fifty.
-  async function snapshot(t) {
+  async function snapshot(t, { clusters: wantClusters = true } = {}) {
     stats.rooms += 1;
     let vessel = null;
     if (vesselAt) { try { vessel = await vesselAt(); } catch { vessel = null; } }
@@ -549,7 +552,8 @@ export function createVoices({
       audible.push({ v, x: heard.x, y: heard.y, structural: false });
     }
     stats.clusters += 1;
-    const clusters = clusterVoices(hydrate(), { earshotM, fadeMs: closeMs });
+    // The ear alone needs no clusters (POS-632 W4's carried earshot skips them).
+    const clusters = wantClusters ? clusterVoices(hydrate(), { earshotM, fadeMs: closeMs }) : null;
     return { t, audible, clusters, window };
   }
 
@@ -585,10 +589,16 @@ export function createVoices({
   }
 
   /** The earshot as plain data, for a worker to hear from: the instant and every audible voice, no clusters. */
+  // MEMOISED FOR EARSHOT_MEMO_MS (review-559 on #564): the main thread takes one
+  // for every handed v2 bare read, so a burst of reads shares one walk of the
+  // window. A voice landing inside the second is heard on the next read.
+  let memo = null;
   async function earshotSnapshot() {
     const t = now();
-    const snap = await snapshot(t);
-    return { t, audible: snap.audible.map(({ v, x, y, structural }) => ({ v: { handle: v.handle, text: v.text, at: v.at, x: v.x, y: v.y, aboard: Boolean(v.aboard) }, x, y, structural })) };
+    if (memo && t - memo.t >= 0 && t - memo.t < EARSHOT_MEMO_MS) return memo;
+    const snap = await snapshot(t, { clusters: false });
+    memo = { t, audible: snap.audible.map(({ v, x, y, structural }) => ({ v: { handle: v.handle, text: v.text, at: v.at, x: v.x, y: v.y, aboard: Boolean(v.aboard) }, x, y, structural })) };
+    return memo;
   }
 
   // `how` is "spoke" or "listened" — the same touch either way, because the dial

@@ -1851,7 +1851,7 @@ export async function worldAir(oriented) {
   } catch { return null; }
 }
 
-export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
+export async function worldOrient(args = {}, key = null, { roll = [], crowd = false } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce; // a multi-resident key must name a handle
   const w = await sightFor(await world(), choice.handle, key);
@@ -1884,8 +1884,12 @@ export async function worldOrient(args = {}, key = null, { roll = [] } = {}) {
   // Who else is standing here (Stage 2, WORLD_PRESENCE). `presentNear` returns
   // null on its first line with the flag off, so this spreads nothing and the
   // answer is the one orient has always given.
+  // THE WHOLE CROWD (POS-632, the world read v2): `who` splits everyone within
+  // presence's radius by activity, so v2 asks for every row, uncapped, and
+  // without place words (its rows say distance, bearing and what they are
+  // doing, never where). v1 asks exactly as it always did.
   const present = await presentNear(at, {
-    place: (p) => placeWords(p),
+    ...(crowd ? { limit: Infinity } : { place: (p) => placeWords(p) }),
     // ⚑ AVAILABLE IS PARKED (2026-09-10, the founder's word). `the-town/available`
     // was world#19, reverted off the record; the derived was voices.mjs's to
     // compute and this door's only to inject. With the injection gone the
@@ -2110,7 +2114,7 @@ export async function markRecords(ids = [], w = null) {
   return out;
 }
 
-export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
+export async function worldEyes(args = {}, key = null, { roll = [], v2 = false } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce;
   const w = await sightFor(await world(), choice.handle, key);
@@ -2149,7 +2153,8 @@ export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
   // answer around the telling (it already adds standpoint and crossing), and
   // re-rendering the engine's prose to weave people through it would make the
   // office a second author of the world's voice.
-  const present = await presentNear(at, {
+  // v2 (POS-632) reads presence once, through orient's crowd; the eyes skip it.
+  const present = v2 ? null : await presentNear(at, {
     place: (p) => placeWords(p),
     // (`available` was injected here too — parked; see worldOrient's note.)
     exclude: choice.handle ? [choice.handle] : [],
@@ -2195,7 +2200,18 @@ export async function worldEyes(args = {}, key = null, { roll = [] } = {}) {
       tier: mark?.tier ?? null,
     };
   });
+  // THE VIEW'S OWN ROWS, for v2 only (POS-632): the engine's rank, bearing,
+  // band and `lifted`, with each place's name (its naming mark, else its slug)
+  // and whether it has a picture. `_fov` never reaches an answer: the apex
+  // composes its answer field by field and only v2's shaping reads this.
+  const v2Rows = v2 ? [...(r.fov?.carried ?? []), ...(r.fov?.far ?? [])].map((o) => {
+    const mark = markById.get(o.id);
+    return { id: o.id, name: o.far && o.label ? o.label : markName(mark ?? { id: o.id }, w.marks ?? []),
+      bearing: o.bearing, band: o.band, distM: o.distM, weight: o.weight ?? mark?.weight ?? 0,
+      ...(o.lifted ? { lifted: true } : {}), ...(typeof mark?.image === "string" ? { image: true } : {}) };
+  }) : null;
   return {
+    ...(v2Rows ? { _fov: { rows: v2Rows, mists: r.fov?.mists ?? null } } : {}),
     stance: choice.stance, telling, objects,
     // THE TRANSPORT LINE RIDES THE NARRATIVE SHAPE TOO (#2986 § 11 item 1), and
     // it has to: `diagnostic` is a diagnostic — nothing a resident actually

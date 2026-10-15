@@ -578,11 +578,16 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
   const notYetCarried = lockedNewest && windowKnown && Number(newest.window_id) > settled.settledWindow;
   const carriedUndecidable = standing && lockedNewest && !windowKnown;
   const published = standing && !notYetCarried && !carriedUndecidable;
+  // RULED AND CARRIED, AND NO LONGER STANDING (Wright, on office #539): the
+  // newest claim is locked at a candle a settlement has closed, and the mark is
+  // not in the rows. Its `mark_carried` row outlives it, so the receipt can name
+  // the settlement that carried it.
+  const carriedGone = !standing && lockedNewest && windowKnown && Number(newest.window_id) <= settled.settledWindow;
   // WHICH SETTLEMENT CARRIED IT: the recorded row, in 1.0's `{ s, sha, at }`.
   // `at` is looked up in the 20 newest settlements, as 1.0 looks it up in its
   // 20 newest tags; an older settlement's receipt names no date on either door.
   let carried = null;
-  if (published) {
+  if (published || carriedGone) {
     try {
       const { rows: [c] } = await p.query(
         `SELECT c.settlement, s.tag_sha FROM mark_carried c JOIN settlements s ON s.number = c.settlement WHERE c.mark = $1`, [id]);
@@ -603,6 +608,7 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
     id, canon: published ? { id } : null, published_at: carried,
     claims, settlement: settled?.current ?? null, site_pin: null,
     last_amended, amends_unread,
+    settled_window: windowKnown ? settled.settledWindow : null,
   });
   if (carriedUndecidable) {
     const reason = settled ? "the settlements table names no candle a settlement closed" : "the settlements table could not be read";

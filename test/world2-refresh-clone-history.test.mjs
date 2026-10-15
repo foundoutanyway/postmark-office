@@ -26,7 +26,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { pinMove } from "../world2/tools/law-ingest.mjs";
+import { ancestryIn, pinMove } from "../world2/tools/law-ingest.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(ROOT, "deploy", "world2-refresh-clone.sh");
@@ -61,11 +61,8 @@ function refresh(o) {
   return r.stdout.trim().split("\n").pop();
 }
 
-/** law-ingest.mjs main()'s isAncestor, verbatim in shape: 1 is "no", anything else throws. */
-const isAncestorIn = (repo) => (a, b) => {
-  try { execFileSync("git", ["-C", repo, "merge-base", "--is-ancestor", a, b], { stdio: "ignore" }); return true; }
-  catch (e) { if (e?.status === 1) return false; throw e; }
-};
+/** The pen's own ancestry question (law-ingest.mjs § ancestryIn, which main() hands writeLaw). */
+const isAncestorIn = (repo) => ancestryIn(repo);
 
 test("pinMove names a checkout that cannot place the pin apart from a law that does not descend", () => {
   const throws = () => { const e = new Error("fatal: Not a valid commit name"); e.status = 128; throw e; };
@@ -100,7 +97,7 @@ test("EXECUTED: a checkout the box left shallow is unshallowed once, then places
   const dir = join(o.lab, "ingest-clones", "world-blessed");
   execFileSync("git", ["-c", "advice.detachedHead=false", "clone", "-q", "--depth", "1", "--branch", "settlement/S2", pathToFileURL(o.src).href, dir]);
   assert.ok(existsSync(join(dir, ".git", "shallow")), "the fixture starts shallow, as the box does");
-  assert.throws(() => isAncestorIn(dir)(s1, s2), (e) => e.status === 128, "a shallow checkout cannot place S1: the bug");
+  assert.throws(() => isAncestorIn(dir)(s1, s2), "a shallow checkout cannot place S1: the bug");
   const s3 = o.commit("S3"); o.tag(3);
   assert.equal(refresh(o), s3);
   assert.ok(!existsSync(join(dir, ".git", "shallow")), "the refresh unshallowed it");
@@ -125,4 +122,18 @@ test("EXECUTED: a pin that is not an ancestor still holds, with the fact named",
   const v = pinMove(ahead, s2, isAncestorIn(dir));
   assert.equal(v.move, false);
   assert.match(v.why, /does not descend from the pin/);
+});
+
+test("ancestryIn: a shallow checkout that holds the old pin, cut off from it, says it cannot place it, never 'does not descend'", { skip }, (t) => {
+  const o = origin(t);
+  const s1 = o.commit("S1"); o.tag(1);
+  o.commit("between");
+  const s2 = o.commit("S2"); o.tag(2);
+  // The old script's two runs: a --depth 1 clone at S1, then a --depth 1 fetch of S2.
+  const dir = join(o.lab, "ingest-clones", "world-blessed");
+  execFileSync("git", ["-c", "advice.detachedHead=false", "clone", "-q", "--depth", "1", "--branch", "settlement/S1", pathToFileURL(o.src).href, dir]);
+  execFileSync("git", ["-C", dir, "fetch", "-q", "--depth", "1", "origin", "settlement/S2"]);
+  const v = pinMove(s1, s2, ancestryIn(dir));
+  assert.equal(v.move, false);
+  assert.match(v.why, /this checkout cannot place the pin/, "git answered 1 at the cut, which is not a fact about the law");
 });

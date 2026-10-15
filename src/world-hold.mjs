@@ -387,7 +387,7 @@ export function nearestIds(id, ids) {
  * The world's answer about one thing and one resident, or `null` when the world
  * could not be read at all. Never throws.
  */
-export async function reachContext(thing, actor) {
+export async function reachContext(thing, actor, { key = null } = {}) {
   try {
     const [{ worldMarkById, pointWithinMarkFn, residentStandpoint }, { standsWithin }] = await Promise.all([
       import("./world.mjs"), import("./reach.mjs"),
@@ -416,6 +416,20 @@ export async function reachContext(thing, actor) {
         const { guardedLiveMarks } = await import("./world2-guards.mjs");
         const live = await guardedLiveMarks(null, { actor });
         ownDraftExists = live.some((m) => m.id === thing);
+        // THE LIVE LAYER IS ONLY `draft` AND `pending` (Wright's review of
+        // #553). A claim the candle has LOCKED, or that waits in
+        // `held_review`, has left the live layer and is not yet in canon:
+        // unpublished, in its author's house, and takeable, for minutes when
+        // settlements run on time and for hours when one is held (kogane's
+        // Swallets sat locked from 18:00Z on 10-13 to the next morning's).
+        // So a "no" from the live layer is asked again of the docket, the way
+        // the receipt asks it, and only a docket with NO row for this slug
+        // counts as nothing there.
+        if (!ownDraftExists) {
+          const { claimRowsForSlug } = await import("./world2-claims.mjs");
+          const rows = await claimRowsForSlug(thing, { key });
+          if (rows.length) ownDraftExists = true;
+        }
         // DID YOU MEAN, from the same read. Added after the first review of
         // this fix (Emily, 2026-10-14): the commonest way to land in the refusal
         // below is an author mistyping their OWN draft, and `world { find }`
@@ -443,7 +457,7 @@ export async function reachContext(thing, actor) {
  * false comment above a second copy. The reviewer caught both; the copy is
  * gone and the sentence now describes what happens.
  */
-export async function refuseOutOfReach({ thing, to, actor, act, holder, ctx: given = null, standpointOfOther = null }) {
+export async function refuseOutOfReach({ thing, to, actor, act, holder, ctx: given = null, standpointOfOther = null, key = null }) {
   // A DROP IS ALWAYS IN REACH. You set a thing down where you stand; there is
   // no distance to be wrong about, and no canon gate either — letting go of an
   // unpublished thing is the repair for a hold that should never have been
@@ -454,7 +468,7 @@ export async function refuseOutOfReach({ thing, to, actor, act, holder, ctx: giv
   // same reason: the four clauses are adjudication, and a falsifier must be
   // able to put a resident 379 m from a try-square without a world engine, a
   // clone and a walk ledger. The door hands over the real one.
-  const ctx = given ?? await reachContext(thing, actor);
+  const ctx = given ?? await reachContext(thing, actor, { key });
   if (!ctx) return null; // the world could not be read — the ordinary door stands
 
   const { mark, within, standing, standsWithin, householdOf = null } = ctx;
@@ -1355,7 +1369,7 @@ export async function callHoldTool(name, args = {}, key = null) {
     }
     refuseGiveOfUnheld({ thing: args.thing, to: args.to ?? null, actor, holder: preHolder });
     const face = faceOf(preHolder, args.to ?? null);
-    const reached = await refuseOutOfReach({ thing: args.thing, to: args.to ?? null, actor, act: face, holder: preHolder });
+    const reached = await refuseOutOfReach({ thing: args.thing, to: args.to ?? null, actor, act: face, holder: preHolder, key });
     // A FIXED CHEST IS NOT CARRIED (WLD-27): a bowl stands where it was set.
     if (face === "take") {
       let m = null;

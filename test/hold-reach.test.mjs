@@ -774,6 +774,40 @@ function groundRowOf(mod, mark, at, stands) {
 // takes their own private draft (admitted, clause 4's own carve-out), then
 // tries to hand it to another household (must be refused).
 
+// ── A LOCKED CLAIM IS STILL THE HOUSE'S OWN (Wright's review of #553) ───────
+//
+// The live layer is `draft` and `pending` only. A claim the candle has locked
+// but no settlement has carried yet is in neither, and not in canon either —
+// unpublished, in its author's house, and takeable before this PR. The door
+// asks the docket when the live layer says no, and refuses only an empty one.
+// The second half is the falsifier: if the docket read failed and the door fell
+// back to admitting, the take of a name with no row at all would pass too.
+
+test("THE DOOR STILL LETS A HOUSE TAKE ITS OWN LOCKED, NOT-YET-CARRIED CLAIM — and refuses a name with no row, end to end", async () => {
+  const { installHoldRecord } = await import("./acts-pen-stub.mjs");
+  const LOCKED = "wright/a-try-square-for-the-joinery";
+  const rec = await installHoldRecord({ claims: [{ id: "claim-try-square-locked", slug: LOCKED, status: "locked",
+    household: "solo:wright", claimant: "wright", window_id: 1, body: "a try-square for the joinery",
+    geometry: { kind: "sited", at: { x: 0, y: 0 }, extent: { w: 1, h: 1 } } }] });
+  const claims = await import("../src/world2-claims.mjs");
+  claims.__setPoolForTest(rec.pen);
+  try {
+    const { callHoldTool } = await import("../src/world-hold.mjs");
+    const key = { handles: new Set(["wright"]) };
+
+    const took = await callHoldTool("world_hold", { thing: LOCKED }, key)
+      .then((r) => r, (e) => ({ refused: e }));
+    assert.ok(!took.refused, `a locked claim of the author's own house was refused: ${took.refused?.defect}`);
+    assert.equal(took.did, "take");
+
+    const none = await callHoldTool("world_hold", { thing: "wright/a-try-square-for-the-joinry" }, key)
+      .then((r) => ({ admitted: r }), (e) => e);
+    assert.equal(none?.code, 404, `a name with no row anywhere was admitted: ${JSON.stringify(none?.admitted)}`);
+    assert.match(none.defect, /neither published nor one of your household's drafts/);
+    assert.equal(rec.pen.rows().length, 1, "the locked take is the one act in the record");
+  } finally { claims.__setPoolForTest(null); rec.restore(); }
+});
+
 test("THE DOOR REFUSES AN AUTHOR GIVING THEIR OWN PRIVATE DRAFT AWAY — walk #10's end state, end to end", async () => {
   const { installHoldRecord } = await import("./acts-pen-stub.mjs");
   const DRAFT = "wright/a-try-square-for-the-joinery";

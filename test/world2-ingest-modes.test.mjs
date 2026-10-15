@@ -178,10 +178,13 @@ test("UNIT: the roll-call's law row reads the law pen's own state file", () => {
  * Run the WHOLE shipped script against a stubbed tree and return the pen files
  * it invoked, in order, plus its exit code and the state files it wrote.
  */
-function runShipped(mode, { penBody = "echo stubbed-pen-ok\nexit 0" } = {}) {
+function runShipped(mode, { penBody = "echo stubbed-pen-ok\nexit 0", prior = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "w2-ingest-modes-"));
   const ops = join(dir, "ops"), bin = join(dir, "bin"), lab = join(dir, "lab");
   for (const d of [ops, bin, lab, join(lab, "state"), join(dir, "office")]) mkdirSync(d, { recursive: true });
+  const stateFile = join(lab, "state", mode === "law" ? "ingest-law.json" : mode === "stamps" ? "ingest-stamps.json" : "ingest.json");
+  // The previous run's state, as the box would have left it (POS-628: ok_at is carried from it).
+  if (prior != null) writeFileSync(stateFile, JSON.stringify(prior) + "\n");
 
   // The shipped script and the library it sources, verbatim.
   for (const f of ["world2-ingest.sh", "world2-lib.sh"]) {
@@ -222,8 +225,7 @@ function runShipped(mode, { penBody = "echo stubbed-pen-ok\nexit 0" } = {}) {
   }
   const pens = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : [];
   const checkouts = existsSync(refreshLog) ? readFileSync(refreshLog, "utf8").trim().split("\n").filter(Boolean) : [];
-  const state = JSON.parse(readFileSync(join(lab, "state", mode === "law" ? "ingest-law.json"
-    : mode === "stamps" ? "ingest-stamps.json" : "ingest.json"), "utf8"));
+  const state = JSON.parse(readFileSync(stateFile, "utf8"));
   rmSync(dir, { recursive: true, force: true });
   return { code, pens, state, checkouts };
 }
@@ -326,4 +328,50 @@ test("EXECUTED: a law run that succeeds carries no refusal field (POS-619)", (t)
   const { code, state } = runShipped("law");
   assert.equal(code, 0);
   assert.equal(state.refusal, undefined);
+});
+
+// ── POS-628: `at` is the last run; `ok_at` is the last HEALTHY one ──────────
+// The roll-call's law row reads ok_at (deploy/box-rollcall-manifest.json). A
+// held pin exits 0, and it read as ok for three days (2026-10-11..14, POS-635).
+const PIN = "b0db90f0644ee4a0719f4d02c3c4e3b2cc10fe22";
+const OLD_OK = "2026-10-11T15:04:52Z";
+const LAW_SHA = "0".repeat(40);
+const heldPen = [
+  `echo "[law-ingest] PIN HELD — projection_heads['world-law'] stays at ${PIN}: this checkout cannot place the pin b0db90f0644e against 000000000000 (a shallow checkout, or a pin it does not hold): the pin stays, and the rows for 000000000000 are written beside it" >&2`,
+  `echo "ingested law ${LAW_SHA}"`,
+  `echo "  projection_heads['world-law'] = ${PIN} (HELD: this checkout cannot place the pin)"`,
+  "exit 0",
+].join("\n");
+const movedPen = [`echo "ingested law ${LAW_SHA}"`, `echo "  projection_heads['world-law'] = ${LAW_SHA}"`, "exit 0"].join("\n");
+
+test("EXECUTED: an ok run stamps ok_at with this run, and pin names where the pin now stands (POS-628)", (t) => {
+  if (!bashAvailable()) { t.skip("bash is not on PATH here"); return; }
+  const { code, state } = runShipped("law", { penBody: movedPen, prior: { at: OLD_OK, status: "ok", ok_at: OLD_OK } });
+  assert.equal(code, 0);
+  assert.equal(state.status, "ok");
+  assert.ok(Date.parse(state.ok_at) > Date.parse(OLD_OK), `ok_at was not stamped by this ok run: ${state.ok_at}`);
+  assert.ok(Math.abs(Date.parse(state.ok_at) - Date.parse(state.at)) <= 2000, "ok_at and at are this run's, together");
+  assert.deepEqual(state.pin, { state: "current", sha: LAW_SHA });
+});
+
+test("EXECUTED: a HELD pin reads law-pin-held, exits 0, carries the old ok_at, and names the pin and why (POS-628)", (t) => {
+  if (!bashAvailable()) { t.skip("bash is not on PATH here"); return; }
+  const { code, state } = runShipped("law", { penBody: heldPen, prior: { at: "2026-10-14T23:49:00Z", status: "law-pin-held", ok_at: OLD_OK } });
+  assert.equal(code, 0, "the rows were written: a held pin is not a failed run");
+  assert.equal(state.status, "law-pin-held", "a held pin read ok: the 10-11 freeze, again");
+  assert.equal(state.ok_at, OLD_OK, "a held run must not refresh ok_at, or the roll-call never sees three in a row");
+  assert.equal(state.pin.state, "held");
+  assert.equal(state.pin.sha, PIN);
+  assert.match(state.pin.why, /^\[law-ingest\] PIN HELD — .*this checkout cannot place the pin/);
+});
+
+test("EXECUTED: a refused run carries the old ok_at; with none before it, it writes none (POS-628)", (t) => {
+  if (!bashAvailable()) { t.skip("bash is not on PATH here"); return; }
+  const refuse = "echo 'REFUSED: the law at x carries 1 mark(s)' >&2\nexit 1";
+  const carried = runShipped("law", { penBody: refuse, prior: { at: "2026-10-14T23:49:00Z", status: "law-failed", ok_at: OLD_OK } });
+  assert.equal(carried.code, 1);
+  assert.equal(carried.state.ok_at, OLD_OK);
+  assert.equal(carried.state.pin, undefined, "a failed run says nothing about the pin");
+  const fresh = runShipped("law", { penBody: refuse });
+  assert.equal(fresh.state.ok_at, undefined, "a pen never healthy since this file began has no ok_at to show");
 });

@@ -17,12 +17,13 @@ import {
   LANDMARK_WEIGHT_FLOOR, ACTIVE_CAP, ACTIVE_WINDOW_MS, PUBLIC_ACTS, ACTIVE_SQL,
 } from "../src/world-read-v2.mjs";
 import { ONE_LINERS } from "../src/world-read-shape.mjs";
+import { unbodied } from "./helpers/mark-bodies.mjs";
 
 const NOW = Date.parse("2026-10-15T00:08:00Z");
 
 test("G2: a landmark is lifted by its stamps AND weighs at least the floor; a picture is a flag", () => {
   const v = viewBlock([
-    { id: "a/big", name: "Big", bearing: "NE", band: "across the way", distM: 393, weight: 83 },
+    { id: "a/big", name: "Big", body: "A big place.", bearing: "NE", band: "across the way", distM: 393, weight: 83 },
     { id: "b/far", name: "Far", bearing: "SE", band: "far off", distM: 6164, weight: 82, lifted: true, image: true },
     { id: "c/tiny", name: "Tiny", bearing: "SE", band: "across the way", distM: 152, weight: LANDMARK_WEIGHT_FLOOR - 7, lifted: true },
     { id: "d/edge", name: "Edge", bearing: "N", band: "far off", distM: 3345, weight: LANDMARK_WEIGHT_FLOOR, lifted: true },
@@ -35,6 +36,8 @@ test("G2: a landmark is lifted by its stamps AND weighs at least the floor; a pi
   assert.equal(v.SE[1].landmark, undefined, "lifted under the floor: no flag");
   assert.equal(v.N[0].landmark, true, "the floor itself counts");
   assert.equal(v.NE[0].m, 393);
+  assert.equal(v.NE[0].body, "A big place.", "every view row carries its whole body (Darko 22:33)");
+  assert.equal(v.SE[0].body, "", "a row whose mark has no body says so as an empty body, never by leaving the key out");
 });
 
 test("G3/G5/G6: active is a public act in the last 12 hours, at most 8, nearest first; a say is the fact of it", () => {
@@ -80,9 +83,13 @@ test("G8: each act's line is the approved sentence without its fields, grouped b
 test("G7: happening_here says the vessel's next departures and the Mists only where you stand in them; nothing is null", () => {
   assert.equal(happeningBlock({}), null);
   assert.equal(happeningBlock({ mists: { in_wall: false, thickness: 0 } }), null, "clear of the Mists: the air says it");
-  const h = happeningBlock({ departures: { next: [{ at: "2026-10-15T01:30:00Z", toward: "the-town/the-snug" }] }, mists: { in_wall: false, thickness: 0.4 } });
+  const snug = { id: "the-town/the-snug", name: "the Snug", body: "A small harbour." };
+  const h = happeningBlock({ departures: { next: [{ at: "2026-10-15T01:30:00Z", toward: "the-town/the-snug" }] }, mists: { in_wall: false, thickness: 0.4 }, markOf: (id) => (id === snug.id ? snug : null) });
   assert.deepEqual(h.map((r) => r.kind), ["departure", "emission"]);
   assert.equal(h[0].at, "01:30Z");
+  assert.deepEqual(h[0].to, snug, "a departure's destination is shown whole");
+  assert.equal(h[0].what, "the Post Office leaves here for the Snug");
+  assert.deepEqual(unbodied(h), []);
   const cal = { now: [
     { id: "postmaster/halloween", title: "Halloween in Postmark", place: { mark: "the-town/the-quay-reach", name: "the Quay Reach", x: 0, y: 0 }, phase: "underway", ends: "2026-11-01T04:00:00Z" },
     { id: "a/far-party", title: "Far party", place: { mark: "a/elsewhere", x: 5000, y: 5000 }, phase: "underway", ends: "2026-11-01T04:00:00Z" },
@@ -90,9 +97,12 @@ test("G7: happening_here says the vessel's next departures and the Mists only wh
   ] };
   const here = eventsHere(cal, { at: { x: 0, y: 50 }, ids: new Set(["the-town/the-quay-reach"]) });
   assert.deepEqual(here.map((e) => e.id), ["postmaster/halloween", "b/near-point"], "on the spine, or its point within 150 m");
-  const rows = happeningBlock({ events: here });
+  const reach = { id: "the-town/the-quay-reach", name: "the Quay Reach", body: "The mail's own water." };
+  const rows = happeningBlock({ events: here, markOf: (id) => (id === reach.id ? reach : null) });
   assert.equal(rows[0].kind, "event");
-  assert.equal(rows[0].place, "the Quay Reach");
+  assert.deepEqual(rows[0].place, reach, "an event's place is shown whole");
+  assert.equal(rows[0].event, "postmaster/halloween");
+  assert.deepEqual(unbodied(rows), []);
 });
 
 test("G4: happened with no cursor names where it reaches back to; an unread delta says so", () => {
@@ -105,6 +115,10 @@ test("G4: happened with no cursor names where it reaches back to; an unread delt
   assert.equal(g.around_you.count, 7);
   assert.deepEqual(g.around_you.events[0], { who: "elowen", what: "set out", when: "00:01Z" });
   assert.match(happenedGlance(null, { sinceCrossing: 249 }).unavailable, /not read/);
+  assert.equal(g.complete, true, "nothing cut is said as complete");
+  const cut = happenedGlance({ complete: false, reach: "clamped to the last 14 crossings", around_you: { events: [] } }, { sinceCrossing: 236 });
+  assert.equal(cut.complete, false, "a cut delta says so (review-559 § 2)");
+  assert.match(cut.reach, /clamped/);
 });
 
 test("the assembled read: you, now, view, who, can, law in order; no URL; happened always", () => {
@@ -115,7 +129,11 @@ test("the assembled read: you, now, view, who, can, law in order; no URL; happen
   });
   assert.deepEqual(Object.keys(v2).slice(0, 7), ["you", "now", "view", "who", "heard", "can", "law"]);
   assert.match(v2.heard.unavailable, /read: "say"/, "earshot not read here is said, never an empty room");
-  assert.equal(v2.you.here_body, "The reach.");
+  assert.deepEqual(v2.you.within.map((m) => m.body), ["A.", "The reach."], "every spine mark carries its whole body");
+  assert.ok(!("here_body" in v2.you), "here_body repeated the innermost; within carries it");
+  assert.deepEqual(unbodied(v2), [], "no mark is shown without its body");
+  const dark = shapeV2({ standpoint: { x: 0, y: 0 }, spine: [], crossing: 1, entries: [], canUnavailable: "the world store is not open" });
+  assert.deepEqual(dark.can, { unavailable: "the world store is not open" }, "an unreadable class layer is said, never an empty can (review-555 § 1)");
   assert.deepEqual(v2.you.seat, { ground: "x" }, "G1: the seat is said on you");
   assert.deepEqual(v2.you.waiting_on_you, { stances: 55, read: 'household { read: "stances" }' });
   assert.ok("happened" in v2.now);

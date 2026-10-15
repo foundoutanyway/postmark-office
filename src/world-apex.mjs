@@ -43,10 +43,10 @@ import { IDENTITIES_SQL } from "./world2-fold.mjs"; // POS-350: the household gr
 import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt, nextCrossingAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock; POS-632: v2's next crossing
 import { cardsSchemaAt, describeAt, readShape, shapeRead, READ_SHAPES } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
-import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, BLOCK_READS, blockFields } from "./world-read-v2.mjs";
-import { explainAnswer, explainPath, encodeCursor, decodeCursor, CURSOR_RENAMES_UNTIL, moreLine } from "./read-grammar.mjs";
+import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, BLOCK_READS, blockFields } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
+import { explainAnswer, explainPath, encodeCursor, decodeCursor, CURSOR_RENAMES_UNTIL, moreLine } from "./read-grammar.mjs"; // POS-632: explain:, the read grammar's one table; the one cursor; the more line
 import { entityKindOf, investigateResident, RECENT_SQL, RECENT_CAP } from "./world-investigate-entity.mjs"; // POS-632 PR-4: the entity read
-import { PUBLIC_ACTS as PUBLIC_ACTS_FOR_INVESTIGATE, ACTIVE_WINDOW_MS as ACTIVE_WINDOW_FOR_INVESTIGATE } from "./world-read-v2.mjs"; // POS-632: explain:, the read grammar's one table; the one cursor // POS-632: the world read v2, opt-in per call
+import { PUBLIC_ACTS as PUBLIC_ACTS_FOR_INVESTIGATE, ACTIVE_WINDOW_MS as ACTIVE_WINDOW_FOR_INVESTIGATE } from "./world-read-v2.mjs"; // POS-632 PR-4: the entity read's public acts and window
 import { join } from "node:path";
 
 import {
@@ -77,6 +77,8 @@ import {
   actsHaveNonce,
   markCentreOf, // POS-632 PR-3: the live lines are placed by their anchors, as the save places them
   heardAt, // POS-632 W4: the shared ear, no listen mark
+  markRows, // POS-632: marks shown with their whole bodies (Darko 22:33)
+  innermostPlaceAt, // POS-632 PR-4: a place line carries its innermost place, whole
 } from "./world.mjs";
 // v2.2 §B — the frame block and the three-shelf delta. Both compose the one
 // standpoint derivation; neither derives a position of its own.
@@ -1838,6 +1840,8 @@ async function investigateOn(args, oriented) {
       return holdingsOf(await storeAttachmentRows(), h);
     },
     placeOf: (r) => composeAnchor({ anchor: r.at_anchor, dx: r.at_dx, dy: r.at_dy }, centreOf),
+    innermost: (p) => innermostPlaceAt(p),
+    marksOf: (ids) => markRows(ids),
   });
 }
 
@@ -2118,10 +2122,19 @@ async function rideDoorsFor(oriented) {
 // Exported for the same reason `readDomainFor` is, and with the same caveat:
 // the `since:` shelf's join is only watched by a check that reads the block
 // this returns, not by one that reads the source line that builds it.
+/** The reach a cursor or a block read may ask: a week of crossings (review-559 § 4). */
+export const HAPPENED_REACH = 14;
+
 export async function happenedFor(oriented, args, key, { town = true, live = false, cursor = null } = {}) {
   if (!movementV2Enabled()) return null;
-  const since = Number(args.since);
-  if (!Number.isFinite(since)) return null;
+  const asked = Number(args.since);
+  if (!Number.isFinite(asked)) return null;
+  // v2's reach is clamped to the last HAPPENED_REACH crossings, and a clamp is
+  // said (complete: false, `reach`). The old numeric spellings keep theirs
+  // until train/2026-w44 (W3).
+  const nowForReach = oriented?.crossing?.n ?? currentCrossing();
+  const clamped = live && asked < nowForReach - HAPPENED_REACH;
+  const since = clamped ? nowForReach - HAPPENED_REACH : asked;
   // WHOSE BACKLOG: THE RESIDENT THE READ NAMES (2026-10-14). This read
   // `oriented.standpoint.handle` alone, which orient's standpoint never carries
   // (the same hole § rideDomain closed for #3394), so `who` was always null:
@@ -2134,7 +2147,11 @@ export async function happenedFor(oriented, args, key, { town = true, live = fal
   const nowCrossing = oriented?.crossing?.n ?? currentCrossing();
   try {
     const at = { x: oriented.standpoint.x, y: oriented.standpoint.y };
-    let { lines, covered, absent } = readCrossingLogs(WORLD_CLONE, since, nowCrossing);
+    // Under a cursor the live record is the whole delta, so the log is parsed
+    // only when the live read fails (review-559 § 4).
+    let lines = [], covered = [], absent = [];
+    const readLog = () => ({ lines, covered, absent } = readCrossingLogs(WORLD_CLONE, since, nowCrossing));
+    if (!(live && cursor)) readLog();
     // v2 (POS-632 PR-3): the window the log has not caught up with is read live,
     // and a cursor reads only what came after it.
     let liveHw = null, liveComplete = null;
@@ -2154,13 +2171,16 @@ export async function happenedFor(oriented, args, key, { town = true, live = fal
         lines = cursor ? got.lines : [...lines.filter((l) => l.crossing < Math.floor(nowCrossing)), ...got.lines];
         liveHw = got.hw; liveComplete = got.complete;
       } else if (cursor) {
+        readLog();
         lines = lines.filter((l) => Date.parse(l.at) > cursor.ms);
       }
     }
     let transitions = [], carriedLegs = [];
     if (who) {
       const here = await residentStandpoint(who);
-      transitions = (here?.transitions ?? []).map((t) => ({ ...t, crossing: null }));
+      transitions = (here?.transitions ?? []).map((t) => ({ ...t, crossing: null }))
+        // under a cursor, only what came after its clock (review-559 § 3)
+        .filter((t) => !cursor || !t.at || Date.parse(t.at) > cursor.ms);
       const w = await worldStateRaw();
       const { service, mod, carriers } = await vesselServiceFrom(w, { repo: WORLD_CLONE });
       if (here?.frame && service && mod) {
@@ -2198,6 +2218,7 @@ export async function happenedFor(oriented, args, key, { town = true, live = fal
       claimEffects = await readClaimEffects({
         key, handles: [...(key?.handles ?? [])],
         sinceCrossing: since, nowCrossing, onMyGround,
+        ...(cursor ? { sinceInstant: new Date(cursor.ms).toISOString() } : {}),
       });
     }
 
@@ -2213,6 +2234,7 @@ export async function happenedFor(oriented, args, key, { town = true, live = fal
     if (who) {
       const { readHoldEffects } = await import("./world-hold.mjs");
       holdEffects = await readHoldEffects({ handles: [...(key?.handles ?? [who])], sinceCrossing: since, nowCrossing });
+      if (cursor && holdEffects?.events) holdEffects = { ...holdEffects, events: holdEffects.events.filter((e) => !e.at || Date.parse(e.at) > cursor.ms) };
     }
 
     // R2: the crossing's own published/refused list, as the town's news.
@@ -2233,7 +2255,17 @@ export async function happenedFor(oriented, args, key, { town = true, live = fal
       headlines,
       exclude: who,
     });
-    return { ...block, log: { crossings_read: covered.length, crossings_absent: absent.length, ...(live ? { live: liveHw != null, live_complete: liveComplete } : {}) }, ...(liveHw != null ? { _hw: liveHw } : {}) };
+    // A departure's destination is a mark, shown with its whole body (Darko 22:33).
+    const towards = [...new Set((block.around_you?.events ?? []).map((e) => e.toward).filter((t) => typeof t === "string"))];
+    if (towards.length) {
+      const rows = new Map((await markRows(towards).catch(() => [])).map((r) => [r.id, r]));
+      block.around_you = { ...block.around_you, events: block.around_you.events.map((e) => (typeof e.toward === "string" ? { ...e, toward: rows.get(e.toward) ?? { id: e.toward, name: e.toward, body: "" } } : e)) };
+    }
+    // whether anything in the reach was cut: a capped live scan, an absent
+    // crossing the log should have held, or a clamped reach
+    const complete = liveComplete !== false && !clamped && (live && cursor && liveHw != null ? true : absent.length === 0);
+    return { ...block, complete, ...(clamped ? { reach: `clamped to the last ${HAPPENED_REACH} crossings (${since}..${nowCrossing}); older is the crossing log, STATE/log/` } : {}),
+      log: { crossings_read: covered.length, crossings_absent: absent.length, ...(live ? { live: liveHw != null, live_complete: liveComplete } : {}) }, ...(liveHw != null ? { _hw: liveHw } : {}) };
   } catch (e) {
     return { unavailable: "the delta could not be read", detail: String(e?.message ?? e).slice(0, 160) };
   }
@@ -2526,9 +2558,16 @@ async function apexRead(args, key, ctx = {}) {
           { cap: 3, exclude: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null, ...(ctx.earshot ? { snapshot: ctx.earshot } : {}) });
       }
     } catch { heard = null; }
+    // The marks this read names beyond the view (the spine, the events' places,
+    // the departures' destinations), each with its whole body, read once.
+    const shownIds = [...spine.map((m) => m.id), ...events.map((e) => e.place?.mark).filter(Boolean),
+      ...((departures?.next ?? []).map((d) => d.toward).filter(Boolean))];
+    const marks = new Map((await markRows([...new Set(shownIds)]).catch(() => [])).map((r) => [r.id, r]));
     const shaped = shapeV2({
       heard,
       deep,
+      marks,
+      canUnavailable: store.unavailable ? `${store.unavailable} — none can be read: the class layer lives in the world store` : null,
       events,
       handle: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null,
       standpoint: answer.standpoint,
@@ -3357,7 +3396,7 @@ async function apexReadAction(args, key, ctx = {}) {
     if (bad) return bounce(422, bad.defect, bad.hint, bad.extra);
     const { read: _r, args: _a, ...look } = args;
     // the one cursor rides a block read too: read: "happened", since: "<cursor>"
-    if (typeof look.since === "string" && look.since.trim() !== "") {
+    if (typeof look.since === "string" && look.since.trim() !== "" && !/^\d+(\.\d+)?$/.test(look.since.trim())) {
       const c = decodeCursor(look.since);
       if (!c) return bounce(422, "since: takes the cursor your last answer handed you", 'pass the `cursor` field from your last world read back as since:');
       look.since = c.crossing; look._cursor = c;
@@ -3468,8 +3507,9 @@ async function apexReadAction(args, key, ctx = {}) {
     // THE ONE CURSOR AT THE SAY ROOM (POS-632 PR-3, W3): a top-level since:
     // "<cursor>" hears only what was said after its clock; the room's own
     // args: { since } (milliseconds) still answers, renamed, for one train.
-    const cursor = typeof args.since === "string" ? decodeCursor(args.since) : null;
-    if (typeof args.since === "string" && args.since.trim() !== "" && !cursor)
+    const numeric = typeof args.since === "string" && /^\d+(\.\d+)?$/.test(args.since.trim());
+    const cursor = typeof args.since === "string" && !numeric ? decodeCursor(args.since) : null;
+    if (typeof args.since === "string" && args.since.trim() !== "" && !numeric && !cursor)
       return bounce(422, "since: takes the cursor your last answer handed you", 'pass the `cursor` field from your last world read back as since:');
     if (cursor) ctx = { ...ctx, cursor }; // the say room hears from the cursor's clock
     const domain = await readDomainFor(action, fields, key, oriented, ctx);
@@ -3559,6 +3599,8 @@ async function worldApexAnswer(args, key, ctx) {
   const v2Asked = (args.read_shape ?? ctx.readShape) === "v2";
   if (args.diagnostics != null && !v2Asked)
     return bounce(422, "diagnostics: rides the v2 read", "world { read_shape: \"v2\", diagnostics: true } — the read you have today carries the engine's notes already");
+  if (v2Asked && args.telling === true)
+    return bounce(422, "v2 tells no prose — it is the compact glance", "the telling rides the v1 read: world { read_shape: \"v1\", telling: true }");
   if (v2Asked && args.cards != null && args.cards !== "")
     return bounce(422, "v2 has no cards: dial — each act is already one line", "world { read: \"<act>\" } is one act's full card; cards: sizes the v1 read (omit read_shape)");
   // ── THE TWO `since` CLOCKS, ONE WORD EACH (POS-70; office PR #48) ─────────
@@ -3638,7 +3680,7 @@ const APEX_INPUT_SCHEMA = { type: "object", properties: {
     // POS-632: the read grammar's second move. One table for three doors (read-grammar.mjs).
     explain: { type: "string", description: "explain: \"<path>\" answers what any part of this door's bare read is for, in one fixed shape: { explains, what, detail?, deeper, changes } (changes: live, settled or weekly). The path is a key path into the read, like \"who\" or \"now.happened\". explain: \"\" is the tutorial. It answers docs, never data, and rides with no do: or read:." },
     // POS-632 (W1): the shape, per call. It wins over the office's default.
-    read_shape: { type: "string", enum: [...READ_SHAPES], description: "read_shape: \"v2\" is the new compact read, opt-in this week: you, now (with what happened since the last crossing), view (what fills your eyes, by bearing), who (who is active near you), happening_here, can (each act in one line) and law, in about 5k characters. Omit it for the read you get today." },
+    read_shape: { type: "string", enum: ["v1", "v2"], description: "read_shape: \"v2\" is the new compact read, opt-in this week: you, now (with what happened since the last crossing), view (what fills your eyes, by bearing), who (who is active near you), happening_here, can (each act in one line) and law, in about 5k characters. Omit it for the read you get today." },
     diagnostics: { type: "boolean", description: "with read_shape: \"v2\", also bring the engine's notes (the full law block, presence's disclosures). v1 always carries them." },
     cards: { type: "string", enum: ["names"], description: "cards: \"names\" shrinks `actions` to each act's name, one line, and how it reached you — for a repeat read by a caller who has already learnt the acts. Which acts are afforded is identical either way; only how much is said about each changes. Omit for the full cards, which is the default and carries the fields a caller needs to compose an act." },
   },

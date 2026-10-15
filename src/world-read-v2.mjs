@@ -29,9 +29,10 @@
 //   G4  `happened` with no cursor reaches back to the previous crossing's
 //       start; it is stateless (the cursor, PR-3, gives "since my last read").
 //   G5  only public acts are named, a say as "said something".
-//   G6  who.active is capped at 8, nearest first; the rest are counted. The
-//       spine's ids are not repeated on `you`: `here` names them and
-//       `here_body` is the innermost's words (the 5k budget, served).
+//   G6  who.active is capped at 8, nearest first; the rest are counted.
+//   BODIES (Darko 2026-10-14 22:33): every mark shown carries its WHOLE body —
+//       each view row, each spine mark on `you.within`, an event's place and a
+//       departure's destination. Size is saved by rows, never by bodies.
 //   G7  happening_here: the events on now here, the vessel's departures, the
 //       Mists where you stand in them; empty is omitted.
 //   G8  each act's line is the Darko-approved one-liner without its fields.
@@ -136,7 +137,7 @@ export function viewBlock(rows = []) {
   const view = {};
   for (const r of rows) {
     const row = {
-      id: r.id, name: r.name ?? r.id,
+      id: r.id, name: r.name ?? r.id, body: r.body ?? "",
       ...distanceOf(r.distM),
       band: r.band,
       ...(r.image ? { image: true } : {}),
@@ -199,6 +200,10 @@ export function happenedGlance(h, { sinceCrossing } = {}) {
   }));
   return {
     since: `crossing ${sinceCrossing}`,
+    // review-559 § 2: whether anything in the reach was cut (a capped live scan,
+    // a crossing absent from the log, a reach clamped to the last week)
+    complete: h.complete !== false,
+    ...(h.reach ? { reach: h.reach } : {}),
     to_you: h.to_you ?? { complete: false, unavailable: "not read" },
     around_you: { shown: events.length, count: around.count ?? events.length, events },
   };
@@ -256,14 +261,22 @@ export function heardBlock(voices = []) {
   });
 }
 
-/** HAPPENING_HERE (G7): events on now here, the vessel's departures from here, the Mists where you stand in them. Null when nothing is. */
-export function happeningBlock({ events = [], departures = null, mists = null } = {}) {
+/**
+ * HAPPENING_HERE (G7): events on now here, the vessel's departures from here,
+ * the Mists where you stand in them. Null when nothing is. `markOf` gives a
+ * place or a destination as { id, name, body }: a mark shown is shown whole.
+ */
+export function happeningBlock({ events = [], departures = null, mists = null, markOf = () => null } = {}) {
   const rows = [];
-  for (const e of events)
-    rows.push({ what: e.title, kind: "event", id: e.id, ...(e.place?.name ? { place: e.place.name } : {}), phase: e.phase, ends: hourZ(e.ends) });
+  for (const e of events) {
+    const place = e.place?.mark ? markOf(e.place.mark) : null;
+    rows.push({ what: e.title, kind: "event", event: e.id, ...(place ? { place } : e.place?.name ? { place: { name: e.place.name } } : {}), phase: e.phase, ends: hourZ(e.ends) });
+  }
   // world-movement.mjs § stopDepartures: { at_stop, vessel, next: [{ at, toward, crossing }] }
-  for (const d of (departures?.next ?? []).slice(0, 2))
-    rows.push({ what: `the Post Office leaves here${d.toward ? ` for ${d.toward}` : ""}`, kind: "departure", at: hourZ(d.at) });
+  for (const d of (departures?.next ?? []).slice(0, 2)) {
+    const to = d.toward ? markOf(d.toward) : null;
+    rows.push({ what: `the Post Office leaves here${to ? ` for ${to.name}` : ""}`, kind: "departure", at: hourZ(d.at), ...(to ? { to } : {}) });
+  }
   if (mists && (mists.in_wall || mists.thickness > 0))
     rows.push({ what: "the Mists", kind: "emission", note: mists.in_wall ? "you stand in the wall: arm's reach, and walking slows to nothing" : "you stand in their fringe: sight is short and walking slows" });
   return rows.length ? rows : null;
@@ -281,7 +294,7 @@ export function shapeV2(p) {
     ...(p.handle ? { handle: p.handle } : {}),
     at: { x: Math.round(sp.x), y: Math.round(sp.y) },
     ...(p.here ? { here: p.here } : {}),
-    ...(inner?.body ? { here_body: inner.body } : {}),
+    within: spine.map((m) => p.marks?.get(m.id) ?? { id: m.id, name: m.id, body: m.body ?? "" }),
     holding: p.holdings ?? [],
     ...(p.stancesAwaiting ? { waiting_on_you: { stances: p.stancesAwaiting, read: 'household { read: "stances" }' } } : {}),
     ...(p.note != null ? { note: p.note } : {}),
@@ -297,7 +310,8 @@ export function shapeV2(p) {
     ...(p.canon ? { canon: p.canon } : {}),
     happened: happenedGlance(p.happened, { sinceCrossing: p.sinceCrossing }),
   };
-  const happening = happeningBlock({ events: p.events, departures: p.departures, mists: p.mists });
+  const markOf = (id) => p.marks?.get(id) ?? null;
+  const happening = happeningBlock({ events: p.events, departures: p.departures, mists: p.mists, markOf });
   const out = {
     you,
     now,
@@ -306,7 +320,8 @@ export function shapeV2(p) {
     who: p.presenceUnavailable ? { unavailable: p.presenceUnavailable } : whoBlock(p.crowd, p.active, { nowMs: p.nowMs, unavailable: p.activeUnavailable, whole: p.deep?.block === "who" ? p.deep : null }),
     heard: p.heard == null ? { unavailable: "earshot is not read on this path; read: \"say\" hears the room" } : heardBlock(p.heard),
     ...(happening ? { happening_here: happening } : {}),
-    can: canBlock(p.entries, { pace: p.pace, handles: p.handles, standing: p.handle, humanHere: p.humanHere, notYours: p.notYours }),
+    // the class layer unreadable: say so, as v1's law does, never an empty can (review-555 § 1)
+    can: p.canUnavailable ? { unavailable: p.canUnavailable } : canBlock(p.entries, { pace: p.pace, handles: p.handles, standing: p.handle, humanHere: p.humanHere, notYours: p.notYours }),
     law: { ...(p.canon ? { canon: p.canon } : {}), ...(p.nextSettlement ? { next_settlement: p.nextSettlement } : {}) },
     ...(p.focus ? { focus: p.focus } : {}),
     ...(p.found ? { found: p.found } : {}),
@@ -329,7 +344,7 @@ export function shapeV2(p) {
 export const BLOCK_READS = Object.freeze({
   view: { limit: { type: "number", description: "how many places, ranked as the glance ranks them (default 30, at most 60)" } },
   who: { limit: { type: "number", description: "how many residents (default 50, at most 200)" }, offset: { type: "number", description: "walk past the first rows: the previous answer's next_offset" } },
-  happened: { since: { type: "number", description: "the crossing number to reach back to (default: the previous crossing)" } },
+  happened: {}, // a cursor rides at the top level: world { read: "happened", since: "<cursor>" }
   happening: {},
 });
 
@@ -338,7 +353,7 @@ export function blockFields(block, f = {}) {
   const n = (v, d, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Math.floor(Number(v)))) : d);
   if (block === "view") return { block, limit: Math.max(1, n(f.limit, 30, 60)) };
   if (block === "who") return { block, limit: Math.max(1, n(f.limit, 50, 200)), offset: n(f.offset, 0, 1e9) };
-  if (block === "happened") return { block, ...(f.since != null ? { since: Number(f.since) } : {}) };
+  if (block === "happened") return { block };
   return { block };
 }
 

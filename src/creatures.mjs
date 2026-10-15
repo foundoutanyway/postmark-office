@@ -44,7 +44,7 @@
 // adapter; Starstory docs/2026-10-13/rail/WLD-56/shape-check-561.md). The
 // office imports `tools/creature-kind.mjs` (parseKind, scopeOf,
 // allowedReactions, applyEffects, voiceLine, RING_VERBS) and
-// `tools/creatures.mjs` (TOWN, DESPAWN_REASONS) at the BLESSED ref, and keeps
+// `tools/creatures.mjs` (TOWN, DESPAWN_REASONS, isCreatureId) at the BLESSED ref, and keeps
 // only what is the office's: the ring's RAM, the caps, Jev, the d20, the slice
 // and the row. A kind is `WORLD/kinds/<kind>.kind` at the same ref. Until a
 // blessing carries `tools/creature-kind.mjs`, `loadCreatureLaw` answers
@@ -89,8 +89,8 @@ export async function loadCreatureLaw({ repo = WORLD_CLONE, ref = null, importTo
     const [kindMod, creaturesMod] = await Promise.all([tool("creature-kind.mjs"), tool("creatures.mjs")]);
     for (const name of ["parseKind", "scopeOf", "allowedReactions", "applyEffects", "voiceLine"])
       if (typeof kindMod?.[name] !== "function") throw new Error(`tools/creature-kind.mjs has no ${name}`);
-    if (!Array.isArray(kindMod.RING_VERBS) || !Array.isArray(creaturesMod?.DESPAWN_REASONS) || !creaturesMod?.TOWN)
-      throw new Error("tools/creature-kind.mjs or tools/creatures.mjs lacks RING_VERBS, DESPAWN_REASONS or TOWN");
+    if (!Array.isArray(kindMod.RING_VERBS) || !Array.isArray(creaturesMod?.DESPAWN_REASONS) || !creaturesMod?.TOWN || typeof creaturesMod.isCreatureId !== "function")
+      throw new Error("tools/creature-kind.mjs or tools/creatures.mjs lacks RING_VERBS, DESPAWN_REASONS, TOWN or isCreatureId");
     const read = readText ?? ((path) => readAtRef(repo, at, path));
     const kinds = new Map();
     const kindOf = (name) => {
@@ -108,17 +108,26 @@ export async function loadCreatureLaw({ repo = WORLD_CLONE, ref = null, importTo
   }
 }
 
-const lawCache = { ref: null, law: null };
-/** The law at the current blessed ref, loaded once per ref. */
-export async function creatureLaw({ repo = WORLD_CLONE } = {}) {
+// The IN-FLIGHT load is what is cached, per ref (review of #566): every caller
+// for one ref awaits the same promise, so none sees null or the previous ref's
+// law while a load is under way, and a load for a ref the blessing has since
+// left answers only the callers that asked for that ref.
+let lawCache = { ref: null, promise: null };
+/** The law at the current blessed ref, loaded once per ref. `refOf` and `load` are the seams a test drives. */
+export async function creatureLaw({ repo = WORLD_CLONE, refOf = blessedRef, load = loadCreatureLaw } = {}) {
   let ref;
-  try { ref = blessedRef(repo); } catch (e) {
+  try { ref = refOf(repo); } catch (e) {
     faultLogged("the blessed ref could not be read for the creature law", e);
     return { unavailable: "the blessed ref could not be read, so no creature reacts" };
   }
-  if (lawCache.ref !== ref) { lawCache.ref = ref; lawCache.law = await loadCreatureLaw({ repo, ref }); }
-  return lawCache.law;
+  if (lawCache.ref !== ref || !lawCache.promise) {
+    const promise = Promise.resolve().then(() => load({ repo, ref }))
+      .catch((e) => { faultLogged("the creature law could not be loaded", e); return { ref, unavailable: `the world's creature law cannot be read at ${ref}, so no creature reacts` }; });
+    lawCache = { ref, promise };
+  }
+  return lawCache.promise;
 }
+export function __resetCreatureLawForTest() { lawCache = { ref: null, promise: null }; }
 const lawReady = (law) => !!law && !law.unavailable && !!law.kindMod;
 
 /** A dial whose value waits on Darko's word: the lane's recommendation, and the call that rules it. */
@@ -252,7 +261,10 @@ export class LivingSet {
         this.cursor = String(r.id);
       }
       const p = asPayload(r.payload);
-      if (r.action === SPAWN_ACTION) { if (!this.byId.has(r.object)) this.#spawn(r, p); }
+      if (r.action === SPAWN_ACTION) {
+        // the world's fold takes a spawn only from the town, for a creature's id: so does this one
+        if (r.actor === this.law?.creaturesMod?.TOWN && this.law.creaturesMod.isCreatureId?.(r.object) && !this.byId.has(r.object)) this.#spawn(r, p);
+      }
       else if (r.action === REACT_ACTION) this.#react(r, p);
       else if (r.action === WITHDRAW_ACTION) {
         // only the town (faded) or the creature itself (fled) withdraws it, and only for a ruled reason (R4)
@@ -292,7 +304,7 @@ export class LivingSet {
     if (!c || c.reactions.some((x) => x.act === String(r.object))) return;
     const by = this.answered.get(String(r.object)) ?? new Set();
     this.answered.set(String(r.object), by.add(c.id));
-    if (p.moods_after && typeof p.moods_after === "object") Object.assign(c.moods, p.moods_after);
+    if (p.moods_after && typeof p.moods_after === "object" && !Array.isArray(p.moods_after)) c.moods = { ...p.moods_after }; // replaces, as the world's fold does
     if (Array.isArray(p.flags_after)) c.flags = [...p.flags_after].sort();
     c.reactions.push({ act: r.object, to: p.to, verb: p.verb, reaction: p.reaction, roll: p.roll, judged_by: p.judged_by,
       distance_m: p.distance_m, approaching: !!p.approaching, at: msOf(r.at) });

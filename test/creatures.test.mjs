@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  LIVING_TOP_SQL, PRUNE_AFTER_MS, loadCreatureLaw, normalized,
+  LIVING_TOP_SQL, PRUNE_AFTER_MS, loadCreatureLaw, normalized, creatureLaw, __resetCreatureLawForTest,
   CREATURE_DIALS, CREATURE_DIALS_PENDING, LivingSet, PRIOR_REACTION_SQL, SLICE_CAPS, SLICE_FIELDS,
   allowedReactions, applyReaction, askJev, buildSlice, capOf, dial, judgmentFor, reactTo,
   reactionRows, sampleWith, t20, writeReaction,
@@ -647,4 +647,55 @@ test("the d20 samples the same normalized odds the row stores", async () => {
   assert.deepEqual(p.allowed, normalized(WOLF.reactions.filter((r) => ["watch", "stalk"].includes(r.name)), { stalk: 3, watch: 1 }));
   assert.deepEqual(p.allowed, { watch: 0.25, stalk: 0.75 });
   assert.equal(sampleWith(p.roll, p.allowed).picked, out.reaction);
+});
+
+// ── the review of #566 (FIX at b65cc359b) ────────────────────────────────────
+
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+
+nodeTest("creatureLaw: two concurrent first calls share one load, and neither sees null", async () => {
+  __resetCreatureLawForTest();
+  let loads = 0;
+  const gate = deferred();
+  const load = async ({ ref }) => { loads += 1; await gate.promise; return { ref, kindMod: {}, mark: "the one law" }; };
+  const a = creatureLaw({ refOf: () => "S110", load });
+  const b = creatureLaw({ refOf: () => "S110", load });
+  gate.resolve();
+  const [la, lb] = await Promise.all([a, b]);
+  assert.equal(loads, 1);
+  assert.equal(la, lb);
+  assert.equal(la.mark, "the one law");
+  assert.equal(await creatureLaw({ refOf: () => "S110", load }), la, "a later call for the same ref reads the cache");
+  __resetCreatureLawForTest();
+});
+
+nodeTest("creatureLaw: a ref that changes mid-load answers each caller with its own ref's law, never the old one", async () => {
+  __resetCreatureLawForTest();
+  const slow = deferred();
+  const load = async ({ ref }) => { if (ref === "S110") await slow.promise; return { ref, kindMod: {} }; };
+  const first = creatureLaw({ refOf: () => "S110", load });
+  const second = await creatureLaw({ refOf: () => "S111", load }); // the blessing moved while S110 loads
+  assert.equal(second.ref, "S111");
+  slow.resolve();
+  assert.equal((await first).ref, "S110", "the earlier caller gets the law it asked for");
+  assert.equal((await creatureLaw({ refOf: () => "S111", load })).ref, "S111");
+  // a load that throws is an unavailable law, never a rejection
+  const broke = await creatureLaw({ refOf: () => "S112", load: async () => { throw new Error("the clone is gone"); } });
+  assert.ok(broke.unavailable);
+  __resetCreatureLawForTest();
+});
+
+test("a spawn's flags come back sorted", () => {
+  const living = livingWith(spawnRow("creature:wolf-270-1", { flags: ["zeta", "alpha"] }));
+  assert.deepEqual(living.byId.get("creature:wolf-270-1").flags, ["alpha", "zeta"]);
+});
+
+test("parity with the world's fold: a spawn only from the town for a creature's id; moods_after replaces", () => {
+  const byKai = { ...spawnRow("creature:wolf-270-1"), actor: "kai" };
+  const notAnId = spawnRow("wolf-270-2", { n: 2 });
+  assert.equal(livingWith(byKai, notAnId).byId.size, 0);
+  const living = livingWith(spawnRow("creature:wolf-270-1"));
+  living.fold([{ id: "9", at: new Date(T0).toISOString(), actor: "creature:wolf-270-1", action: "react", object: "9009",
+    payload: { to: "kai", reaction: "watch", moods_after: { fear: 2 } } }], { advance: false });
+  assert.deepEqual(living.byId.get("creature:wolf-270-1").moods, { fear: 2 });
 });

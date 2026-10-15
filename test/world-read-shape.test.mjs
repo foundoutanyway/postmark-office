@@ -39,6 +39,9 @@ const { ONE_LINERS, namedFields, shapeRead, readShape, simplifyRing, describeAt,
 const { TOOLS } = await import("../src/mcp.mjs");
 
 const WHO = "kogane";
+const KOGANE_PARCEL = "kogane/the-well-house-parcel";
+// PR-3's live lines: the act record's high-water mark and the acts after a cursor's
+const LIVE = { rows: [], hw: null };
 const KEY = { handles: new Set([WHO]) };
 let dir;
 
@@ -56,6 +59,9 @@ before(() => {
     // v2's one new read (POS-632): each resident's newest public act. This
     // record holds no acts; the active split is test/world-read-v2.test.mjs's.
     if (/CROSS JOIN LATERAL \(SELECT action, at FROM acts/.test(text)) return { rows: [] };
+    if (/^SELECT max\(id\)::text AS hw FROM acts$/.test(text)) return { rows: [{ hw: LIVE.hw }] };
+    if (/FROM acts WHERE id > \$1::bigint AND action = ANY/.test(text)) return { rows: LIVE.rows.filter((r) => Number(r.id) > Number(params[0])) };
+    if (/FROM acts WHERE action = ANY\(\$1::text\[\]\) ORDER BY id DESC/.test(text)) return { rows: [...LIVE.rows].reverse() };
     // The apex asks the store whose household each ground is (POS-350). This
     // record holds no registry, so every handle is its own household.
     if (/^SELECT handle, household FROM identities/.test(text)) return { rows: [] };
@@ -260,8 +266,33 @@ test("G9: read: \"who\", \"happened\" and \"happening\" answer their block whole
     const r = await worldApex({ handle: WHO, read: block }, KEY, {});
     assert.equal(r.read, block);
     assert.ok(block in r, `${block} rides under its own name`);
-    assert.deepEqual(Object.keys(r).sort(), ["read", block, "reading_law"].sort());
+    assert.deepEqual(Object.keys(r).sort(), ["read", block, "cursor", "reading_law"].sort());
   }
+});
+
+test("PR-3: every v2 read hands back a cursor; passing it back reads only what came after it, live", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const { CURSOR_RE, decodeCursor } = await import("../src/read-grammar.mjs");
+  setEnv("WORLD_MOVEMENT_V2", "1");
+  LIVE.rows = [];
+  LIVE.hw = "100";
+  try {
+    const first = await v2At();
+    assert.match(first.cursor, CURSOR_RE);
+    assert.equal(decodeCursor(first.cursor).hw, "100", "the record's high-water mark at this read");
+    LIVE.rows = [{ id: "101", actor: "elowen", action: "walk", at: new Date(), at_anchor: KOGANE_PARCEL, at_dx: 3, at_dy: 0 }];
+    LIVE.hw = "101";
+    const next = await v2At({ since: first.cursor });
+    assert.equal(next.now.happened.since, "your last read (the cursor)");
+    assert.deepEqual(next.now.happened.around_you.events.map((e) => e.who), ["elowen"], "only the act after the cursor");
+    assert.equal(next.now.happened.complete, true, "nothing was cut");
+    const old = await v2At({ since: "c1.0.0.100" });
+    assert.equal(old.now.happened.complete, false, "a reach back past the last 14 crossings is clamped, and said");
+    assert.match(old.now.happened.reach, /clamped to the last 14 crossings/);
+    assert.equal(decodeCursor(next.cursor).hw, "101");
+    LIVE.rows = [];
+    const quiet = await v2At({ since: next.cursor });
+    assert.equal(quiet.now.happened.around_you.count, 0, "nothing new is a true answer");
+  } finally { setEnv("WORLD_MOVEMENT_V2", undefined); LIVE.rows = []; LIVE.hw = null; }
 });
 
 test("explain: every key of the real v2 read at the rig's standpoint has a row", { skip: !HAVE_CLONE && WHY_NOT }, async () => {

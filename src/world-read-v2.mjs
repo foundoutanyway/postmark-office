@@ -199,6 +199,10 @@ export function happenedGlance(h, { sinceCrossing } = {}) {
   }));
   return {
     since: `crossing ${sinceCrossing}`,
+    // review-559 § 2: whether anything in the reach was cut (a capped live scan,
+    // a crossing absent from the log, a reach clamped to the last week)
+    complete: h.complete !== false,
+    ...(h.reach ? { reach: h.reach } : {}),
     to_you: h.to_you ?? { complete: false, unavailable: "not read" },
     around_you: { shown: events.length, count: around.count ?? events.length, events },
   };
@@ -389,7 +393,7 @@ export function shapeV2(p) {
 export const BLOCK_READS = Object.freeze({
   view: { limit: { type: "number", description: "how many places, ranked as the glance ranks them (default 30, at most 60)" } },
   who: { limit: { type: "number", description: "how many residents (default 50, at most 200)" }, offset: { type: "number", description: "walk past the first rows: the previous answer's next_offset" } },
-  happened: { since: { type: "number", description: "the crossing number to reach back to (default: the previous crossing)" } },
+  happened: {}, // a cursor rides at the top level: world { read: "happened", since: "<cursor>" }
   happening: {},
 });
 
@@ -398,7 +402,7 @@ export function blockFields(block, f = {}) {
   const n = (v, d, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Math.floor(Number(v)))) : d);
   if (block === "view") return { block, limit: Math.max(1, n(f.limit, 30, 60)) };
   if (block === "who") return { block, limit: Math.max(1, n(f.limit, 50, 200)), offset: n(f.offset, 0, 1e9) };
-  if (block === "happened") return { block, ...(f.since != null ? { since: Number(f.since) } : {}) };
+  if (block === "happened") return { block };
   return { block };
 }
 

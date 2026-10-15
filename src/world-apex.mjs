@@ -3456,7 +3456,8 @@ async function apexReadAction(args, key, ctx = {}) {
     const cursor = typeof args.since === "string" ? decodeCursor(args.since) : null;
     if (typeof args.since === "string" && args.since.trim() !== "" && !cursor)
       return bounce(422, "since: takes the cursor your last answer handed you", 'pass the `cursor` field from your last world read back as since:');
-    const domain = await readDomainFor(action, fields, key, oriented, { ...ctx, ...(cursor ? { cursor } : {}) });
+    if (cursor) ctx = { ...ctx, cursor }; // the say room hears from the cursor's clock
+    const domain = await readDomainFor(action, fields, key, oriented, ctx);
     const sayRenamed = action === "say" && fields?.since != null
       ? [renamedRow("field", "args.since (milliseconds)", 'since: "<cursor>" (top level: the cursor from your last reply)', CURSOR_RENAMES_UNTIL)] : null;
     // A refused read still shows the law — the card rides the bounce exactly

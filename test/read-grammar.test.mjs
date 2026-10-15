@@ -94,7 +94,7 @@ test("the live lines: after a cursor's mark by the primary key, else the newest 
   const query = async (sql, params) => {
     asked.push({ sql, params });
     if (sql === LIVE_HW_SQL) return [{ hw: "13" }];
-    if (sql === LIVE_AFTER_SQL) return rows.filter((r) => Number(r.id) > Number(params[0]));
+    if (sql === LIVE_AFTER_SQL) return rows.filter((r) => Number(r.id) > Number(params[0])).reverse(); // newest first, as the SQL orders
     if (sql === LIVE_NEWEST_SQL) return [...rows].reverse();
     throw new Error("unexpected");
   };
@@ -117,6 +117,24 @@ test("PR-5: the MCP server's instructions are the tutorial, the same text explai
   assert.ok(MCP_INSTRUCTIONS.includes(READING_LAW));
   for (const move of ["1. Look:", "2. Ask:", "3. Go deeper:", "4. Catch up:"]) assert.ok(TUTORIAL.includes(move), move);
   assert.match(MCP_INSTRUCTIONS, /DARKO/);
+});
+
+test("a gap longer than the scan is a glance of its NEWEST acts; the mark handed back is the top; complete is false (review-559 § 1)", async () => {
+  const N = LIVE_SCAN + 200;
+  const rows = Array.from({ length: N }, (_, i) => ({ id: String(1001 + i), actor: `r${i}`, action: "walk", at: new Date(1e12 + i * 1000), at_anchor: "a/b", at_dx: 0, at_dy: 0 }));
+  const query = async (sql, params) => {
+    if (sql === LIVE_HW_SQL) return [{ hw: String(1000 + N) }];
+    if (sql === LIVE_AFTER_SQL) { const after = rows.filter((r) => Number(r.id) > Number(params[0])); return (/ORDER BY id DESC/.test(sql) ? after.reverse() : after).slice(0, params[2]); } // the store honours the SQL's own order
+    throw new Error("unexpected");
+  };
+  const got = await liveLines({ afterId: "1000", query, centreOf: () => ({ x: 0, y: 0 }), compose: () => ({ x: 0, y: 0 }) });
+  assert.equal(got.lines.length, LIVE_SCAN);
+  assert.equal(got.lines.at(-1).actor, `r${N - 1}`, "the newest act is in the glance");
+  assert.equal(got.lines[0].actor, `r${N - LIVE_SCAN}`, "the cut is at the old end");
+  assert.equal(got.hw, String(1000 + N), "the cursor handed back is the top");
+  assert.equal(got.complete, false);
+  const race = await liveLines({ afterId: "1000", query: async (sql, p) => (sql === LIVE_HW_SQL ? [{ hw: "1001" }] : query(sql, p)), centreOf: () => ({}), compose: () => ({ x: 0, y: 0 }) });
+  assert.equal(race.hw, String(1000 + N), "a row newer than the top read before it raises the mark: shown now, never again");
 });
 
 test("the doors answer explain: before anything is read, and never beside an act or a read", async () => {

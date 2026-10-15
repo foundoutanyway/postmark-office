@@ -1020,3 +1020,13 @@ test("earshotSnapshot: memoised for a second, so a burst of handed reads shares 
   assert.notEqual(b, a);
   assert.deepEqual((await store.heardAt({ x: 0, y: 0 }, { snapshot: b })).map((v) => v.said), ["first", "second"]);
 });
+
+test("earshotSnapshot: a burst that lands before the first walk resolves shares that walk (the in-flight promise is the memo)", async () => {
+  const { store, tick } = bench({ near: { x: 0, y: 20 } });
+  await store.say("near", "first");
+  tick(15000);
+  const rooms = store.room.stats.rooms;
+  const burst = await Promise.all([store.earshotSnapshot(), store.earshotSnapshot(), store.earshotSnapshot()]);
+  assert.equal(store.room.stats.rooms - rooms, 1, "three handed reads at once walk the window once");
+  assert.ok(burst.every((s) => s === burst[0]), "and hear the same snapshot");
+});

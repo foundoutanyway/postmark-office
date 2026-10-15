@@ -10,6 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { entityKindOf, investigateResident, RECENT_CAP } from "../src/world-investigate-entity.mjs";
+import { unbodied } from "./helpers/mark-bodies.mjs";
 
 const NOW = Date.parse("2026-10-15T00:08:00Z");
 const ago = (min) => new Date(NOW - min * 60000);
@@ -28,6 +29,8 @@ const deps = (over = {}) => ({
   ],
   holds: async () => ["the-town/a-pocket-comet"],
   placeOf: () => ({ x: 30, y: 40 }),
+  innermost: async ({ x }) => (x === 30 ? { id: "the-town/the-quay-reach", name: "the Quay Reach", body: "The mail's own water." } : { id: "histor-reeves/the-gauge-house", name: "the Gauge House", body: "A low brick house." }),
+  marksOf: async (ids) => ids.map((id) => ({ id, name: "a Pocket Comet", body: "A comet small enough to carry." })),
   ...over,
 });
 
@@ -47,7 +50,11 @@ test("a resident: presence now and at the last crossing, each labelled with what
   assert.match(r.presence.now.answered_by, /as of now/);
   assert.equal(r.presence.last_crossing.crossing, 250);
   assert.match(r.presence.last_crossing.answered_by, /as of crossing 250/);
-  assert.deepEqual(r.holds, ["the-town/a-pocket-comet"]);
+  assert.deepEqual(r.holds, [{ id: "the-town/a-pocket-comet", name: "a Pocket Comet", body: "A comet small enough to carry." }], "a held thing is a mark row, whole");
+  assert.equal(r.presence.now.place.body, "The mail's own water.");
+  assert.equal(r.presence.last_crossing.place.id, "histor-reeves/the-gauge-house");
+  assert.equal(r.recent.acts[0].place.id, "the-town/the-quay-reach");
+  assert.deepEqual(unbodied(r), [], "every mark under investigated carries its whole body (Darko 22:33)");
 });
 
 test("G5: only public acts, a say as the fact of it; never a note to self; only the last 12 hours", async () => {

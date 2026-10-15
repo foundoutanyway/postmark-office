@@ -914,6 +914,16 @@ const setWwwAuth = (res) => {
 // worker, in a read-role process, and with OFFICE_READ_WORKERS=0.
 let readPool = null;
 
+// POS-284's handover of an agent's read to a worker, plus POS-632 W4: a v2 bare
+// world read carries `heard`, and earshot is this thread's memory, so it is
+// snapshotted here, at admission, with no listen mark, and handed over with the call.
+async function handOverRead(req, res, raw, messages) {
+  if (!mcpWorkerTakes(messages)) return false;
+  let earshot = null;
+  if (wantsEarshot(messages, readShape())) { try { earshot = await earshotSnapshot(); } catch { earshot = null; } }
+  return readPool.forward(req, res, { body: raw, mcp: true, earshot });
+}
+
 // `route` is the office's one request handler; `handle` (below it) resolves the
 // bearer credential first and hands it in, because since POS-271 the lookup is a
 // read of the paperwork and may be a round trip to the store.
@@ -1463,15 +1473,7 @@ const route = async (req, res, resolvedKey = null, t0 = Date.now()) => {
         worldVerb: write ? verb : null,
       }),
       // POS-284: the agents' reads, on another core (read-workers.mjs § mcpWorkerTakes).
-      // POS-632 W4: a v2 bare world read carries `heard`, and earshot is this
-      // thread's memory, so it is snapshotted here, at admission, with no listen
-      // mark, and handed over with the call.
-      handOver: readPool ? async (raw, messages) => {
-        if (!mcpWorkerTakes(messages)) return false;
-        let earshot = null;
-        if (wantsEarshot(messages, readShape())) { try { earshot = await earshotSnapshot(); } catch { earshot = null; } }
-        return readPool.forward(req, res, { body: raw, mcp: true, earshot });
-      } : null,
+      handOver: readPool ? (raw, messages) => handOverRead(req, res, raw, messages) : null, // + POS-632 W4's earshot
       earshot: req.handedEarshot ?? null,
       onlyReads: IN_READ_WORKER ? mcpWorkerTakes : null,
       // The household world-write budget as a READ (POS-139). Same bouncer

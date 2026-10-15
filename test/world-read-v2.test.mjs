@@ -71,6 +71,8 @@ test("G8: each act's line is the approved sentence without its fields, grouped b
   assert.equal(can.move.walk, "Walk to a mark or a point, at about 5 km an hour.");
   assert.equal(can.more["candy-trade"], "A candy trade swaps two candies.");
   assert.deepEqual(can.not_here, [{ act: "build", because: "not your ground" }]);
+  const both = canBlock(entries, { notYours: [{ action: "say", because: "this door is for a human" }] });
+  assert.equal(both.not_here, undefined, "G1: a refusal of an act your own grant opens is not said");
   assert.match(can.as, /^wright \(one of 2 residents on your key/);
   assert.equal(actLine({ action: "walk" }), "Walk to a mark or a point.", "no dial, no speed");
 });

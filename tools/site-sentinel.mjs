@@ -130,7 +130,8 @@
 //                 reads `ok` within 45 min. A law the parser would read
 //                 diminished is refused WHOLE (POS-619), which holds every law
 //                 update until the mark is fixed, so a refusal is DOWN with the
-//                 lint's sentence as its reason; any other failed run is DOWN;
+//                 lint's sentence as its reason; a held pin (law-pin-held,
+//                 POS-628) is DOWN with the pin it stays at; any other failed run is DOWN;
 //                 none, unreadable or older than 45 min is STALE.
 //
 // ── ONE ALARM ROUTE (POS-556) ───────────────────────────────────────────────
@@ -1039,6 +1040,13 @@ export function classifyLawPen({ raw = null, readError = null, nowMs, staleAfter
     const [first, ...rest] = st.refusal.trim().split("\n");
     const marks = rest.filter((l) => l.startsWith("  ")).map((l) => l.trim());
     return { verdict: "DOWN", reason: `the law pen REFUSED the law, and every law update waits until the mark is fixed: ${first}${marks.length ? ` — ${marks.join(" · ")}` : ""}`, detail };
+  }
+  // A HELD PIN (POS-628/POS-635): the rows were written and the run exited 0,
+  // but the clearing's pin did not move, so every settlement seals the old law.
+  if (st.status === "law-pin-held") {
+    const pin = String(st.pin?.sha ?? "?").slice(0, 9);
+    const why = String(st.pin?.why ?? "").replace(/^\[law-ingest\] PIN HELD — /, "").trim();
+    return { verdict: "DOWN", reason: `the law pen HELD the clearing's pin at ${pin}, so every settlement seals that law until it moves${why ? `: ${why.slice(0, 240)}` : ""}`, detail: { ...detail, pin: st.pin?.sha ?? null } };
   }
   const tail = String(st.detail ?? "").trim().split("\n").slice(-1)[0] ?? "";
   return { verdict: "DOWN", reason: `the law pen's last run reads ${JSON.stringify(st.status ?? null)}${st.law?.exit != null ? ` (exit ${st.law.exit})` : ""} — the store's law did not advance${tail ? `: ${tail.slice(0, 200)}` : ""}`, detail };

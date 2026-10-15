@@ -1773,6 +1773,15 @@ test("§12 any other failed run is DOWN with its status; a 46-minute-old state i
   assert.equal(classifyLawPen({ raw: "{ half", nowMs: T0 }).verdict, "STALE");
 });
 
+test("§12 a HELD pin (law-pin-held, exit 0) is DOWN, and the reason names the pin and why (POS-628)", () => {
+  const why = "[law-ingest] PIN HELD — projection_heads['world-law'] stays at b0db90f0644ee4a0719f4d02c3c4e3b2cc10fe22: this checkout cannot place the pin b0db90f0644e against ac5e54e0ce92 (a shallow checkout, or a pin it does not hold): the pin stays, and the rows for ac5e54e0ce92 are written beside it";
+  const r = classifyLawPen({ raw: LAW_STATE({ status: "law-pin-held", law: { exit: 0, sha: "a".repeat(40) }, pin: { state: "held", sha: "b0db90f0644ee4a0719f4d02c3c4e3b2cc10fe22", why } }), nowMs: T0 });
+  assert.equal(r.verdict, "DOWN", "a held pin read green: the 10-11 freeze, again");
+  assert.match(r.reason, /^the law pen HELD the clearing's pin at b0db90f06, so every settlement seals that law until it moves: projection_heads\['world-law'\] stays at b0db90f/);
+  assert.match(r.reason, /this checkout cannot place the pin/);
+  assert.equal(r.detail.pin, "b0db90f0644ee4a0719f4d02c3c4e3b2cc10fe22");
+});
+
 test("§12 THE TICK: a refused law on the box pages through the one route, alone", async () => {
   const dir = tempDir("sentinel-lawpen-");
   const refused = join(dir, "ingest-law.json");

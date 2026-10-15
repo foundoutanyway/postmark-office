@@ -944,3 +944,89 @@ test("13 · no pass on doubt: an unbound author, a link GitHub doesn't have, a c
   } finally { process.env.GITHUB_API_URL = GITHUB_UP; }
   assert.equal((await adv({ ...d, link: comment("kinofire") })).credit, "kinofire", "GitHub back, the same kind of advance passes");
 });
+
+// ── 14 · the recredit: a paid stage, re-credited to the work's author (POS-649, Darko 2026-10-15 12:40 and 12:51) ──
+
+const { resetChainMemo } = await import("../src/post-history.mjs");
+const NOTE = "the brief was Kino's letter, not wright's work (#3757)";
+const BUGCATCHER = { household: "starforge", handles: new Set(["bugcatcher"]) };
+
+/** Kino's bug with briefed credited to wright (wright's own comment, which the advance's law passes) and paid 10 on the chain. */
+async function paidToWright() {
+  const t = await kinoBug();
+  resetChainMemo();
+  const own = comment("wright");
+  await adv({ to: "briefed", grade: "light", credit: "wright", link: own });
+  t.ledger.lines = [stageLine("wright", 10, KINO_BUG, "briefed")];
+  return { ...t, own };
+}
+const rc = (fields, key = WRIGHT) => advanceAtTown({ post: KINO_BUG, to: "briefed", recredit: true, note: NOTE, ...fields }, key, { now: NOW, roll: ROLL });
+
+test("14 · #3757: briefed re-credited to kinofire with Kino's letter is its own act; the stage and the old advance stand; the history and the Hall move the credit", async () => {
+  const t = await paidToWright();
+  const before = JSON.stringify(t.posts.get(KINO_BUG));
+  const r = await rc({ credit: "kinofire", link: KINO_PLAN });
+  assert.deepEqual([r.stage, r.recredit, r.was, r.credit, r.stamps, r.link], ["briefed", true, "wright", "kinofire", 10, KINO_PLAN]);
+  assert.match(r.receipt, /^re-credited: kinofire\/false-sweep-warning's briefed from wright to kinofire by wright's hand; .*The reviewed stage pass pays kinofire 10 stamps \(post:kinofire\/false-sweep-warning\/briefed-recredit\) and burns the 10 it paid wright, together or not at all; this act moves no stamps/);
+  const act = t.pen.rows().at(-1);
+  assert.deepEqual([act.class, act.action, act.actor, act.object], ["bug", "recredit", "wright", KINO_BUG]);
+  assert.deepEqual(JSON.parse(act.payload), { post: KINO_BUG, to: "briefed", was: "wright", credit: "kinofire", link: KINO_PLAN, note: NOTE, paid: 10, hand: "wright" });
+  assert.equal(JSON.stringify(t.posts.get(KINO_BUG)), before, "a recredit moved the stage or changed the post's row");
+  // the rebuild still folds the acts into exactly the rows the pen wrote
+  const out = await dryRun(t.pen);
+  assert.equal(out.equal, true, out.drift.join("\n"));
+
+  // the pass has written its two lines: the history keeps both rows, and says where the credit went
+  resetChainMemo();
+  t.ledger.lines = [...t.ledger.lines, `- 2026-10-15 · MINT → kinofire · 10 · for: post:${KINO_BUG}/briefed-recredit · by: the-town`,
+    `- 2026-10-15 · wright → BURN · 10 · for: correction:${"A".repeat(86)} · by: wright`];
+  const one = (await postsAtOffice({ class: "bug", post: KINO_BUG }, { now: NOW, roll: ROLL })).post;
+  assert.deepEqual(one.history.filter((h) => h.stage === "briefed").map(({ at, ...h }) => h), [
+    { stage: "briefed", hand: "wright", credit: "wright", link: t.own, stamps_paid: 10, recredited_to: "kinofire" },
+    { stage: "briefed", recredit: true, hand: "wright", credit: "kinofire", was: "wright", link: KINO_PLAN, note: NOTE, stamps_paid: 10 },
+  ]);
+  const { catchers } = await postsAtOffice({ class: "bug" }, { now: NOW, roll: ROLL });
+  assert.deepEqual(catchers.find((c) => c.handle === "kinofire"), { handle: "kinofire", stamps: 10, bugs: 1 });
+  assert.equal(catchers.find((c) => c.handle === "wright"), undefined, "the Hall still credits wright with a stage the town burned");
+});
+
+test("14 · a recredit to someone who did not write the linked work is refused, by household and by the founder rule, and writes nothing", async () => {
+  const t = await paidToWright();
+  await refusedNothing(t, rc({ credit: "finn", link: KINO_PLAN }), 422,
+    /^letter "kinofire-2026-10-12-to-wright-the-sweep-plan" is from kinofire, of hh:house-of-many-doors, and finn stands in solo:finn/);
+  await refusedNothing(t, rc({ credit: "kinofire", link: comment("errant") }), 422, /was written by GitHub account harbor-human \(id 1001\), of hh:the-harbor, and kinofire stands in hh:house-of-many-doors/);
+  await refusedNothing(t, rc({ credit: "mari", link: comment("keemin") }), 422, /a founder's work credits only wright or keemin/);
+  await refusedNothing(t, rc({ credit: "kinofire", link: pull("kinofire") }), 422, /^briefed is never earned by a pull request/);
+  await refusedNothing(t, rc({ credit: "kinofire" }), 422, /^briefed needs a link to the work that earned it/);
+});
+
+test("14 · a second recredit of the same stage is refused, whoever it names", async () => {
+  const t = await paidToWright();
+  await rc({ credit: "kinofire", link: KINO_PLAN });
+  await refusedNothing(t, rc({ credit: "wayward-archivist", link: KINO_PLAN }), 409, /^"kinofire\/false-sweep-warning"'s briefed was already re-credited, to kinofire one recredit per post and stage, ever/);
+});
+
+test("14 · a stage never passed, a skipped stage, and a stage that has paid no one yet are each refused, and say what to do instead", async () => {
+  const t = await paidToWright();
+  await refusedNothing(t, advanceAtTown({ post: KINO_BUG, to: "fixed", recredit: true, credit: "kinofire", link: pull("kinofire"), note: NOTE }, WRIGHT, { now: NOW, roll: ROLL }), 409,
+    /^"kinofire\/false-sweep-warning" never passed fixed it stands briefed; advance it to fixed, crediting the right resident, rather than re-crediting/);
+  await refusedNothing(t, advanceAtTown({ post: KINO_BUG, to: "diagnosed", recredit: true, credit: "kinofire", link: KINO_PLAN, note: NOTE }, WRIGHT, { now: NOW, roll: ROLL }), 409,
+    /never passed diagnosed diagnosed was skipped, and a skipped stage paid no one: there is nothing to re-credit/);
+  // the line not written yet (the chain holds the bug's confirmed, not its briefed): nothing to correct, so wait for it
+  resetChainMemo();
+  t.ledger.lines = [stageLine("kinofire", 2, KINO_BUG, "confirmed")];
+  await refusedNothing(t, rc({ credit: "kinofire", link: KINO_PLAN }), 409, /^briefed on "kinofire\/false-sweep-warning" has paid no one yet a recredit corrects a paid stage/);
+});
+
+test("14 · the recredit's own law: wright and keemin only, a note, recredit true, no ladder fields, an earned stage, a new credit; each refusal writes nothing", async () => {
+  const t = await paidToWright();
+  await refusedNothing(t, rc({ credit: "kinofire", link: KINO_PLAN }, BUGCATCHER), 403, /^only wright and keemin re-credit a stage a recredit burns a mint the town paid/);
+  await refusedNothing(t, rc({ credit: "kinofire", link: KINO_PLAN }, KINO), 403, /only the town's hands re-credit a bug's stage/);
+  await refusedNothing(t, rc({ credit: "kinofire", link: KINO_PLAN, note: "  " }), 422, /^a recredit says why note: what the stage's credit got wrong/);
+  await refusedNothing(t, rc({ credit: "kinofire", link: KINO_PLAN, recredit: "yes" }), 422, /^recredit is true, or left off/);
+  await refusedNothing(t, rc({ credit: "kinofire", link: KINO_PLAN, grade: "light" }), 422, /^a recredit takes no grade it pays the stage again at exactly what the stage paid/);
+  await refusedNothing(t, advanceAtTown({ post: KINO_BUG, to: "confirmed", recredit: true, credit: "kinofire", note: NOTE }, WRIGHT, { now: NOW, roll: ROLL }), 422,
+    /^only diagnosed, briefed, fixed are re-credited/);
+  await refusedNothing(t, rc({ credit: "wright", link: comment("wright") }), 422, /^briefed on "kinofire\/false-sweep-warning" already credits wright a recredit names someone else/);
+  await refusedNothing(t, rc({ link: KINO_PLAN }), 422, /^a recredit names whom it credits/);
+});

@@ -474,11 +474,16 @@ const CHUNK = 500;
 export function pinMove(current, next, isAncestor = null) {
   if (!current) return { move: true, why: "no pin yet" };
   if (current === next) return { move: true, why: "the same sha" };
-  let ok = false;
-  try { ok = typeof isAncestor === "function" && isAncestor(current, next) === true; } catch { ok = false; }
-  return ok
-    ? { move: true, why: `${next.slice(0, 12)} descends from the pin ${current.slice(0, 12)}` }
-    : { move: false, why: `${next.slice(0, 12)} does not descend from the pin ${current.slice(0, 12)} (or this checkout cannot place it): the pin stays, and the rows for ${next.slice(0, 12)} are written beside it` };
+  // "Cannot place" is its own sentence (POS-635): a checkout that cannot answer
+  // (git threw, e.g. exit 128 on a pin a shallow clone does not hold) is a fault
+  // in the checkout, and "does not descend" is a fact about the law. Both hold.
+  let ok = false, placed = typeof isAncestor === "function";
+  if (placed) { try { ok = isAncestor(current, next) === true; } catch { placed = false; } }
+  const stays = `the pin stays, and the rows for ${next.slice(0, 12)} are written beside it`;
+  if (ok) return { move: true, why: `${next.slice(0, 12)} descends from the pin ${current.slice(0, 12)}` };
+  return placed
+    ? { move: false, why: `${next.slice(0, 12)} does not descend from the pin ${current.slice(0, 12)}: ${stays}` }
+    : { move: false, why: `this checkout cannot place the pin ${current.slice(0, 12)} against ${next.slice(0, 12)} (a shallow checkout, or a pin it does not hold): ${stays}` };
 }
 
 export async function writeLaw(client, { lawSha, rows, blessed = false, isAncestor = null }) {

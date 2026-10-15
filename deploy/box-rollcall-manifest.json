@@ -163,6 +163,10 @@
           "sync",
           "rollback",
           "settlements",
+          "carried",
+          "chests",
+          "amends",
+          "drops",
           "positions",
           "hhkeys",
           "hhkeys_log"

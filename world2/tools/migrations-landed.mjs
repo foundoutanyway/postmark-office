@@ -116,6 +116,10 @@ export const LANDED = {
   "072_snapshot_stances.sql":      { probe: `${col("world_snapshots", "stances")}` },
   // 073 (POS-570): a berth's parked answer, and the definer function that lands it in arrival_heard.
   "073_berth_heard.sql":           { probe: `${rel("berth_heard")} AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'berth_heard_land' AND prosecdef)` },
+  // 074 (WLD-5, POS-618): a walk's enter-on-arrival, queued until the walker arrives and settled once by the tick.
+  "074_arrival_entries.sql":       { probe: `${rel("arrival_entries")} AND ${trig("arrival_entries_settle_once")}` },
+  // 075 (POS-612): which settlement carried each door amend; the receipt's `last_amended`.
+  "075_amend_carried.sql":         { probe: rel("amend_carried") },
 };
 
 /** The schema files in the order a store takes them — name order, as the CI floor applies them. */

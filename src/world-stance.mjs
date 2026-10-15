@@ -1218,6 +1218,13 @@ export async function setDownsAwaiting(handles, { marks = [], stances = [], deps
     });
     if (!sd.drop || !makers.includes(String(sd.madeBy))) continue;
     if (hold.setDownAnswer({ stances, thing, dropSeq: sd.drop.seq ?? null, madeBy: sd.madeBy, householdOf: sd.householdOf })) continue;
+    // A SET-DOWN OF A THING THAT IS NOT STANDING CANNOT BE ANSWERED. `marks` is
+    // the stances read's own `worldForStances` list, the one the answer door
+    // looks `on` up in, so a thing missing here bounces 404 there. little-bird's
+    // box of nine was swept at S86 (a commons mark at ✦0) after neth set it
+    // down, and this group kept offering a welcome the door could only refuse.
+    // The row comes back by itself if the thing stands again.
+    if (!mark) continue;
     const canon = mark?.at && Number.isFinite(Number(mark.at.x)) && Number.isFinite(Number(mark.at.y))
       ? { x: Number(mark.at.x), y: Number(mark.at.y) } : null;
     rows.push({
@@ -1502,7 +1509,10 @@ export async function declareStanceViaOffice(repo, args = {}, key = null, { dbPa
   if (world.unreachable) throw bounce(503, "the stance candidate list could not be read", world.unreachable);
   const all = world.marks;
   const target = all.find((m) => m.id === on);
-  if (!target) throw bounce(404, `no mark "${on}"`, "ids are <by>/<slug> — see the telling, or your own inbox: world { read: \"" + ACTION_STANCE + "\" }");
+  // The inbox is a household read: a stance is spoken from standing, and
+  // `world { read: "declare-stance-on" }` bounces 422 for that reason (world-apex
+  // § STANDING_SCOPED_DOORS). The hint names the read that answers.
+  if (!target) throw bounce(404, `no mark "${on}"`, "ids are <by>/<slug>: see the telling, or your own inbox, household { read: \"stances\" }");
 
   // ── THE SET-DOWN ARM (POS-138; Keemin, 2026-09-24: "I agree with you here") ─
   //

@@ -306,6 +306,11 @@ export function refusalCheckOf(causeRow) {
  *   withdrawn     true when the caller's delta proposes its deletion
  *   settlement    { s, sha, at } — the newest settlement the record holds
  *   site_pin      the postmark-world sha the SITE is pinned to, or null
+ *   last_amended  { s, sha, at, window } — the settlement that carried the
+ *                 mark's most recent door amend (`amend_carried`, POS-612), or
+ *                 null when it was never amended
+ *   amends_unread the reason `amend_carried` could not be read, or null — by
+ *                 the-disclosure law, an unread table is not "never amended"
  *
  * ── THREE ABSENCES, THREE SENTENCES (walk #7 item 4) ──────────────────────
  *
@@ -320,7 +325,7 @@ export function receiptFrom(records = {}) {
   const {
     id = null, canon = null, published_at = null, claims = null,
     sketchbook = null, withdrawn = false, settlement = null, site_pin = null,
-    terrain = false,
+    terrain = false, last_amended = null, amends_unread = null,
   } = records;
 
   // ── 0 · TERRAIN IS NOT A MARK (repaired 2026-09-07, reviewer-found) ───────
@@ -387,15 +392,37 @@ export function receiptFrom(records = {}) {
 
   // 1 · PUBLISHED. Canon holds it, so the settlement ruled and the answer is a
   // fact about the world, whatever the docket says about the claim behind it.
+  //
+  // ── THE LAST AMEND (POS-612, ruled by Darko 2026-10-14) ──────────────────
+  //
+  // `crossing` names the settlement that FIRST carried the mark, and it stays
+  // that: `mark_carried` (049) is checked against it on every keep tick, and
+  // "a later amend … does not change which settlement first carried the mark".
+  // So keith's stool, amended at S104, read "published at S65 (fc74bf68)" and
+  // looked as if the amend never landed. `last_amended` is the settlement that
+  // carried the most recent door amend, read from `amend_carried`, and the
+  // sentence names both and stays short: "published at S65, last amended at
+  // S104". The shas, the dates and the candle are in the fields. A mark never
+  // amended reads exactly as before.
   if (canon) {
+    // An amend carried by the first carriage itself (the claim and its amend in
+    // one candle) is the version that was first published, not a later one.
+    const amended = last_amended && Number.isInteger(Number(last_amended.s))
+      && !(published_at && Number(last_amended.s) <= Number(published_at.s)) ? last_amended : null;
     return {
       ...base,
       status: "published",
       crossing: published_at ?? settlement ?? null,
       settlement_sha: published_at?.sha ?? settlement?.sha ?? null,
+      last_amended: amended,
+      ...(amends_unread
+        ? { amends: { readable: false, reason: `the office could not read amend_carried (${amends_unread}) — whether this mark was amended since it was first carried is not answered` } }
+        : {}),
       says: published_at
-        ? `published at S${published_at.s} (${String(published_at.sha).slice(0, 8)})${published_at.at ? ` on ${published_at.at}` : ""}`
-        : "published — the record holds this mark, and which settlement carried it could not be read from the tags",
+        ? (amended
+          ? `published at S${published_at.s}, last amended at S${amended.s}`
+          : `published at S${published_at.s} (${String(published_at.sha).slice(0, 8)})${published_at.at ? ` on ${published_at.at}` : ""}`)
+        : `published${amended ? `, last amended at S${amended.s}` : ""} — the record holds this mark, and which settlement carried it could not be read from the tags`,
       ...(withdrawn
         ? { withdrawal_standing: "you have declared this mark withdrawn; it stands in the world until a crossing carries the removal" }
         : {}),
@@ -668,6 +695,22 @@ export async function readMarkReceipt(id, { repo, key = null, canon = null, publ
     }
   } catch { claims = null; }
 
+  // ── the last amend (POS-612) ─────────────────────────────────────────────
+  //
+  // Asked only of a mark canon holds: `last_amended` belongs to the published
+  // tense. The twin asks the same row (world2-serve.mjs § twinReceipt).
+  let last_amended = null, amends_unread = null;
+  if (canonRow) {
+    try {
+      const { world2Enabled } = await import("./world2-acts.mjs");
+      if (!world2Enabled()) amends_unread = "no store is configured";
+      else {
+        const { lastAmendedRow } = await import("./world2-claims.mjs");
+        last_amended = await lastAmendedRow(markId);
+      }
+    } catch (e) { last_amended = null; amends_unread = e?.code === "42P01" ? "075 not applied" : "the store did not answer"; }
+  }
+
   // ── the caller's own compose space ───────────────────────────────────────
   let sketchbook = null, withdrawn = false;
   if (key) {
@@ -681,7 +724,7 @@ export async function readMarkReceipt(id, { repo, key = null, canon = null, publ
 
   return receiptFrom({
     id: markId, canon: canonRow, published_at: carried, claims,
-    sketchbook, withdrawn, settlement,
+    sketchbook, withdrawn, settlement, last_amended, amends_unread,
     // ⚑ NOTHING RECORDS THE SITE PIN, and this is the honest null rather than a
     // guess. `site_pin` is the `postmark-world` version `postmark-town/postmark-site`
     // is built against; the office holds no clone of the site and no record of

@@ -68,6 +68,7 @@ export const EXPLAIN = Object.freeze({
     "who.more_active": row("how many more active neighbours there are than the glance lists", 'world { read: "who" }', "live"),
     "who.around_but_quiet": row("everyone else within reach: counted, with the nearest few named", 'world { read: "who" }', "live"),
     "who.active_unavailable": row("why who acted could not be read this time (the crowd is still counted)", 'world { read: "who" }', "live"),
+    "who.look_closer": row("how to look closer at one of them", 'world { investigate: "<handle>" }', "weekly"),
     "who.unavailable": row("why the crowd could not be read here at all, rather than an empty room", 'world { read: "who" }', "live"),
 
     heard: row("the last few sounds in earshot", 'world { read: "say" }', "live"),
@@ -85,6 +86,9 @@ export const EXPLAIN = Object.freeze({
     focus: row("the close look you asked for with mark:", 'mark: "<id>", depth: 2', "settled"),
     "focus.*": row("one part of the close look: the mark's record, what stands in it, its receipt", 'mark: "<id>", depth: 2', "settled"),
     found: row("the marks your find: matched, best first", 'find: "<q>", find_offset: <n>', "settled"),
+    investigated: row("the close look at a living thing you asked for with investigate:: where they are, their newest public acts, what they carry", 'world { investigate: "<handle>" }', "live",
+      "Public acts only: a say is named, never its words, and a note to self never shows (LOGOS § The privacy scope)."),
+    "investigated.*": row("one part of the close look at a living thing", 'world { investigate: "<handle>" }', "live"),
     "found.*": row("one part of the find: its hits, and how to page them", 'find: "<q>", find_offset: <n>', "settled"),
     diagnostics: row("the engine's notes: the full law block and presence's disclosures", 'explain: "law"', "live"),
     "diagnostics.*": row("one of the engine's notes", 'explain: "diagnostics"', "live"),

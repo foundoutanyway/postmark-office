@@ -185,6 +185,7 @@ export function whoBlock(crowd = [], active = new Map(), { nowMs = Date.now(), u
     nearest: quiet.slice(0, QUIET_NAMED).map((r) => `${r.handle} (${r.distance_m} m${r.source === "parcel" ? ", at home" : ""})`),
   };
   if (unavailable) out.active_unavailable = unavailable;
+  out.look_closer = 'world { investigate: "<handle>" }';
   return out;
 }
 
@@ -375,6 +376,7 @@ export function shapeV2(p) {
     law: { ...(p.canon ? { canon: p.canon } : {}), ...(p.nextSettlement ? { next_settlement: p.nextSettlement } : {}) },
     ...(p.focus ? { focus: p.focus } : {}),
     ...(p.found ? { found: p.found } : {}),
+    ...(p.investigated ? { investigated: p.investigated } : {}),
     ...(p.diagnostics ? { diagnostics: p.diagnostics } : {}),
     more: MORE_V2,
     reading_law: READING_LAW_V2,

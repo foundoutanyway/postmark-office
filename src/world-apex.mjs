@@ -38,13 +38,15 @@
 
 import { renamedRow, DOOR_FIELDS, withRefused } from "./one-contract.mjs"; // POS-70: the one rename shape; POS-246: the door's own fields; POS-427: refused beside did
 import { actUnderNonce, nonceDefect } from "./act-nonce.mjs"; // POS-246: a world act's retry key
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { IDENTITIES_SQL } from "./world2-fold.mjs"; // POS-350: the household grain is the store's identities
 import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt, nextCrossingAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock; POS-632: v2's next crossing
 import { cardsSchemaAt, describeAt, readShape, shapeRead, READ_SHAPES } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
 import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, markIdsShown, BLOCK_READS, blockFields } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
 import { explainAnswer, explainPath, encodeCursor, decodeCursor, CURSOR_RENAMES_UNTIL } from "./read-grammar.mjs"; // POS-632: explain:, the read grammar's one table; the one cursor
+import { entityKindOf, investigateResident, RECENT_SQL, RECENT_CAP } from "./world-investigate-entity.mjs"; // POS-632 PR-4: the entity read
+import { PUBLIC_ACTS as PUBLIC_ACTS_FOR_INVESTIGATE, ACTIVE_WINDOW_MS as ACTIVE_WINDOW_FOR_INVESTIGATE } from "./world-read-v2.mjs"; // POS-632 PR-4: the entity read's public acts and window
 import { join } from "node:path";
 
 import {
@@ -75,7 +77,7 @@ import {
   actsHaveNonce,
   markCentreOf, // POS-632 PR-3: the live lines are placed by their anchors, as the save places them
   markRows, // POS-632: marks shown with their whole bodies (Darko 22:33)
-  placeMarksAt, // POS-632: the marks place words name, as rows
+  placeMarksAt, // POS-632: the marks place words name, as rows (v2 you.near; PR-4 every place line)
 } from "./world.mjs";
 // v2.2 §B — the frame block and the three-shelf delta. Both compose the one
 // standpoint derivation; neither derives a position of its own.
@@ -1814,6 +1816,51 @@ export function buildTerms({ affording, spine, means = null }) {
  * equivalent"; this is that day, and the answer is still no — the equivalent is
  * embodied-only, so the flat tool is the only door a spectator has.)
  */
+/** investigate: on a living thing, or null when the call asked for none (PR-4). */
+async function investigateOn(args, oriented) {
+  if (args.investigate == null || String(args.investigate).trim() === "") return null;
+  const kind = entityKindOf(args.investigate);
+  if (kind.kind === "creature")
+    return { kind: "creature", id: kind.id, unavailable: "creatures join the world with their class (WLD-46); nothing answers for one yet" };
+  // the town's roll says who is a resident; when it cannot be read, nobody is
+  // called unknown for it (the standpoint read then says what it can)
+  const houseOf = await worldHouseholds().catch(() => () => "unreadable");
+  const { actsQuery } = await import("./world2-acts.mjs");
+  const { composeAnchor } = await import("./world-journal.mjs");
+  const centreOf = await markCentreOf();
+  return investigateResident(kind.handle, {
+    from: oriented?.standpoint ?? null,
+    known: (h) => houseOf(h) != null,
+    standpoint: (h) => residentStandpoint(h),
+    place: (p) => placeWords(p),
+    saved: (h) => savedPositionOf(h),
+    recent: (h) => actsQuery(RECENT_SQL, [h, Object.keys(PUBLIC_ACTS_FOR_INVESTIGATE), ACTIVE_WINDOW_FOR_INVESTIGATE / 1000, RECENT_CAP]),
+    holds: async (h) => {
+      const { storeAttachmentRows } = await import("./world2-guards.mjs");
+      const { holdingsOf } = await import("./world-hold.mjs");
+      return holdingsOf(await storeAttachmentRows(), h);
+    },
+    placeOf: (r) => composeAnchor({ anchor: r.at_anchor, dx: r.at_dx, dy: r.at_dy }, centreOf),
+    placeMarks: (p) => placeMarksAt(p),
+    marksOf: (ids) => markRows(ids),
+  });
+}
+
+/** Where the newest crossing save put a resident: { crossing, x, y }, or null (STATE/snapshot/<n>/entities.json). */
+let _saved = null;
+export function savedPositionOf(handle, repo = WORLD_CLONE) {
+  const dir = join(repo, "STATE", "snapshot");
+  let n = null;
+  try { n = Math.max(...readdirSync(dir).map(Number).filter(Number.isFinite)); } catch { return null; }
+  if (!Number.isFinite(n)) return null;
+  if (_saved?.n !== n) {
+    try { _saved = { n, byHandle: new Map(JSON.parse(readFileSync(join(dir, String(n), "entities.json"), "utf8")).entities.map((e) => [e.handle, e])) }; }
+    catch { return null; }
+  }
+  const e = _saved.byHandle.get(handle);
+  return e && Number.isFinite(e.x) ? { crossing: n, x: e.x, y: e.y } : null;
+}
+
 async function focusOn(args, key) {
   const payload = focusArgs(args);
   return payload ? worldInvestigate(payload, key) : null;
@@ -2409,6 +2456,8 @@ async function apexRead(args, key, ctx = {}) {
   // one reverse of "anything you can do, you can read"; that spelling still
   // answers, with a `renamed` row, until train/2026-w42.
   const found = await findOn(args, key);
+  // ── THE ENTITY READ (POS-632 PR-4; Sitting E) ───────────────────────────────
+  const investigated = await investigateOn(args, oriented);
 
   // ── THE RECORDS THIS READ NAMES (2026-09-10) ──────────────────────────────
   const nearbyOut = nearby;
@@ -2465,6 +2514,7 @@ async function apexRead(args, key, ctx = {}) {
     ...(happened ? { happened } : {}),
     ...(focus ? { focus } : {}),
     ...(found ? { found } : {}),
+    ...(investigated ? { investigated } : {}),
     ...cardsBlock(actions, args.cards),
     granted,
     // The ACT-AS roster. Always present: a caller who cannot see the Human
@@ -2541,6 +2591,7 @@ async function apexRead(args, key, ctx = {}) {
       notYours: answer.not_yours ?? [],
       focus,
       found,
+      investigated,
       diagnostics: args.diagnostics === true
         ? { law: answer.law, ...(oriented.present?.disclosed ? { disclosed: oriented.present.disclosed } : {}), crowd: { radius_m: oriented.present?.radius_m, count: oriented.present?.count } }
         : null,
@@ -3519,6 +3570,15 @@ async function worldApexAnswer(args, key, ctx) {
     return bounce(422, "one call does one thing — find: focuses the bare read, it does not narrow an act",
       `call twice: world { find: ${JSON.stringify(String(args.find))} } to find the mark, and world { ${doing ? `do: "${args.do}"` : `read: "${args.read}"`}, … } for the ${doing ? "act" : "shadow"}.`);
   }
+  // POS-632 PR-4: investigate: is a focus on the bare read, like mark: and find:.
+  if (args.investigate != null && String(args.investigate).trim() !== "") {
+    if (doing || reading) return bounce(422, "one call does one thing — investigate: focuses the bare read, it does not narrow an act or a read", "call twice");
+    if ((args.mark != null && args.mark !== "") || (args.find != null && args.find !== ""))
+      return bounce(422, "one focus at a time — investigate:, mark: and find: each look closer at one thing", "call once for each");
+    const kind = entityKindOf(args.investigate);
+    if (kind.kind === "mark")
+      return bounce(422, `"${kind.id}" is a mark — investigate: is for the living (a resident's handle)`, `world { mark: "${kind.id}" } is the close look at a mark`);
+  }
   if ((args.find == null || String(args.find).trim() === "") && ((args.find_offset != null && args.find_offset !== "") || (args.find_limit != null && args.find_limit !== ""))) {
     return bounce(422, "find_offset and find_limit page a find: — there is no find: on this call",
       "world { find: \"snug\", find_offset: 10 } — the offset is the previous answer's found.next_offset");
@@ -3594,6 +3654,7 @@ const APEX_INPUT_SCHEMA = { type: "object", properties: {
     args: { type: "object", description: "the action's own fields (with do:) or narrowing fields (with read:), exactly as the entry's `fields` block names them — world { do: \"say\", args: { text: \"hello\" } }. Unknown fields bounce by name. Your standpoint (handle) stays top-level.", additionalProperties: true },
     mark: { type: "string", description: "FOCUS the bare read on one mark — <by>/<slug>, as ids appear in the telling. The answer is the read you would have got anyway, plus `focus`: the close look at that mark (its body, the properties predicated on it, what stands inside it). It is a focus rather than an action because investigating performs nothing — do: would be a lie, and read: is an action's shadow, so a shadow with no action is the reverse the apex's law forbids. Never rides with do: or read:." },
     find: { type: "string", description: "FIND a mark by name from anywhere — its name, slug or id. The answer is the bare read you would have got anyway, plus `found`: the hits, best match first (an exact id, then names and slugs starting with it, then containing it), each with its place, its distance from you and the stops to ride between. A focus, like mark:, because finding performs nothing and no ground grants it. Never rides with do: or read:. (It was read: \"find\" until train/2026-w41; that spelling answers with a `renamed` row until " + FIND_READ_ANSWERS_UNTIL + ".)" },
+    investigate: { type: "string", description: "LOOK CLOSER at a living thing — a resident's handle. The answer is the bare read you would have got anyway, plus `investigated`: where they are now and where the last crossing's save put them, their newest public acts in the last 12 hours (a say is named, never its words), and what they carry. Their household and letters are at household and town. A focus, like mark: (marks) and find:. Creatures join with their class." },
     find_offset: { type: "number", description: "with find:, walk past the first hits — the previous answer's found.next_offset" },
     find_limit: { type: "number", description: "with find:, how many hits (default 10, at most 50)" },
     with_image: { type: "boolean", description: "with mark:, also bring that mark's picture back as image bytes if it has one and it fits under the inline cap. The url rides in the answer either way; this only decides whether the office spends the bytes." },

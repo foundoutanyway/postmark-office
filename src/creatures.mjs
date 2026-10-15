@@ -337,14 +337,17 @@ export function allowedReactions(kind, scope) {
 /**
  * THE SLICE'S BUDGET (Darko, 2026-10-14 22:18 EDT): "keep Jev's budget low" —
  * a lean projection with a field whitelist: residents nearest first and only a
- * few, marks sharply limited with a short excerpt of the body, and only what
- * matters to a creature (kind or class, name, distance, bearing, approaching,
- * the last act, the excerpt). The numbers are the lane's proposal, as dials.
+ * few, marks sharply limited, and only what matters to a creature (kind or
+ * class, name, distance, bearing, approaching, the last act, the body). The
+ * numbers are the lane's proposal, as dials.
+ *
+ * A MARK'S BODY IS NEVER DROPPED OR EXCERPTED (Darko, 2026-10-14 22:33 EDT,
+ * standing): a body is ≤150 characters by design, so each of the nearest marks
+ * carries its whole body. The saving is in how few marks there are.
  */
 export const SLICE_CAPS = Object.freeze({
   residents: pending(5, "22:18 (the numbers proposed)"),
   marks: pending(3, "22:18 (the numbers proposed)"),
-  excerpt_chars: pending(160, "22:18 (the numbers proposed)"),
   heard: pending(3, "22:18 (the numbers proposed)"),
   said_chars: pending(140, "22:18 (the numbers proposed)"),
   last_acts: pending(3, "22:18 (the numbers proposed)"),
@@ -366,7 +369,7 @@ export const SLICE_FIELDS = Object.freeze([
   "this_act", "this_act.by", "this_act.verb", "this_act.distance_m", "this_act.approaching", "this_act.their_last_acts", "this_act.their_last_acts[]",
   "residents", "residents[]", "residents[].kind", "residents[].name", "residents[].m", "residents[].bearing", "residents[].approaching", "residents[].last",
   "others_about",
-  "marks", "marks[]", "marks[].class", "marks[].name", "marks[].m", "marks[].bearing", "marks[].excerpt",
+  "marks", "marks[]", "marks[].class", "marks[].name", "marks[].m", "marks[].bearing", "marks[].body",
   "heard", "heard[]", "heard[].who", "heard[].said", "heard[].ago",
   "air", "hour",
   "reading_law",
@@ -409,8 +412,8 @@ export function memoryLine(r, now = Date.now()) {
  *              air:    v2's now.air line, hour: "19:40Z",
  *              actor_last: ["walked, 2 min ago", …] }
  *
- * Only SLICE_FIELDS survive. Resident-authored text (bodies, says) goes in as
- * content under the reading law, cut to its caps. It can tilt Jev's odds
+ * Only SLICE_FIELDS survive. Resident-authored text goes in as content under
+ * the reading law: a mark's body whole (22:33), a say cut to its cap. It can tilt Jev's odds
  * between allowed reactions and nothing else: the Choice's options are the
  * kind's own sentences, and code renders the line.
  */
@@ -457,7 +460,7 @@ export function buildSlice(creature, kind, act, around = {}, { now = Date.now() 
       return {
         ...(k.class ? { class: k.class } : {}),
         name: k.name ?? k.id, m: Math.round(metresOf(k)), bearing: k.bearing,
-        ...(body ? { excerpt: cut(body, cap("excerpt_chars")) } : {}),
+        ...(body ? { body: String(body) } : {}), // whole, never cut (22:33)
       };
     }),
     heard: (around.heard ?? []).slice(0, cap("heard")).map((h) => ({ who: h.who, said: cut(h.said, cap("said_chars")), ...(h.ago ? { ago: h.ago } : {}) })),

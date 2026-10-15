@@ -322,14 +322,15 @@ const busyAround = () => ({
     more_active: 2, around_but_quiet: { count: 4, nearest: ["q1 (300 m)"] },
   },
   view: { N: Array.from({ length: 6 }, (_, i) => fat({ id: `n/${i}`, name: `North ${i}`, km: 1 + i })), E: Array.from({ length: 6 }, (_, i) => fat({ id: `e/${i}`, name: `East ${i}`, m: 30 + i, class: "the-town/bench" })), how: "landmark = …" },
-  bodies: Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`e/${i}`, "b".repeat(900) + " https://postmark.town/secret"])),
+  // a body is ≤150 characters by design (22:33); these sit at the limit
+  bodies: Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`e/${i}`, `East ${i}: ` + "b".repeat(150 - `East ${i}: `.length)])),
   heard: Array.from({ length: 6 }, () => fat({ who: "r1", said: "s".repeat(500), ago: "1 min" })),
   air: "Thick fog hangs low; the light is going. The Mists stand close in the west. " + "a".repeat(400),
   hour: "19:40Z",
   actor_last: ["walked, 2 min ago", "said something, 20 min ago", "walked, 25 min ago", "walked, 40 min ago"],
 });
 
-test("the slice is the lean projection: nearest residents and marks, short excerpts, the caps (Darko 22:18)", () => {
+test("the slice is the lean projection: nearest residents and marks with their whole bodies, the caps (Darko 22:18, 22:33)", () => {
   const c = livingWith(spawnRow("creature:wolf-270-1")).byId.get("creature:wolf-270-1");
   const s = buildSlice(c, WOLF, { actor: "kai", verb: "walk", distance_m: 30, approaching: true }, busyAround(), { now: T0 });
   assert.equal(SLICE_CAPS.residents.value, 5);
@@ -339,7 +340,9 @@ test("the slice is the lean projection: nearest residents and marks, short excer
   assert.equal(s.others_about, 6 + 2 + 4, "the rest are counted, not listed");
   assert.equal(s.marks.length, 3);
   assert.deepEqual(s.marks.map((k) => k.name), ["East 0", "East 1", "East 2"], "the nearest marks, wherever their bearing");
-  assert.equal(s.marks[0].excerpt.length, 160);
+  const bodies = busyAround().bodies;
+  assert.deepEqual(s.marks.map((k) => k.body), ["e/0", "e/1", "e/2"].map((id) => bodies[id]), "each nearest mark carries its whole body");
+  assert.ok(!s.marks.some((k) => "excerpt" in k));
   assert.equal(s.marks[0].class, "the-town/bench");
   assert.equal(s.heard.length, 3);
   assert.equal(s.heard[0].said.length, 140);
@@ -373,9 +376,9 @@ test("the whitelist: a field outside SLICE_FIELDS never reaches the slice, nor a
   walk(s, "");
   assert.deepEqual(strays, []);
   // the walk saw real rows: every path the busy read can fill was filled
-  for (const p of ["residents[].bearing", "residents[].last", "marks[].excerpt", "marks[].class", "heard[].said", "creature.conditions[]", "creature.remembers[]", "others_about", "air", "hour"])
+  for (const p of ["residents[].bearing", "residents[].last", "marks[].body", "marks[].class", "heard[].said", "creature.conditions[]", "creature.remembers[]", "others_about", "air", "hour"])
     assert.ok(seen.has(p), `the walk reached ${p}`);
-  // no resident-only url rides (a mark body's own words are content, and keep what fits its excerpt)
+  // no resident-only url rides (a mark's body is content, carried whole)
   const text = JSON.stringify(s);
   for (const u of [RESIDENT_ONLY.url, RESIDENT_ONLY.token_url]) assert.ok(!text.includes(u), u);
 });
@@ -518,4 +521,12 @@ test("an ended creature leaves RAM an hour after it ended; its retry index goes 
   assert.ok(!living.byId.has("creature:wolf-270-1"));
   assert.deepEqual([...living.answered.get("9001")], ["creature:wolf-270-2"], "the pruned one leaves the retry index; the other answer stays");
   assert.ok(living.byId.has("creature:wolf-270-2"), "the living one stays");
+});
+
+test("a mark's body is never dropped or excerpted, whatever its length (Darko 22:33, standing)", () => {
+  const c = livingWith(spawnRow("creature:wolf-270-1")).byId.get("creature:wolf-270-1");
+  const long = "A body longer than the design's 150 characters still rides whole: the read never cuts a resident's words about their own place. ".repeat(3);
+  const around = { view: { N: [{ id: "a/b", name: "A Bench", m: 20 }] }, bodies: { "a/b": long } };
+  const s = buildSlice(c, WOLF, { actor: "kai", verb: "walk", distance_m: 30, approaching: false }, around, { now: T0 });
+  assert.equal(s.marks[0].body, long);
 });

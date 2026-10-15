@@ -1049,6 +1049,14 @@ cat /srv/postmark-sentinel/status.json | head -40
   simply raises the ceiling. *(Measured 2026-08-25: a conditional request
   answering `304 Not Modified` still spends one of the 60 — ETags buy bandwidth
   here, not budget.)*
+- **§13, the Linear handler, reads only with the token** (POS-631). It makes one
+  runs read per handler repo per tick (six, 36/hour against the token's
+  5,000/hour), plus a jobs read and an annotations read once for each new failed
+  run, which it remembers in its state. With no token its six rows read UNKNOWN
+  and it spends nothing, so the keyless budget above is unchanged.
+  postmark-telemetry is private. Its row reads UNKNOWN ("needs Actions: read")
+  until the token is given **Actions: read on postmark-town/postmark-telemetry**.
+  The token is a fine-grained PAT, and only its owner can edit it.
 - **Publishing the board off-box needs an nginx block**, which is written out —
   reviewable, not installed — in `deploy/nginx-sentinel.conf.snippet`. The
   sentinel does not need it; the alert reaches Discord over an outbound POST

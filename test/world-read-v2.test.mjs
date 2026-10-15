@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  viewBlock, whoBlock, canBlock, happeningBlock, happenedGlance, shapeV2, activeOf, actLine, inWords,
+  viewBlock, whoBlock, canBlock, happeningBlock, eventsHere, happenedGlance, shapeV2, activeOf, actLine, inWords,
   LANDMARK_WEIGHT_FLOOR, ACTIVE_CAP, ACTIVE_WINDOW_MS, PUBLIC_ACTS, ACTIVE_SQL,
 } from "../src/world-read-v2.mjs";
 import { ONE_LINERS } from "../src/world-read-shape.mjs";
@@ -83,6 +83,16 @@ test("G7: happening_here says the vessel's next departures and the Mists only wh
   const h = happeningBlock({ departures: { next: [{ at: "2026-10-15T01:30:00Z", toward: "the-town/the-snug" }] }, mists: { in_wall: false, thickness: 0.4 } });
   assert.deepEqual(h.map((r) => r.kind), ["departure", "emission"]);
   assert.equal(h[0].at, "01:30Z");
+  const cal = { now: [
+    { id: "postmaster/halloween", title: "Halloween in Postmark", place: { mark: "the-town/the-quay-reach", name: "the Quay Reach", x: 0, y: 0 }, phase: "underway", ends: "2026-11-01T04:00:00Z" },
+    { id: "a/far-party", title: "Far party", place: { mark: "a/elsewhere", x: 5000, y: 5000 }, phase: "underway", ends: "2026-11-01T04:00:00Z" },
+    { id: "b/near-point", title: "On the steps", place: { mark: null, x: 100, y: 100 }, phase: "doors-open", ends: "2026-11-01T04:00:00Z" },
+  ] };
+  const here = eventsHere(cal, { at: { x: 0, y: 50 }, ids: new Set(["the-town/the-quay-reach"]) });
+  assert.deepEqual(here.map((e) => e.id), ["postmaster/halloween", "b/near-point"], "on the spine, or its point within 150 m");
+  const rows = happeningBlock({ events: here });
+  assert.equal(rows[0].kind, "event");
+  assert.equal(rows[0].place, "the Quay Reach");
 });
 
 test("G4: happened with no cursor names where it reaches back to; an unread delta says so", () => {

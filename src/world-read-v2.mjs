@@ -32,8 +32,8 @@
 //   G6  who.active is capped at 8, nearest first; the rest are counted. The
 //       spine's ids are not repeated on `you`: `here` names them and
 //       `here_body` is the innermost's words (the 5k budget, served).
-//   G7  happening_here: the vessel's departures, the Mists where you stand in
-//       them; empty is omitted.
+//   G7  happening_here: the events on now here, the vessel's departures, the
+//       Mists where you stand in them; empty is omitted.
 //   G8  each act's line is the Darko-approved one-liner without its fields.
 //   G10 the bands are the engine's own words.
 
@@ -215,9 +215,24 @@ export function canBlock(entries = [], { pace = null, handles = [], standing = n
   return out;
 }
 
-/** HAPPENING_HERE (G7): the vessel's departures from here, the Mists where you stand in them. Null when nothing is. */
-export function happeningBlock({ departures = null, mists = null } = {}) {
+/** How near an event's own point must be to be "here" when its place is not a mark on your spine or in view. */
+export const EVENT_NEAR_M = 150;
+
+/**
+ * The events on NOW (doors open or underway) that are here: the place is a mark
+ * on your spine or in your view, or its point is within EVENT_NEAR_M of you.
+ * `calendar` is events-store.mjs § calendarAtOffice's answer.
+ */
+export function eventsHere(calendar, { at, ids = new Set() } = {}) {
+  return (calendar?.now ?? []).filter((e) => (e.place?.mark && ids.has(e.place.mark))
+    || (at && Number.isFinite(e.place?.x) && Math.hypot(e.place.x - at.x, e.place.y - at.y) <= EVENT_NEAR_M));
+}
+
+/** HAPPENING_HERE (G7): events on now here, the vessel's departures from here, the Mists where you stand in them. Null when nothing is. */
+export function happeningBlock({ events = [], departures = null, mists = null } = {}) {
   const rows = [];
+  for (const e of events)
+    rows.push({ what: e.title, kind: "event", id: e.id, ...(e.place?.name ? { place: e.place.name } : {}), phase: e.phase, ends: hourZ(e.ends) });
   // world-movement.mjs § stopDepartures: { at_stop, vessel, next: [{ at, toward, crossing }] }
   for (const d of (departures?.next ?? []).slice(0, 2))
     rows.push({ what: `the Post Office leaves here${d.toward ? ` for ${d.toward}` : ""}`, kind: "departure", at: hourZ(d.at) });
@@ -254,7 +269,7 @@ export function shapeV2(p) {
     ...(p.canon ? { canon: p.canon } : {}),
     happened: happenedGlance(p.happened, { sinceCrossing: p.sinceCrossing }),
   };
-  const happening = happeningBlock({ departures: p.departures, mists: p.mists });
+  const happening = happeningBlock({ events: p.events, departures: p.departures, mists: p.mists });
   const out = {
     you,
     now,

@@ -43,7 +43,7 @@ import { IDENTITIES_SQL } from "./world2-fold.mjs"; // POS-350: the household gr
 import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt, nextCrossingAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock; POS-632: v2's next crossing
 import { cardsSchemaAt, describeAt, readShape, shapeRead, READ_SHAPES } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
-import { shapeV2, activeOf, paceFrom, inWords, hourZ } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
+import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
 import { join } from "node:path";
 
 import {
@@ -2431,7 +2431,16 @@ async function apexRead(args, key, ctx = {}) {
       query: async (text, params) => (await import("./world2-acts.mjs")).actsQuery(text, params),
     });
     const nowMs = Date.now();
+    // G7: the calendar's events on now that are here. A calendar that cannot be
+    // read leaves the events out and says nothing else is missing: the block is a glance.
+    let events = [];
+    try {
+      const { calendarAtOffice } = await import("./events-store.mjs");
+      const ids = new Set([...spine.map((m) => m.id), ...(seen._fov?.rows ?? []).map((r) => r.id)]);
+      events = eventsHere(await calendarAtOffice({}, { now: nowMs }), { at: { x: answer.standpoint?.x, y: answer.standpoint?.y }, ids });
+    } catch { events = []; }
     return shapeV2({
+      events,
       handle: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null,
       standpoint: answer.standpoint,
       spine,

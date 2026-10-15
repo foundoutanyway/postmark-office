@@ -111,6 +111,14 @@ test("the live lines: after a cursor's mark by the primary key, else the newest 
   assert.ok(!Object.keys(LIVE_KINDS).includes("note-to-self"), "a private act is never a line");
 });
 
+test("PR-5: the MCP server's instructions are the tutorial, the same text explain: \"\" answers, with the reading law", async () => {
+  const { MCP_INSTRUCTIONS, READING_LAW } = await import("../src/mcp.mjs");
+  assert.ok(MCP_INSTRUCTIONS.includes(TUTORIAL));
+  assert.ok(MCP_INSTRUCTIONS.includes(READING_LAW));
+  for (const move of ["1. Look:", "2. Ask:", "3. Go deeper:", "4. Catch up:"]) assert.ok(TUTORIAL.includes(move), move);
+  assert.match(MCP_INSTRUCTIONS, /DARKO/);
+});
+
 test("the doors answer explain: before anything is read, and never beside an act or a read", async () => {
   const w = await worldApex({ explain: "now.happened" }, null, {});
   assert.equal(w.explains, "now.happened");

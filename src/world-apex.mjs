@@ -44,7 +44,7 @@ import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt, nextCrossingAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock; POS-632: v2's next crossing
 import { cardsSchemaAt, describeAt, readShape, shapeRead, READ_SHAPES } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
 import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, BLOCK_READS, blockFields } from "./world-read-v2.mjs";
-import { explainAnswer, explainPath, encodeCursor, decodeCursor, CURSOR_RENAMES_UNTIL } from "./read-grammar.mjs";
+import { explainAnswer, explainPath, encodeCursor, decodeCursor, CURSOR_RENAMES_UNTIL, moreLine } from "./read-grammar.mjs";
 import { entityKindOf, investigateResident, RECENT_SQL, RECENT_CAP } from "./world-investigate-entity.mjs"; // POS-632 PR-4: the entity read
 import { PUBLIC_ACTS as PUBLIC_ACTS_FOR_INVESTIGATE, ACTIVE_WINDOW_MS as ACTIVE_WINDOW_FOR_INVESTIGATE } from "./world-read-v2.mjs"; // POS-632: explain:, the read grammar's one table; the one cursor // POS-632: the world read v2, opt-in per call
 import { join } from "node:path";
@@ -2556,6 +2556,7 @@ async function apexRead(args, key, ctx = {}) {
     // answers only what came after it.
     shaped.cursor = encodeCursor({ crossing: oriented.crossing?.n ?? 0, ms: nowMs, hw: happened?._hw ?? args._cursor?.hw ?? null });
     if (args._cursor) shaped.now.happened = { ...shaped.now.happened, since: "your last read (the cursor)" };
+    shaped.more = moreLine(shaped.cursor); // PR-5: the backstop, with this read's own cursor
     if (!deep) return shaped;
     // The deeper read answers the block whole, under its own name, and nothing else.
     const whole = deep.block === "happened" ? (happened ?? { unavailable: "the delta is not read at this office" })

@@ -27,7 +27,7 @@ const CLONE = worldClone();
 const HAVE_CLONE = Boolean(CLONE) && existsSync(join(CLONE, "WORLD", "world-state.json"));
 const WHY_NOT = CLONE ? `the world clone at ${CLONE} is missing world-state.json` : NO_WORLD;
 
-const ENV = { WORLD_APEX: "1", WORLD2_PG: "1", WORLD2_PG_URL: "postgres://world-read-shape/none", WORLD_READ_SHAPE: undefined };
+const ENV = { WORLD_MOVEMENT_V2: undefined, WORLD_PRESENCE: undefined, WORLD_APEX: "1", WORLD2_PG: "1", WORLD2_PG_URL: "postgres://world-read-shape/none", WORLD_READ_SHAPE: undefined };
 const saved = Object.fromEntries(Object.keys(ENV).map((k) => [k, process.env[k]]));
 const setEnv = (k, v) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
 for (const [k, v] of Object.entries(ENV)) setEnv(k, v);
@@ -49,10 +49,13 @@ before(() => {
     "--world", CLONE, "--no-db", "--rows-out", join(dir, "rows.json"), "--no-gexf", "--no-lints"],
   { stdio: "ignore", env: { ...process.env, TMP: dir, TEMP: dir, TMPDIR: dir } });
   publishWorld(join(dir, "rows.json"), "the world clone's head");
-  __setPoolForTest({ async query(sql) {
+  __setPoolForTest({ async query(sql, params) {
     const text = String(sql).replace(/\s+/g, " ");
     if (/max\(id\) AS hw, count\(\*\) AS n FROM acts/.test(text)) return { rows: [{ hw: null, n: "0" }] };
     if (/SELECT id, at, crossing, actor, action, payload FROM acts/.test(text)) return { rows: [] };
+    // v2's one new read (POS-632): each resident's newest public act. This
+    // record holds no acts; the active split is test/world-read-v2.test.mjs's.
+    if (/CROSS JOIN LATERAL \(SELECT action, at FROM acts/.test(text)) return { rows: [] };
     // The apex asks the store whose household each ground is (POS-350). This
     // record holds no registry, so every handle is its own household.
     if (/^SELECT handle, household FROM identities/.test(text)) return { rows: [] };
@@ -149,16 +152,97 @@ test("v1: cards: \"full\" gives today's cards back, and cards: \"names\" is the 
   assert.deepEqual((await bareAt("v1", { cards: "names" })).actions, (await bareAt(undefined, { cards: "names" })).actions);
 });
 
-test("v2: the acts by name only", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
-  const full = await bareAt(undefined);
-  const v2 = await bareAt("v2");
-  assert.deepEqual(v2.actions, full.actions.map((a) => a.action));
+// ── v2 (POS-632): the world read v2, opt-in per call ───────────────────────
+
+const URL_RE = /https?:\/\/|\.png\b|\.jpe?g\b|token_url/;
+const v2At = (args = {}) => worldApex({ handle: WHO, read_shape: "v2", ...args }, KEY, {});
+
+test("v2: the blocks in read order, and none of v1's keys", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const v2 = await v2At();
   assert.equal(v2.read_shape, "v2");
-  assert.match(v2.cards_note, /cards: "full"/);
+  const keys = Object.keys(v2);
+  for (const k of ["you", "now", "view", "who", "can", "law", "more", "reading_law"]) assert.ok(keys.includes(k), `v2 carries ${k}`);
+  for (const k of ["within", "nearby", "records", "ground", "present", "actions", "granted", "actors", "standpoint"])
+    assert.ok(!keys.includes(k), `v2 leaves ${k} out`);
+  assert.ok("happened" in v2.now, "happened is always present (ruled 20:26)");
+  assert.match(v2.now.happened.since, /^crossing \d+$/);
+  assert.ok(v2.who.unavailable || (Array.isArray(v2.who.active) && typeof v2.who.around_but_quiet.count === "number"), "who is a block, or says why not");
+  assert.equal(v2.you.handle, WHO);
 });
 
-test("v1/v2: the description says the lean read and its size, and cards takes \"full\"", () => {
-  for (const shape of ["v1", "v2"]) {
+test("v2: the view's places are v1's nearby, in the engine's rank, grouped by bearing", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const v1 = await bareAt("v1");
+  const v2 = await v2At();
+  const groups = Object.entries(v2.view).filter(([k]) => k !== "how");
+  assert.deepEqual(groups.flatMap(([, rows]) => rows.map((r) => r.id)).sort(), v1.nearby.map((o) => o.id).sort(), "the same places");
+  const rank = new Map(v1.nearby.map((o, i) => [o.id, i]));
+  for (const [b, rows] of groups)
+    for (let i = 1; i < rows.length; i++) assert.ok(rank.get(rows[i - 1].id) < rank.get(rows[i].id), `${b} keeps the rank`);
+  const firsts = groups.map(([, rows]) => rank.get(rows[0].id));
+  assert.deepEqual(firsts, [...firsts].sort((a, b) => a - b), "each group sits at its best member's rank");
+});
+
+test("v2: no url anywhere in a bare read, and a picture is a flag", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const v2 = await v2At();
+  assert.doesNotMatch(JSON.stringify(v2), URL_RE);
+  for (const [b, rows] of Object.entries(v2.view)) if (b !== "how") for (const r of rows) if ("image" in r) assert.equal(r.image, true);
+});
+
+// THE SIZE BUDGET IS PENDING DARKO (POS-632). The ≤5K was the build's target;
+// Darko's 22:33 ruling put every mark's whole body back (bodies win; the lever is
+// rows, never bodies), and the budget went to his Call. 8K holds CI meaningful
+// meanwhile, on Wright's word.
+test("v2: within the budget as the MCP door serves it, at the rig's standpoint (8k, pending Darko on POS-632)", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const served = JSON.stringify(await v2At(), null, 1).length; // mcp.mjs § the answer's text block
+  assert.ok(served <= 8000, `v2 served is ${served} characters`);
+});
+
+test("v2: every mark the bare read shows carries its whole body (Darko 22:33)", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const { unbodied } = await import("./helpers/mark-bodies.mjs");
+  const v2 = await v2At();
+  assert.deepEqual(unbodied(v2), []);
+  for (const [b, rows] of Object.entries(v2.view)) if (b !== "how") for (const r of rows) assert.equal(typeof r.body, "string", r.id);
+  assert.ok(v2.you.within.length >= 1 && v2.you.within.every((m) => typeof m.body === "string" && m.name));
+});
+
+test("G4: with no cursor, happened reaches back to the previous crossing's start (review-555 § 2)", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  setEnv("WORLD_MOVEMENT_V2", "1");
+  try {
+    const v2 = await v2At();
+    const { currentCrossing } = await import("../src/crossings.mjs");
+    assert.equal(v2.now.happened.since, `crossing ${currentCrossing() - 1}`);
+    assert.ok(!v2.now.happened.unavailable, "the delta is read with movement on");
+  } finally { setEnv("WORLD_MOVEMENT_V2", undefined); }
+});
+
+test("v2: with presence off, who says so rather than showing an empty room", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  setEnv("WORLD_PRESENCE", undefined);
+  const v2 = await v2At();
+  assert.match(v2.who.unavailable ?? "", /presence is not switched on/);
+});
+
+test("v2: diagnostics rides v2 only, and cards: has nothing to size there", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const d = await v2At({ diagnostics: true });
+  assert.ok(d.diagnostics?.law, "the full law block is behind the flag");
+  assert.ok(!("diagnostics" in await v2At()));
+  assert.equal((await worldApex({ handle: WHO, diagnostics: true }, KEY, {})).code, 422);
+  assert.equal((await v2At({ cards: "names" })).code, 422);
+  assert.equal((await v2At({ telling: true })).code, 422, "v2 tells no prose; v1 does (review-555 nit)");
+});
+
+test("v2: the per-call shape wins over the process's, both ways; v1 is the bytes it was", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const v1 = JSON.stringify(await bareAt("v1"));
+  setEnv("WORLD_READ_SHAPE", "v2");
+  try {
+    assert.equal(JSON.stringify(await worldApex({ handle: WHO, read_shape: "v1" }, KEY, { readShape: readShape() })), v1, "read_shape: v1 under a v2 office is today's v1");
+    assert.equal((await worldApex({ handle: WHO }, KEY, { readShape: readShape() })).read_shape, "v2", "the office's default is v2 when the env says so");
+  } finally { setEnv("WORLD_READ_SHAPE", undefined); }
+  assert.equal((await v2At()).read_shape, "v2", "a REST call that asks gets v2 too (W1)");
+  assert.ok(!("read_shape" in await worldApex({ handle: WHO }, KEY, {})), "a REST call that does not ask is v0, as ever");
+});
+
+test("v1: the description says the lean read and its size, and cards takes \"full\"", () => {
+  for (const shape of ["v1"]) {
     setEnv("WORLD_READ_SHAPE", shape);
     try {
       assert.match(APEX_TOOL.description, /SIZE: a bare call is the lean read, roughly \d+k characters as of 2026-10/);
@@ -203,8 +287,16 @@ test("leave-mark's ≤150 and 1✦ are the door's own: the body cap and the comm
   assert.match(ONE_LINERS["leave-mark"].says, /elsewhere you stake 1✦/);
 });
 
+test("v2: the description says the v2 read and its size, and read_shape is on every shape's schema", () => {
+  setEnv("WORLD_READ_SHAPE", "v2");
+  try {
+    assert.match(APEX_TOOL.description, /SIZE: a bare call is the world read v2, roughly 5k characters/);
+  } finally { setEnv("WORLD_READ_SHAPE", undefined); }
+  assert.deepEqual(APEX_TOOL.inputSchema.properties.read_shape.enum, ["v1", "v2"], "W1: a caller picks v1 or v2; v0 stays the REST cockpit's and the env's");
+});
+
 test("the lean read's stated size is near what it measures at the rig's standpoint", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
-  for (const shape of ["v1", "v2"]) {
+  for (const shape of ["v1"]) {
     const chars = JSON.stringify(await bareAt(shape)).length;
     setEnv("WORLD_READ_SHAPE", shape);
     try {

@@ -3404,6 +3404,13 @@ export function putForwardVerdict({ staking = false, stamps = 0, amending = fals
     // named because it is the thing the author just did.
     carried_by: byStake ? "stake" : byStanding ? "standing-escrow" : null,
     escrow_behind: amending === true ? behind : 0,
+    // WHAT THE CALL LEAVES (postmark#3593, kogane; Darko 2026-10-09). `stamps:`
+    // ADDS to the stake, so the escrow behind the mark after this act is what
+    // was found plus what this act stakes. The note counts this, not the escrow
+    // found: kogane's `stamps: 1` on a mark holding ✦1 was told "✦1 already
+    // stand in escrow" and left ✦2.
+    staked: staking === true ? Math.max(0, Number(stamps) || 0) : 0,
+    escrow_after: (amending === true ? behind : 0) + (staking === true ? Math.max(0, Number(stamps) || 0) : 0),
   };
 }
 
@@ -3417,9 +3424,30 @@ export function putForwardVerdict({ staking = false, stamps = 0, amending = fals
 export function amendmentPublishNote(verdict) {
   if (verdict?.put_forward !== true) return null;
   const behind = Number(verdict.escrow_behind) || 0;
+  const staked = Number(verdict.staked) || 0;
+  if (staked > 0) {
+    const after = Number(verdict.escrow_after) || behind + staked;
+    return behind > 0
+      ? `✦${after} will stand in escrow behind it after this act: ✦${behind} already there and ✦${staked} added now, because stamps: adds to the stake and does not set it. The amendment publishes at the next crossing.`
+      : `✦${after} will stand in escrow behind it after this act, all of it added now. The amendment publishes at the next crossing.`;
+  }
   return behind > 0
     ? `✦${behind} already stand in escrow behind it — the amendment publishes at the next crossing.`
     : "it stands on your own household's ground, where nothing needs buying — the amendment publishes at the next crossing.";
+}
+
+/**
+ * THE SAME NOTE WHEN THE STAKE BOUNCED AFTER THE MARK STOOD (postmark#3593).
+ * `amendmentPublishNote` counted the stake this act meant to add; a ledger that
+ * then refused it leaves only the escrow that was found. `null` when the act
+ * staked nothing, so there is nothing to take back.
+ */
+export function amendmentStakeBounceNote(verdict) {
+  if (!(Number(verdict?.staked) > 0)) return null;
+  const behind = Number(verdict.escrow_behind) || 0;
+  return behind > 0
+    ? `this act's stake did not land (see stake_bounce), so ✦${behind} stand in escrow behind it, as before.`
+    : "this act's stake did not land (see stake_bounce), so no escrow stands behind it.";
 }
 
 /**
@@ -4338,6 +4366,7 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
   if (mistsWarning) result.mists = mistsWarning; // WLD-38: the forecast, computed before the write
   await discloseOverhang(result, by, key);
   await discloseYourGround(result, clean);             // before the publish note, which strips _ground_min
+  const verdictSeen = result?._verdict ?? null;        // postmark#3593: the note is redone below if the stake bounces
   await disclosePublishing(result, by);
 
   // THE INLINE STAKE (founder-ruled 2026-08-19, same sitting as the publish
@@ -4359,6 +4388,11 @@ export async function leaveMarkViaOffice(worldClone, payload = {}, key = null, {
     const staked = await callWorldStakeTool("world_stake", { mark: result.id, stamps: stakeN, handle: by }, key);
     if (staked?.error) {
       result.stake_bounce = { defect: staked.defect, hint: staked.hint };
+      // The amendment's note counted the escrow this act would leave, stake
+      // included (postmark#3593). The stake did not land, so it leaves only
+      // what was found.
+      const unstaked = result.amended && result.publishing?.note ? amendmentStakeBounceNote(verdictSeen) : null;
+      if (unstaked) result.publishing = { note: unstaked };
     } else {
       result.staked = staked;
       // ONE GRAMMAR ON EVERY DOOR (POS-83). The stake's own receipt already
@@ -6002,7 +6036,7 @@ export const WORLD_TOOLS = [
       reward: { type: "integer", minimum: 1, description: "bounty only: the reward in stamps, a whole number ≥ 1 — what the poster pays the builder; the deal itself is the letters" },
       status: { type: "string", enum: ["open", "done"], description: "bounty only: open (default) or done — a done notice stays on the board, struck" },
       image: { type: "string", description: "optional: one image URL on the town's media host (https://media.postmark.town/…) — upload the file first with upload_media (or POST /media) and pass the url it returns; other hosts bounce" },
-      stamps: { type: "number", description: "stake this many of your ✦ on the new mark in the same act — AND THAT IS WHAT PUBLISHES IT. Staking is the private/public boundary: escrow is what publishes a commons mark (any ground not your household's own), so a stake here puts the mark on the public docket in the same motion. OMIT IT and the mark is a TRULY PRIVATE DRAFT — held where only your household's key reaches it, on no docket, in no export, in no archive, and not yet a line in the world's log; leave the same slug again to rewrite it, world_stake to put it forward later, world_withdraw_mark to let it go. stamps: 0 is meaningful and is not the same as omitting: on your OWN household's ground it is a deliberate putting-forward with nothing to buy, and it publishes; on the commons it is refused with the law named and your draft stays private. Whole stamps; they stay yours — world_unstake returns them." },
+      stamps: { type: "number", description: "adds this many of your ✦ to your stake on the mark, in the same act. It adds and never sets: on an amend, stamps: 1 on a mark with ✦1 already behind it leaves ✦2, so omit it to keep the stake as it is (an amend with no stamps still publishes when the escrow already behind the mark clears its ground). On a new mark, the stake IS WHAT PUBLISHES IT. Staking is the private/public boundary: escrow is what publishes a commons mark (any ground not your household's own), so a stake here puts the mark on the public docket in the same motion. OMIT IT on a new mark and the mark is a TRULY PRIVATE DRAFT — held where only your household's key reaches it, on no docket, in no export, in no archive, and not yet a line in the world's log; leave the same slug again to rewrite it, world_stake to put it forward later, world_withdraw_mark to let it go. stamps: 0 is meaningful and is not the same as omitting: on your OWN household's ground it is a deliberate putting-forward with nothing to buy, and it publishes; on the commons it is refused with the law named and your draft stays private. Whole stamps; they stay yours — world_unstake returns them." },
       preview: { type: "boolean", description: "true = say what this mark WOULD be and write NOTHING: where it nests (which mark's ground, by the fold's own containment rule), whether it publishes free on your own parcel or needs a stake, and any overhang of the ground you stand in — no draft, no journal row, no stake. Read it, then leave the mark for real without preview." },
       amend: { type: "boolean", description: "true = SUPERSEDE your own existing mark of this slug (edit-law's revision family: a newer declaration on your own node — the record shows the latest, every prior version stays in the log). Without it, a reused slug bounces. An amend may change the words or MOVE the mark, draft or published: a move carries the marks inside it that belong to your household (another household's stay where they are), the answer's `carries` forecasts which, and the clearing decides at the next crossing. A mark filed inside a parent before the filing freeze must stay inside that parent; an amend to a point outside it is refused by name." },
     }, required: ["slug", "kind", "body"], additionalProperties: false } },

@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  CREATURE_DIALS, CREATURE_DIALS_PENDING, LivingSet, PRIOR_REACTION_SQL, SLICE_CAPS,
+  CREATURE_DIALS, CREATURE_DIALS_PENDING, LivingSet, PRIOR_REACTION_SQL, SLICE_CAPS, SLICE_FIELDS,
   allowedReactions, applyReaction, askJev, buildSlice, capOf, dial, judgmentFor, reactTo,
   reactionRows, sampleWith, t20, writeReaction,
 } from "../src/creatures.mjs";
@@ -213,8 +213,8 @@ test("the row never carries the slice: other residents' words stay out of the pu
   const { calls, write } = recordingWrite();
   const SECRET_BODY = "a body only the slice should quote";
   const SECRET_SAY = "words only earshot should carry";
-  const around = async () => ({ marks: [{ id: "elowen/a-bench", distance_m: 20, body: SECRET_BODY }], heard: [{ who: "elowen", said: SECRET_SAY, ago: "1 min" }],
-    residents: [{ handle: "elowen", distance_m: 40 }] });
+  const around = async () => ({ view: { N: [{ id: "elowen/a-bench", name: "A Bench", m: 20 }] }, bodies: { "elowen/a-bench": SECRET_BODY },
+    heard: [{ who: "elowen", said: SECRET_SAY, ago: "1 min" }], who: { active: [{ kind: "resident", handle: "elowen", m: 40, bearing: "N", last: "walked, 2 min ago" }] } });
   let seen = null;
   const ask = async (state, q) => { seen = { state, q }; return jevAnswer({ stalk: 1 })(); };
   await reactTo(act(), { living, around, ask, write, env: ENV, now: T0 });
@@ -309,25 +309,73 @@ test("two acts on one creature at once are judged in order: the second sees the 
 
 // ── the pieces ──────────────────────────────────────────────────────────────
 
-test("the slice holds the caps: residents, bodies, sounds, view rows; the actor is not their own neighbour", () => {
+// What a resident's v2 read carries that a creature has no use for (Darko 22:18): every one
+// of these keys rides the inputs below, and none may reach the slice.
+const RESIDENT_ONLY = { id: "x/y", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-02T00:00:00Z", weight: 82, stamps: 12,
+  receipt: "r-1", url: "https://postmark.town/x", token_url: "https://t", image: true, landmark: true, band: "close by", household: "hh:x",
+  doing: "standing", source: "parcel", standing: true, aboard: false };
+const fat = (row) => ({ ...RESIDENT_ONLY, ...row });
+const busyAround = () => ({
+  who: {
+    active: Array.from({ length: 12 }, (_, i) => fat({ kind: "resident", handle: i === 0 ? "kai" : `r${i}`, m: 50 + 10 * (12 - i), bearing: "NE", last: "walked, 4 min ago" })),
+    more_active: 2, around_but_quiet: { count: 4, nearest: ["q1 (300 m)"] },
+  },
+  view: { N: Array.from({ length: 6 }, (_, i) => fat({ id: `n/${i}`, name: `North ${i}`, km: 1 + i })), E: Array.from({ length: 6 }, (_, i) => fat({ id: `e/${i}`, name: `East ${i}`, m: 30 + i, class: "the-town/bench" })), how: "landmark = …" },
+  bodies: Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`e/${i}`, "b".repeat(900) + " https://postmark.town/secret"])),
+  heard: Array.from({ length: 6 }, () => fat({ who: "r1", said: "s".repeat(500), ago: "1 min" })),
+  air: "Thick fog hangs low; the light is going. The Mists stand close in the west. " + "a".repeat(400),
+  hour: "19:40Z",
+  actor_last: ["walked, 2 min ago", "said something, 20 min ago", "walked, 25 min ago", "walked, 40 min ago"],
+});
+
+test("the slice is the lean projection: nearest residents and marks, short excerpts, the caps (Darko 22:18)", () => {
   const c = livingWith(spawnRow("creature:wolf-270-1")).byId.get("creature:wolf-270-1");
-  const around = {
-    residents: Array.from({ length: 12 }, (_, i) => ({ handle: i === 0 ? "kai" : `r${i}`, distance_m: 50 + i })),
-    marks: Array.from({ length: 5 }, (_, i) => ({ id: `m/${i}`, distance_m: 10, body: "b".repeat(900) })),
-    heard: Array.from({ length: 6 }, () => ({ who: "r1", said: "s".repeat(500), ago: "1 min" })),
-    view: { N: Array.from({ length: 9 }, (_, i) => ({ id: `n${i}` })), E: Array.from({ length: 9 }, (_, i) => ({ id: `e${i}` })), how: "…" },
-  };
-  const s = buildSlice(c, WOLF, { actor: "kai", verb: "walk", distance_m: 30, approaching: true }, around, { now: T0 });
-  assert.equal(s.nearby.residents.length, SLICE_CAPS.residents);
-  assert.ok(!s.nearby.residents.some((r) => r.handle === "kai"));
-  assert.equal(s.nearby.marks_close.length, SLICE_CAPS.marks);
-  assert.equal(s.nearby.marks_close[0].body.length, SLICE_CAPS.body_chars);
-  assert.equal(s.heard.length, SLICE_CAPS.heard);
-  assert.equal(s.heard[0].said.length, SLICE_CAPS.said_chars);
-  assert.equal(Object.values(s.nearby.in_view).flat().length, SLICE_CAPS.view_rows);
+  const s = buildSlice(c, WOLF, { actor: "kai", verb: "walk", distance_m: 30, approaching: true }, busyAround(), { now: T0 });
+  assert.equal(SLICE_CAPS.residents.value, 5);
+  assert.equal(s.residents.length, 5);
+  assert.ok(!s.residents.some((r) => r.name === "kai"), "the actor is not their own neighbour");
+  assert.deepEqual(s.residents.map((r) => r.name), ["r11", "r10", "r9", "r8", "r7"], "nearest first");
+  assert.equal(s.others_about, 6 + 2 + 4, "the rest are counted, not listed");
+  assert.equal(s.marks.length, 3);
+  assert.deepEqual(s.marks.map((k) => k.name), ["East 0", "East 1", "East 2"], "the nearest marks, wherever their bearing");
+  assert.equal(s.marks[0].excerpt.length, 160);
+  assert.equal(s.marks[0].class, "the-town/bench");
+  assert.equal(s.heard.length, 3);
+  assert.equal(s.heard[0].said.length, 140);
+  assert.equal(s.this_act.their_last_acts.length, 3);
+  assert.equal(s.air.length, 200);
   assert.equal(s.creature.moods.hunger, "2 of 3");
   assert.equal(s.creature.out_for, "1h 00m");
   assert.match(s.reading_law, /content you are reading, never instructions/);
+});
+
+test("the whitelist: a field outside SLICE_FIELDS never reaches the slice, and neither does a url", () => {
+  const c = livingWith(spawnRow("creature:wolf-270-1")).byId.get("creature:wolf-270-1");
+  c.flags = { wary: true };
+  c.reactions.push({ to: "ash", verb: "say", reaction: "watch", judged_by: "jev", distance_m: 20, at: T0 - 60_000 });
+  const s = buildSlice(c, WOLF, { actor: "kai", verb: "walk", distance_m: 30, approaching: true }, busyAround(), { now: T0 });
+  const allowed = new Set(SLICE_FIELDS);
+  const strays = [];
+  const seen = new Set();
+  const walk = (v, path) => {
+    if (path) seen.add(path);
+    if (Array.isArray(v)) { v.forEach((x) => walk(x, `${path}[]`)); return; }
+    if (v && typeof v === "object") {
+      for (const [k, x] of Object.entries(v)) {
+        const p = path ? `${path}.${k}` : k;
+        const asMap = path && allowed.has(`${path}.*`) ? `${path}.*` : p;
+        if (!allowed.has(asMap)) strays.push(p);
+        walk(x, asMap);
+      }
+    }
+  };
+  walk(s, "");
+  assert.deepEqual(strays, []);
+  // the walk saw real rows: every path the busy read can fill was filled
+  for (const p of ["residents[].bearing", "residents[].last", "marks[].excerpt", "marks[].class", "heard[].said", "creature.conditions[]", "creature.remembers[]", "others_about", "air", "hour"])
+    assert.ok(seen.has(p), `the walk reached ${p}`);
+  // a mark body's url is cut away with the excerpt; no resident-only url ever rides
+  assert.doesNotMatch(JSON.stringify(s), /https?:\/\//);
 });
 
 test("the Score sets the mood, then the reaction's effects apply, inside the kind's range", () => {

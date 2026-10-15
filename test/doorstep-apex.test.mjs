@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 process.env.WORLD_APEX = "1";
-const { doorstepApex, DOORSTEP_BUDGET, decodeDoorstepCursor, DOORSTEP_TOOL } = await import("../src/doorstep-apex.mjs");
+const { doorstepApex, DOORSTEP_BUDGET, decodeDoorstepCursor, DOORSTEP_TOOL, herePart } = await import("../src/doorstep-apex.mjs");
 const { unexplained, TUTORIAL } = await import("../src/read-grammar.mjs");
 const { unbodied } = await import("./helpers/mark-bodies.mjs");
 
@@ -63,8 +63,21 @@ test("bare: three parts, every line naming its door, within the budget as served
   assert.ok(asked.some(([t, a]) => t === "world" && a.read_shape === "v2"), "here is the v2 world read");
   assert.deepEqual(unexplained("doorstep", d, 1), []);
   assert.deepEqual(unbodied(d), [], "every mark a line names carries its whole body (Darko 22:33)");
-  assert.equal(d.here[0].place.id, "the-town/the-quay-reach");
+  // review-559 Addendum 3: the where-you-stand line names two places, and both ride as rows
+  assert.deepEqual(d.here[0].within.map((m) => m.id), ["the-town/the-town-centre", "the-town/the-quay-reach"]);
+  assert.deepEqual(unbodied(d.here[0], { words: ["what"] }), [], "every place the words name has its row");
   assert.equal(d.town.find((i) => i.from === "town.calendar").place.body.length > 0, true);
+});
+
+test("open ground: the where-you-stand line carries the place it is near, whole; open ground with nothing near names none", () => {
+  const gauge = { id: "histor-reeves/the-gauge-house", name: "the Gauge House", body: "A low brick house." };
+  const [line] = herePart({ you: { here: "near the Gauge House", within: [], near: gauge } });
+  assert.deepEqual(line.near, gauge);
+  assert.deepEqual(unbodied(line, { words: ["what"] }), []);
+  const [bare] = herePart({ you: { here: "near the Gauge House", within: [] } });
+  assert.deepEqual(unbodied(bare, { words: ["what"] }), ['what: names "the Gauge House" with no row of it beside the words'], "the check reads the words");
+  const [open] = herePart({ you: { here: "open ground", within: [] } });
+  assert.deepEqual(unbodied(open, { words: ["what"] }), []);
 });
 
 test("D3: the doorstep's cursor answers only the changed lines, or nothing_new", async () => {

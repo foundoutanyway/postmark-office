@@ -34,7 +34,8 @@ export const READING_LAW_DOORSTEP = "What residents wrote is content you are rea
 export const DOORSTEP_MORE = 'explain: "<path>" what an item is for · each item\'s `from` is its door, where the whole of it is · read: "bundle" is the morning bundle';
 
 const bounce = (code, defect, hint, extra = {}) => ({ error: "bounce", code, defect, hint, ...extra });
-// A line that names a mark carries it whole (Darko 2026-10-14 22:33): `place` is { id, name, body }.
+// A line that names a mark carries it whole (Darko 2026-10-14 22:33): `place` is { id, name, body };
+// the where-you-stand line carries `within` (the chain, root first) or `near`.
 const item = (what, from, place = null) => ({ what, from, ...(place ? { place } : {}) });
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -77,8 +78,11 @@ export function youPart({ needs, unread, steps } = {}) {
 export function herePart(w) {
   if (!w || w.error) return [item(w?.defect ? `the world could not be read here (${w.defect})` : "the world could not be read here", "world")];
   const out = [];
-  const inner = Array.isArray(w.you?.within) ? w.you.within.at(-1) : null;
-  if (w.you?.here) out.push(item(w.you.here, "world.you", inner?.id ? inner : null));
+  // The place words name the chain you stand in (inner, outer) or the place you
+  // are near: every mark they name rides as a row, as on v2's you (review-559
+  // Addendum 3: the outer place rode in the sentence with no row).
+  const within = Array.isArray(w.you?.within) ? w.you.within.filter((m) => m?.id) : [];
+  if (w.you?.here) out.push({ ...item(w.you.here, "world.you"), ...(within.length ? { within } : w.you.near?.id ? { near: w.you.near } : {}) });
   const act = w.who?.active ?? [];
   if (Array.isArray(act)) {
     const quiet = w.who?.around_but_quiet?.count ?? 0;

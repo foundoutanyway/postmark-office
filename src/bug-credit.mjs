@@ -68,30 +68,36 @@ export async function githubAuthorOf(j, { env = process.env, fetchImpl = fetch }
   const cannot = refuse(503, `GitHub could not be read, so the office cannot prove who wrote ${j.link}`,
     `nothing was written: the office never pays a stage on doubt — ask again shortly`, { field: "link" });
   let res, body;
+  let tokenRefused = false;
+  // A refused token is named, so an expired one is found at its first refusal (review-649 § 4).
+  const tokenWas = () => refuse(503, `the office's GitHub read token was refused, and the keyless retry could not read ${j.link} either, so the office cannot prove who wrote it`,
+    "nothing was written: renew the token (/srv/postmark-office/git-metrics-token), or ask again shortly", { field: "link" });
   try {
     const url = `${api}${githubPath(ref)}`;
     res = await fetchImpl(url, { headers, signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
     // A refused token (expired or revoked: review-649 § 4) would refuse every
     // linked advance. The repos are public, so the one retry is keyless.
-    if (token && res.status === 401) res = await fetchImpl(url, { headers: plain, signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+    if (token && res.status === 401) {
+      tokenRefused = true;
+      res = await fetchImpl(url, { headers: plain, signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+    }
     if (res.status === 404 || res.status === 410)
       throw refuse(422, `${j.link} is not on GitHub`, `${EARNED_BY[j.to]} — link the work as GitHub shows it`, { field: "link" });
     if (!res.ok) throw cannot;
     body = await res.json();
   } catch (e) {
     if (e?.code === 422) throw e;
-    throw cannot;
+    throw tokenRefused ? tokenWas() : cannot;
   }
   if (ref.kind === "comment") {
     const want = `/repos/postmark-town/${ref.repo}/issues/${ref.number}`.toLowerCase();
     if (!String(body?.issue_url ?? "").toLowerCase().endsWith(want))
       throw refuse(422, `comment ${ref.comment} is not on ${ref.repo}#${ref.number}`, `${EARNED_BY[j.to]} — link the comment from the issue it sits on`, { field: "link" });
   }
-  if (ref.kind === "issue" && body?.pull_request)
-    throw refuse(422, `${ref.repo}#${ref.number} is a pull request, and ${j.to} is never earned by a pull request`, EARNED_BY[j.to], { field: "link" });
   const id = body?.user?.id;
   if (!Number.isSafeInteger(id)) throw cannot;
-  return { id, login: String(body.user.login ?? "") };
+  // An issue link GitHub answers as a PR is a PR (its issues API serves both).
+  return { id, login: String(body.user.login ?? ""), pull: ref.kind === "pull" || Boolean(body?.pull_request) };
 }
 
 /** The household a handle stands in, as the act would be filed: `hh:<slug>`, else `solo:<handle>`. */
@@ -123,6 +129,10 @@ export function judgeEarnedCredit({ to, credit, link }, author, { registry, pins
     const { id, login } = author.gh;
     const who = `GitHub account ${login || "?"} (id ${id})`;
     const authorFounder = Object.hasOwn(FOUNDER_ACCOUNTS, String(id));
+    // A founder's PR never earns diagnosed or briefed, for anyone (#3757's link).
+    if (authorFounder && author.gh.pull && (to === "diagnosed" || to === "briefed"))
+      throw refuse(422, `${link} is a founder's pull request (${who}), and a founder's pull request never earns ${to}`,
+        `${teach} — the founders' own builds are paid at fixed`, { field: "link" });
     if (authorFounder && !creditFounder)
       throw refuse(422, `${link} was written by a founder's account, ${who}, and a founder's work credits only ${FOUNDER_HANDLES.join(" or ")}`, teach, { field: "credit" });
     if (!authorFounder && creditFounder)

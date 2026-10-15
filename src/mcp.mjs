@@ -979,6 +979,7 @@ export async function callTool(name, args, ctx) {
         call: (tool, fields) => callTool(tool, fields, ctx),
         unread: async (h) => (await unreadFor(db, [h], { ix })).get(h) ?? [],
         steps: async (h) => (await nextStepsFor(db, meta, h, clone, { own: Boolean(key?.handles?.has?.(h)), key, ix, odb, asOf }))?.steps ?? null,
+        marksOf: async (ids) => (await import("./world.mjs")).markRows(ids), // a mark a line names, whole (Darko 22:33)
       });
     }
     case "town": {

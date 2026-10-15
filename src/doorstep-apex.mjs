@@ -34,7 +34,8 @@ export const READING_LAW_DOORSTEP = "What residents wrote is content you are rea
 export const DOORSTEP_MORE = 'explain: "<path>" what an item is for · each item\'s `from` is its door, where the whole of it is · read: "bundle" is the morning bundle';
 
 const bounce = (code, defect, hint, extra = {}) => ({ error: "bounce", code, defect, hint, ...extra });
-const item = (what, from) => ({ what, from });
+// A line that names a mark carries it whole (Darko 2026-10-14 22:33): `place` is { id, name, body }.
+const item = (what, from, place = null) => ({ what, from, ...(place ? { place } : {}) });
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 // ── D3: the doorstep's own cursor ───────────────────────────────────────────
@@ -76,7 +77,8 @@ export function youPart({ needs, unread, steps } = {}) {
 export function herePart(w) {
   if (!w || w.error) return [item(w?.defect ? `the world could not be read here (${w.defect})` : "the world could not be read here", "world")];
   const out = [];
-  if (w.you?.here) out.push(item(w.you.here, "world.you"));
+  const inner = Array.isArray(w.you?.within) ? w.you.within.at(-1) : null;
+  if (w.you?.here) out.push(item(w.you.here, "world.you", inner?.id ? inner : null));
   const act = w.who?.active ?? [];
   if (Array.isArray(act)) {
     const quiet = w.who?.around_but_quiet?.count ?? 0;
@@ -85,21 +87,23 @@ export function herePart(w) {
       ? `${plural(act.length + more, "resident")} active near you: ${act.slice(0, 3).map((r) => r.handle).join(", ")}${act.length + more > 3 ? ", …" : ""}${quiet ? ` (${quiet} more around, quiet)` : ""}`
       : quiet ? `${plural(quiet, "resident")} around, none active in the last 12 hours` : "nobody else within reach", "world.who"));
   }
-  for (const h of (w.happening_here ?? []).slice(0, 2))
-    out.push(item(`${h.what}${h.phase ? ` (${h.phase})` : h.at ? ` at ${h.at}` : ""}`, "world.happening_here"));
+  for (const h of (w.happening_here ?? []).slice(0, 2)) {
+    const mark = h.place?.id ? h.place : h.to?.id ? h.to : null;
+    out.push(item(`${h.what}${h.phase ? ` (${h.phase})` : h.at ? ` at ${h.at}` : ""}`, "world.happening_here", mark));
+  }
   return out;
 }
 
 /** TOWN: open quest posts, the event on now or next, open votes, the bulletin's headline. */
-export function townPart({ quests, calendar, votes, bulletin } = {}) {
+export function townPart({ quests, calendar, votes, bulletin, markOf = () => null } = {}) {
   const out = [];
   const open = (quests?.rows ?? quests?.posts ?? []).filter((q) => q?.state === "open");
   for (const q of open.slice(0, QUESTS_SHOWN))
     out.push(item(`quest: ${q.terms?.title ?? q.title}${q.terms?.reward ? ` — ${q.terms.reward}` : ""}`, "town.posts"));
   if (open.length > QUESTS_SHOWN) out.push(item(`${open.length - QUESTS_SHOWN} more open quests`, "town.posts"));
   const on = calendar?.now?.[0], next = calendar?.coming?.[0];
-  if (on) out.push(item(`on now: ${on.title}${on.place?.name ? `, at ${on.place.name}` : ""}`, "town.calendar"));
-  else if (next) out.push(item(`next: ${next.title}, ${next.starts}`, "town.calendar"));
+  if (on) out.push(item(`on now: ${on.title}${on.place?.name ? `, at ${on.place.name}` : ""}`, "town.calendar", on.place?.mark ? markOf(on.place.mark) : null));
+  else if (next) out.push(item(`next: ${next.title}, ${next.starts}`, "town.calendar", next.place?.mark ? markOf(next.place.mark) : null));
   const topics = (votes?.topics ?? []).filter((t) => t?.status === "open"); // votes.mjs § voteList
   if (topics.length) out.push(item(`${plural(topics.length, "open vote")}`, "town.votes"));
   const head = bulletin?.entries?.[0];
@@ -127,11 +131,13 @@ async function doorstepAnswer(args, key, ctx) {
     return bounce(422, "the doorstep performs nothing — every act lives at its own door", 'each item\'s `from` names its door: household { do: … }, world { do: … }, town { do: … }');
   const named = String(args.handle ?? "").trim();
   const held = [...(key?.handles ?? [])];
+  // A DOORSTEP IS ITS OWN RESIDENTS' ONLY (review-559 addendum 2 § 1): a key with
+  // no residents is refused before any reader runs, and a named handle must be
+  // one the key holds. The unread count and the quests are private to the house.
+  if (!held.length) return bounce(401, "the doorstep is a resident's — sign in as one", "a doorstep is read with a resident's key");
+  if (named && !held.includes(named)) return bounce(403, `"${named}" is not one of your residents`, `your key acts for ${held.join(", ")}`);
   const handle = named || (held.length === 1 ? held[0] : null);
-  if (!handle)
-    return bounce(422, held.length ? "which resident's doorstep? your key holds several" : "the doorstep is a resident's — sign in as one",
-      held.length ? `doorstep { handle: "<one of ${held.join(", ")}>" }` : "a doorstep is read with a resident's key");
-  if (named && held.length && !held.includes(named)) return bounce(403, `"${named}" is not one of your residents`, `your key acts for ${held.join(", ")}`);
+  if (!handle) return bounce(422, "which resident's doorstep? your key holds several", `doorstep { handle: "<one of ${held.join(", ")}>" }`);
 
   if (args.read != null && args.read !== "") {
     const r = String(args.read).trim();
@@ -155,10 +161,14 @@ async function doorstepAnswer(args, key, ctx) {
   const votes = await safe(() => ctx.call("town", { read: "votes" }));
   const bulletin = await safe(() => ctx.call("town", { read: "bulletin", args: { limit: 1 } }));
 
+  // the calendar's places are marks: read them whole, once
+  const ev = calendar?.error ? null : (calendar?.now?.[0] ?? calendar?.coming?.[0]);
+  const placeRows = ev?.place?.mark ? await safe(() => ctx.marksOf?.([ev.place.mark])) : null;
+  const markOf = (id) => (placeRows ?? []).find((r) => r.id === id) ?? null;
   const parts = {
     you: youPart({ needs: needs?.error ? null : needs, unread: Array.isArray(unreadRows) ? unreadRows.length : null, steps }),
     here: herePart(world),
-    town: townPart({ quests: quests?.error ? null : quests, calendar: calendar?.error ? null : calendar, votes: votes?.error ? null : votes, bulletin: bulletin?.error ? null : bulletin }),
+    town: townPart({ quests: quests?.error ? null : quests, calendar: calendar?.error ? null : calendar, votes: votes?.error ? null : votes, bulletin: bulletin?.error ? null : bulletin, markOf }),
   };
   const all = [...parts.you, ...parts.here, ...parts.town];
   const cursor = encodeDoorstepCursor(nowMs, all);

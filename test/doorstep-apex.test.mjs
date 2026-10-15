@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 process.env.WORLD_APEX = "1";
 const { doorstepApex, DOORSTEP_BUDGET, decodeDoorstepCursor, DOORSTEP_TOOL } = await import("../src/doorstep-apex.mjs");
 const { unexplained, TUTORIAL } = await import("../src/read-grammar.mjs");
+const { unbodied } = await import("./helpers/mark-bodies.mjs");
 
 const KEY = { handles: new Set(["wright"]) };
 const T0 = Date.parse("2026-10-15T00:08:00Z");
@@ -24,10 +25,11 @@ function doors(over = {}) {
   const answers = {
     "household:needs-you": { stances_awaiting: { total: 55, rows: [] }, set_downs_awaiting: { rows: [] }, stakes_at_risk: { rows: [] }, key_asks: { rows: [] } },
     "household:doorstep": { handle: "wright", segments: ["mail"], mail: { total: 543 } },
-    "world:": { you: { here: "the Quay Reach, the Town Centre" }, who: { active: [{ handle: "elowen" }, { handle: "little-bird" }], around_but_quiet: { count: 71 } },
-      happening_here: [{ what: "Halloween in Postmark", kind: "event", phase: "underway" }] },
+    "world:": { you: { here: "the Quay Reach, the Town Centre", within: [{ id: "the-town/the-town-centre", name: "the Town Centre", body: "The lamplit quay where mail-houses lean over wet stone steps and stamping rooms glow amber — the one heart every address in Postmark bears from." }, { id: "the-town/the-quay-reach", name: "the Quay Reach", body: "The mail's own water at Ferry's crossing — the reach between the quays, where the stone steps go down until the water takes them." }] },
+      who: { active: [{ handle: "elowen" }, { handle: "little-bird" }], around_but_quiet: { count: 71 } },
+      happening_here: [{ what: "Halloween in Postmark", kind: "event", phase: "underway", place: { id: "the-town/the-quay-reach", name: "the Quay Reach", body: "The mail's own water at Ferry's crossing — the reach between the quays, where the stone steps go down until the water takes them." } }] },
     "town:posts": { posts: [{ state: "open", terms: { title: "Read v2 feedback", reward: "5 stamps, once per household" } }, { state: "closed", terms: { title: "old" } }] },
-    "town:calendar": { now: [{ title: "Halloween in Postmark", place: { name: "the Quay Reach" } }], coming: [] },
+    "town:calendar": { now: [{ title: "Halloween in Postmark", place: { mark: "the-town/the-quay-reach", name: "the Quay Reach" } }], coming: [] },
     "town:votes": { topics: [{ topic: "a", status: "open" }, { topic: "b", status: "closed" }] },
     "town:bulletin": { entries: [{ title: "Release notes — every bug its own card (2026-w42)" }] },
     ...over,
@@ -38,6 +40,8 @@ function doors(over = {}) {
       now: () => T0,
       call: async (tool, args) => { asked.push([tool, args]); return answers[`${tool}:${args.read ?? ""}`] ?? { error: "bounce", defect: "unknown" }; },
       unread: async () => Array.from({ length: 537 }, (_, i) => ({ id: i })),
+      marksOf: async (ids) => ids.map((id) => ({ id, name: "the Quay Reach", body: "The mail's own water at Ferry's crossing — the reach between the quays, where the stone steps go down until the water takes them." })),
+      unreadCalls: 0,
       steps: async () => [{ kind: "quest", title: "Reach out", what: "Send a letter to 5 different residents. Resets daily. (0/5 today)" }, { kind: "paper", title: "x", what: "y" }],
     },
   };
@@ -58,6 +62,9 @@ test("bare: three parts, every line naming its door, within the budget as served
   assert.ok(JSON.stringify(d, null, 1).length <= DOORSTEP_BUDGET, `served ${JSON.stringify(d, null, 1).length}`);
   assert.ok(asked.some(([t, a]) => t === "world" && a.read_shape === "v2"), "here is the v2 world read");
   assert.deepEqual(unexplained("doorstep", d, 1), []);
+  assert.deepEqual(unbodied(d), [], "every mark a line names carries its whole body (Darko 22:33)");
+  assert.equal(d.here[0].place.id, "the-town/the-quay-reach");
+  assert.equal(d.town.find((i) => i.from === "town.calendar").place.body.length > 0, true);
 });
 
 test("D3: the doorstep's cursor answers only the changed lines, or nothing_new", async () => {
@@ -81,6 +88,19 @@ test("D1: read: \"bundle\" is the morning bundle untouched; nothing else is read
   assert.equal((await doorstepApex({ read: "mail" }, KEY, doors().ctx)).code, 422);
   assert.equal((await doorstepApex({ do: "send" }, KEY, doors().ctx)).code, 422);
   assert.equal((await doorstepApex({ explain: "town" }, KEY, doors().ctx)).explains, "town");
+});
+
+test("a doorstep is its own residents' only: no key, or a key with no residents, is refused before any reader runs (review-559 addendum 2 § 1)", async () => {
+  for (const key of [null, { visitor: true, handles: new Set() }, { berth: true, slug: "newcomer" }]) {
+    const { ctx, asked } = doors();
+    let read = 0;
+    ctx.unread = async () => { read++; return []; };
+    ctx.steps = async () => { read++; return []; };
+    const r = await doorstepApex({ handle: "elowen" }, key, ctx);
+    assert.equal(r.code, 401, JSON.stringify(key));
+    assert.equal(read, 0, "no reader ran");
+    assert.equal(asked.length, 0, "no door was asked");
+  }
 });
 
 test("D4: per handle — a key with several names one, and a handle not on the key is refused", async () => {

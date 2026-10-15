@@ -166,7 +166,8 @@ export function whoBlock(crowd = [], active = new Map(), { nowMs = Date.now(), u
     });
     const next = offset + rows.length;
     return { total: crowd.length, active: busy.length, shown: rows.length, offset, rows,
-      ...(next < crowd.length ? { next_offset: next } : {}), complete: next >= crowd.length, ...(unavailable ? { active_unavailable: unavailable } : {}) };
+      ...(next < crowd.length ? { next_offset: next, more_note: `${crowd.length - next} more within reach: read: "who", args: { offset: ${next} }` } : {}),
+      complete: next >= crowd.length, ...(unavailable ? { active_unavailable: unavailable } : {}) };
   }
   const out = {
     active: busy.slice(0, ACTIVE_CAP).map((r) => {

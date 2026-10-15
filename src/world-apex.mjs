@@ -76,6 +76,7 @@ import {
   worldCanon,
   actsHaveNonce,
   markCentreOf, // POS-632 PR-3: the live lines are placed by their anchors, as the save places them
+  heardAt, // POS-632 W4: the shared ear, no listen mark
   markRows, // POS-632: marks shown with their whole bodies (Darko 22:33)
   placeMarksAt, // POS-632: the marks place words name, as rows (v2 you.near; PR-4 every place line)
 } from "./world.mjs";
@@ -2547,6 +2548,18 @@ async function apexRead(args, key, ctx = {}) {
       const ids = new Set([...spine.map((m) => m.id), ...(seen._fov?.rows ?? []).map((r) => r.id)]);
       events = eventsHere(await calendarAtOffice({}, { now: nowMs }), { at: { x: answer.standpoint?.x, y: answer.standpoint?.y }, ids });
     } catch { events = []; }
+    // HEARD (W4): the shared ear at your standpoint, marking no one present.
+    // On a read worker it hears from the earshot the main thread snapshotted at
+    // admission (ctx.earshot); a worker with none says so rather than hearing
+    // its own stale window.
+    let heard = null;
+    try {
+      const { isMainThread } = await import("node:worker_threads");
+      if (isMainThread || ctx.earshot) {
+        heard = await heardAt({ x: answer.standpoint?.x, y: answer.standpoint?.y },
+          { cap: 3, exclude: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null, ...(ctx.earshot ? { snapshot: ctx.earshot } : {}) });
+      }
+    } catch { heard = null; }
     // The marks this read names beyond the view, each with its whole body, read
     // once: world-read-v2.mjs § markIdsShown is the one list shapeV2 bodies.
     const shownIds = markIdsShown({ spine, events, departures, frame, standpoint: answer.standpoint, happened });
@@ -2556,6 +2569,7 @@ async function apexRead(args, key, ctx = {}) {
     const here = await placeWords(at);
     const near = /^near /.test(here ?? "") ? (await placeMarksAt(at).catch(() => ({}))).near ?? null : null;
     const shaped = shapeV2({
+      heard,
       deep,
       marks,
       canUnavailable: store.unavailable ? `${store.unavailable} — none can be read: the class layer lives in the world store` : null,

@@ -1555,6 +1555,21 @@ const sayPush = createSayPush({ voices, nearbyMany: projectedNearbyMany });
 /** The office's waiters, for the stats a surface may print and for tests. */
 export const sayPushStats = () => ({ open: sayPush.open, ...sayPush.stats, room: { ...voices.room.stats } });
 
+/**
+ * THE EAR AT A POINT (POS-632 W4) — the one function the world read v2's
+ * `heard` and a creature's world read (POS-637, src/creatures.mjs) both call.
+ *
+ *   heardAt({ x, y }, { aboard?, since?, cap?, exclude?, snapshot? })
+ *     → [{ handle, said, ago, distance, at_ms }], newest last
+ *
+ * It marks NOBODY present (voices.mjs § heardAt). `snapshot` is an
+ * earshotSnapshot() the main thread took at admission, for a read answered on
+ * a read worker; omitted, the voices window is read where this runs.
+ */
+export const heardAt = (at, opts = {}) => voices.heardAt(at, opts);
+/** The earshot as plain data, taken on the main thread and handed to a read worker (W4). */
+export const earshotSnapshot = () => voices.earshotSnapshot();
+
 export async function worldSay(args = {}, key = null) {
   { const fz = worldFreezeBounce(); if (fz) return fz; }
   // A berth speaks from the quay (the arrival ruling, 2026-08-15): emissions

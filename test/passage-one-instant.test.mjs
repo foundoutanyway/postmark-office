@@ -13,8 +13,9 @@
 //
 // Also pinned: with no `deps.now`, the ferry is the ferry's clock, not the
 // unix-half-day count (about 40,000 crossings ahead) the doors used to fall
-// back to; and enter_on_arrival's `now` keeps its arrival as the ferry while
-// the iso is still the write.
+// back to; and a `now` that names its own instant keeps it as the ferry while
+// the iso is still the write. (enter_on_arrival used that to date rows ahead;
+// since WLD-5 only its pre-check does, and the pre-check writes nothing.)
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -92,13 +93,13 @@ test("ONE INSTANT — an exit's ferry and iso are one reading, taken after the r
   assert.equal(s.ferry, ferryOf(t));
 });
 
-test("ONE INSTANT — enter_on_arrival keeps its arrival as the ferry, and the write as the iso", SKIP, async () => {
+test("ONE INSTANT — a `now` that names its own instant keeps it as the ferry, and the write as the iso", SKIP, async () => {
   const ARRIVAL = 250.1234;
   const o = await slowOffice({ now: () => ARRIVAL });
   await enterViaOffice(CLONE, { mark: SHIP, handle: "postmaster", accept: true }, key("postmaster"), o.deps);
   const { lines, t } = o.writes[0];
   const s = stampsOf(lines[0]);
-  assert.equal(s.ferry, ARRIVAL, "the ferry is the arrival the walk door named");
+  assert.equal(s.ferry, ARRIVAL, "the ferry is the instant the deps named");
   assert.equal(s.iso, new Date(t).toISOString(), "the iso is when the row was written");
 });
 

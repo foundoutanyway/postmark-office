@@ -252,7 +252,7 @@ export function resolvedEntry({ actId, actor, household }) {
  * again. A drop that cannot be decided stays unresolved and is asked next
  * tick. Then the cursor moves up to just below the oldest drop still
  * unresolved (or to the newest drop read), never past one. `now` is
- * injectable. Answers `{ restored, filed, skipped, held, line, work }` —
+ * injectable. Answers `{ restored, filed, skipped, held, failed, line, work }` —
  * `work` counts what this tick actually read and decided.
  */
 export async function recoverOrphanDrops(client, { now = Date.now(), crossing = null, olderThanMs = TICK_MS } = {}) {
@@ -266,9 +266,15 @@ export async function recoverOrphanDrops(client, { now = Date.now(), crossing = 
     upTo = (await client.query(NEWEST_DROP_SQL, [UNIT_ACTION.drop, from])).rows[0]?.id ?? null;
     await client.query("COMMIT");
   } catch (e) { await client.query("ROLLBACK").catch(() => {}); throw e; }
-  const restored = [], filed = [], skipped = [], held = [];
+  // `held` is a guard's designed bounce (an `err.defect`): undecided, asked
+  // again next tick. `failed` is a write the store would not take (a raw
+  // error, or a filed drop whose resolution could not be recorded): it stops the
+  // cursor too, but a write that fails every tick is a failure, not a pending
+  // decision, and the keep tick reads its segment as refused (POS-627, Wright
+  // 10-14, review-612 F2).
+  const restored = [], filed = [], skipped = [], held = [], failed = [];
   const work = { from, to: upTo ?? from, read: 0, decided: 0 };
-  if (upTo == null) return finish({ client, from, through: from, restored, filed, skipped, held, work, crossing });
+  if (upTo == null) return finish({ client, from, through: from, restored, filed, skipped, held, failed, work, crossing });
   const { rows } = await client.query(DELTA_SQL, [UNIT_ACTION.drop, from, upTo, UNIT_ACTION.dropUndone, UNIT_ACTION.dropResolved]);
   work.read = rows.length;
   let lowest = null; // the oldest drop still unresolved after this tick
@@ -299,22 +305,23 @@ export async function recoverOrphanDrops(client, { now = Date.now(), crossing = 
           filed.push({ act: d.id, ...err.filed, resolution: ins[0]?.id ?? null });
         } catch (e2) {
           await client.query("ROLLBACK").catch(() => {});
-          held.push({ act: d.id, why: `filed, but its resolution could not be recorded: ${String(e2?.message ?? e2).slice(0, 120)}` });
+          failed.push({ act: d.id, why: `filed, but its resolution could not be recorded: ${String(e2?.message ?? e2).slice(0, 120)}` });
           stillOpen(d.id);
         }
         continue;
       }
       await client.query("ROLLBACK").catch(() => {});
       if (err?.undoneAlready) { skipped.push({ act: d.id, why: "already undone" }); continue; }
-      held.push({ act: d.id, why: String(err?.defect ?? err?.message ?? err).slice(0, 160) });
+      if (err?.defect) held.push({ act: d.id, why: String(err.defect).slice(0, 160) });
+      else failed.push({ act: d.id, why: String(err?.message ?? err).slice(0, 160) });
       stillOpen(d.id);
     }
   }
   const through = lowest == null ? upTo : String(BigInt(lowest) - 1n);
-  return finish({ client, from, through, restored, filed, skipped, held, work, crossing });
+  return finish({ client, from, through, restored, filed, skipped, held, failed, work, crossing });
 }
 
-async function finish({ client, from, through, restored, filed, skipped, held, work, crossing }) {
+async function finish({ client, from, through, restored, filed, skipped, held, failed = [], work, crossing }) {
   work.cursor = from;
   if (BigInt(through) > BigInt(from)) {
     const effect = `the office tick has settled every set-down through act ${through}`;
@@ -327,8 +334,9 @@ async function finish({ client, from, through, restored, filed, skipped, held, w
     ...(filed.length ? [`${filed.length} resolved as filed (${filed.map((f) => `act ${f.act}`).join(", ")})`] : []),
     ...(skipped.length ? [`${skipped.length} skipped (${skipped.map((s) => `act ${s.act}: ${s.why}`).join("; ")})`] : []),
     ...(held.length ? [`${held.length} undecided, asked again next tick (${held.map((h) => `act ${h.act}: ${h.why}`).join("; ")})`] : []),
+    ...(failed.length ? [`${failed.length} failed (${failed.map((h) => `act ${h.act}: ${h.why}`).join("; ")})`] : []),
   ].join(" · ");
-  return { restored, filed, skipped, held, line, work };
+  return { restored, filed, skipped, held, failed, line, work };
 }
 
 // ── THE CARRY COUNT, DURABLY ────────────────────────────────────────────────

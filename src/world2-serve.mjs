@@ -42,7 +42,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { readDraftClaims, keyHouseholdOf, withHousehold, claimRowsForSlug } from "./world2-claims.mjs";
+import { readDraftClaims, keyHouseholdOf, withHousehold, claimRowsForSlug, lastAmendedRow } from "./world2-claims.mjs";
 import { receiptFrom } from "./mark-receipt.mjs";
 import { sessionKeysVia, resolveHouse, houseRowsVia } from "./household-deriver.mjs";
 
@@ -597,9 +597,17 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
       }
     } catch { carried = null; }
   }
+  // THE LAST AMEND (POS-612): the same `amend_carried` row 1.0's reader asks
+  // for (world2-claims.mjs § lastAmendedRow), so the two doors answer one fact.
+  let last_amended = null, amends_unread = null;
+  if (published) {
+    try { last_amended = await lastAmendedRow(id, { p }); }
+    catch (e) { last_amended = null; amends_unread = e?.code === "42P01" ? "075 not applied" : "the store did not answer"; }
+  }
   const receipt = receiptFrom({
     id, canon: published ? { id } : null, published_at: carried,
     claims, settlement: settled?.current ?? null, site_pin: null,
+    last_amended, amends_unread,
     settled_window: windowKnown ? settled.settledWindow : null,
   });
   if (carriedUndecidable) {
@@ -611,7 +619,9 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
   }
   if (receipt.status === "published" && !carried) {
     Object.assign(receipt, { crossing: null, settlement_sha: null,
-      says: "published — the store holds this mark standing; which settlement carried it is not recorded in the store (see tree_only)" });
+      says: receipt.last_amended
+        ? `published, last amended at S${receipt.last_amended.s} — the store holds this mark standing; which settlement first carried it is not recorded in the store (see tree_only)`
+        : "published — the store holds this mark standing; which settlement carried it is not recorded in the store (see tree_only)" });
   }
   let read_at = null;
   try {

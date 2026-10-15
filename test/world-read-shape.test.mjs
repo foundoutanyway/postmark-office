@@ -305,6 +305,8 @@ test("PR-4: investigate: on a resident rides the bare read, v1 and v2, with publ
     assert.equal(r.investigated?.kind, "resident", `investigated rides ${shape ?? "v0"}`);
     assert.deepEqual(r.investigated.recent.acts.map((a) => a.did), ["said something"], "the say as the fact of it; the note never");
     assert.ok(!JSON.stringify(r.investigated).includes("note-to-self"));
+    const { unbodied } = await import("./helpers/mark-bodies.mjs");
+    assert.deepEqual(unbodied(r.investigated), [], "every mark under investigated carries its body");
   }
   assert.ok(!("investigated" in await v2At()), "absent when not asked");
   assert.equal((await worldApex({ handle: WHO, investigate: KOGANE_PARCEL }, KEY, {})).code, 422, "a mark is mark:'s");

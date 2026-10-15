@@ -77,6 +77,7 @@ import {
   actsHaveNonce,
   markCentreOf, // POS-632 PR-3: the live lines are placed by their anchors, as the save places them
   markRows, // POS-632: marks shown with their whole bodies (Darko 22:33)
+  innermostPlaceAt, // POS-632 PR-4: a place line carries its innermost place, whole
 } from "./world.mjs";
 // v2.2 §B — the frame block and the three-shelf delta. Both compose the one
 // standpoint derivation; neither derives a position of its own.
@@ -1838,6 +1839,8 @@ async function investigateOn(args, oriented) {
       return holdingsOf(await storeAttachmentRows(), h);
     },
     placeOf: (r) => composeAnchor({ anchor: r.at_anchor, dx: r.at_dx, dy: r.at_dy }, centreOf),
+    innermost: (p) => innermostPlaceAt(p),
+    marksOf: (ids) => markRows(ids),
   });
 }
 

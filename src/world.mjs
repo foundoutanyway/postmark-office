@@ -2110,6 +2110,16 @@ export async function markRows(ids = [], w = null) {
   return out;
 }
 
+/** The innermost place standing at a point, as a mark row with its whole body, or null on open ground. */
+export async function innermostPlaceAt({ x, y } = {}) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const w = await world();
+  const { verbs } = await mods();
+  const ground = (w.marks ?? []).filter((m) => m?.class !== "thing");
+  const inner = verbs.containmentChain({ x, y }, ground).filter((m) => m.id !== WORLD_FRAME).at(-1);
+  return inner ? { id: inner.id, name: markName(inner, w.marks ?? []), body: inner.body ?? "" } : null;
+}
+
 /** THE PRESENCE CHAIN, for v2 (POS-632): v2's `who` splits everyone within reach, uncapped and without place words. */
 export const crowdPresence = () => ({ limit: Infinity });
 

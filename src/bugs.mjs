@@ -409,6 +409,12 @@ export function judgeRecreditFields(fields, roll) {
   if (fields.credit === undefined)
     throw refuse(422, "a recredit names whom it credits", `credit: the resident whose work earned ${to} — ${RECREDIT_HOW}`, { field: "credit" });
   const credit = judgeHandleField("credit", fields.credit, roll);
+  // Never a founder as the new credit (review-3842-578 § 2, Wright 10-15): a
+  // recredit moves a resident's paid stage, and burns it, to the resident whose
+  // work earned it. Moving one to a founder is Darko's Call, by hand.
+  if (FOUNDER_HANDLES.includes(credit))
+    throw refuse(422, `a recredit never credits a founder (${credit})`,
+      `a correction gives a stage to the resident whose work earned it; moving one to ${FOUNDER_HANDLES.join(" or ")} is Darko's Call, never a recredit`, { field: "credit" });
   const e = judgeEarnedLink(to, fields.link);
   const note = typeof fields.note === "string" ? fields.note.trim() : "";
   if (!note)
@@ -422,7 +428,8 @@ export function judgeRecreditFields(fields, roll) {
  * Judge a recredit against the bug. `acts` are the post's advance and recredit
  * acts, oldest first; `paid` is what the chain's stage lines paid,
  * Map("<post>/<stage>" → n), or null when the chain can't be read. Returns
- * `{ was, n }`: the stage's credit now, and what it paid.
+ * `{ was, n }`: the stage's credit now, and what the chain says it paid (null
+ * when the chain doesn't say; the stage pass reads the ledger either way).
  */
 export function judgeRecredit(r, prev, acts, paid) {
   const id = prev.id;
@@ -440,13 +447,12 @@ export function judgeRecredit(r, prev, acts, paid) {
   const was = payloadOfAct(adv).credit ?? null;
   if (r.credit === was)
     throw refuse(422, `${r.to} on "${id}" already credits ${was}`, "a recredit names someone else: the resident whose work earned the stage", { field: "credit" });
-  if (paid === null)
-    throw refuse(503, `the office cannot read the stamp chain, so it cannot see what ${r.to} on "${id}" paid`, "nothing was written — ask again shortly");
-  const n = paid.get(`${id}/${r.to}`);
-  if (!n)
-    throw refuse(409, `${r.to} on "${id}" has paid no one yet`,
-      "a recredit corrects a paid stage: the tick pays within about fifteen minutes, so wait for its line; a meep's stage or a capped one paid nothing, and has nothing to correct", { field: "to" });
-  return { was, n };
+  // WHAT THE STAGE PAID IS THE PASS'S TO READ (review-3842-578 § 1). Prod's
+  // store holds no stamp chain yet (STAMP_LINES is off), so a door that gated
+  // on it refused every recredit. The act records what the chain says when it
+  // can (`n`, else null), and the stage pass reads the town's ledger itself:
+  // it corrects only a stage line paid to `was`, and holds anything else.
+  return { was, n: paid?.get(`${id}/${r.to}`) ?? null };
 }
 
 // ── THE REVEAL AT SHIP (Keemin, 2026-09-26, on POS-236) ─────────────────────

@@ -368,9 +368,14 @@ export async function main(argv = process.argv.slice(2), { facts = null, spawn =
   } else { log(text.trimEnd()); if (rcText) log(rcText.trimEnd()); }
   if (!apply) { log("[bug-stage-plan] the plan only — nothing written, nothing signed. Review it, then --apply."); return 0; }
 
+  // The two binds stand apart: a recredit plan this pass can't read holds the
+  // corrections, never the stage pay beside them.
   let parsed, rcParsed;
-  try { parsed = parseStagePlan(text); rcParsed = parseRecreditPlan(rcText, { recorded: rcRows.length > 0 }); } catch (e) { err(e.message); return 1; }
-  if (!parsed.owed.length && !rcParsed.owed.length) { if (!argv.includes("--quiet")) log("[bug-stage-plan] nothing owed"); return 0; }
+  try { parsed = parseStagePlan(text); } catch (e) { err(e.message); return 1; }
+  let rcBroken = false;
+  try { rcParsed = parseRecreditPlan(rcText, { recorded: rcRows.length > 0 }); }
+  catch (e) { err(e.message); rcParsed = { owed: [], claimed: 0 }; rcBroken = true; }
+  if (!parsed.owed.length && !rcParsed.owed.length) { if (!argv.includes("--quiet") && !rcBroken) log("[bug-stage-plan] nothing owed"); return rcBroken ? 1 : 0; }
   const date = arg("--date", argv) ?? townDate(Date.now());
   const refused = [];
   for (const r of parsed.owed) {
@@ -395,7 +400,7 @@ export async function main(argv = process.argv.slice(2), { facts = null, spawn =
       rcRefused.push(r);
     }
   }
-  if (refused.length || rcRefused.length) {
+  if (refused.length || rcRefused.length || rcBroken) {
     err(`[bug-stage-plan] ${parsed.owed.length - refused.length} of ${parsed.owed.length} stage line(s) and ${rcParsed.owed.length - rcRefused.length} of ${rcParsed.owed.length} correction(s) written; the town refused the rest — each stays owed, and the next reviewed pass names it again`);
     return 1;
   }

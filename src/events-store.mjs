@@ -662,6 +662,11 @@ async function recreditBug(fields, key, id, { now, env, roll }) {
   if (before) judgeRecredit(r, before.prev, before.acts, before.paid);
   const gh = before ? await githubAuthorOf(r, { env }) : null;
   return write(async (client) => {
+    // ONE RECREDIT PER STAGE, UNDER CONCURRENCY (review-3842-578 § 3). A
+    // recredit updates no posts row, so nothing else serialises two writers:
+    // the bug's row is locked first, and a second recredit of the stage waits,
+    // then reads the first one's act and is refused.
+    await client.query("SELECT id FROM posts WHERE id = $1 AND class = $2 FOR UPDATE", [id, BUG_CLASS]);
     const prev = await bugRow(client, id);
     if (!prev) throw refuse(404, `no bug "${id}"`, 'town { read: "posts", args: { class: "bug" } } lists them');
     const { was, n } = judgeRecredit(r, prev, await stageActs(client), (await postPaymentsVia(client)).paid);
@@ -670,8 +675,8 @@ async function recreditBug(fields, key, id, { now, env, roll }) {
     const actId = await insertAct(client, bugActRow({ action: ACT_RECREDIT, actor: hand, object: id, payload, now }));
     return { post: id, act_id: actId, hand, stage: r.to, recredit: true, was, credit: r.credit, stamps: n, link: r.link,
       receipt: `re-credited: ${id}'s ${r.to} from ${was} to ${r.credit} by ${hand}'s hand; ${r.to} points at ${r.link}. `
-        + `The reviewed stage pass pays ${r.credit} ${n} stamps (post:${id}/${r.to}-recredit) and burns the ${n} it paid ${was}, together or not at all; this act moves no stamps. `
-        + `If ${was} no longer holds ${n} liquid stamps, the pass holds it and says so.`,
+        + `The reviewed stage pass reads the town's ledger: it pays ${r.credit} what ${r.to}'s line paid ${was}${n ? ` (${n} stamps, by the office's chain)` : ""} (post:${id}/${r.to}-recredit) and burns that mint, together or not at all; this act moves no stamps. `
+        + `If the ledger holds no such line paid to ${was}, or ${was} no longer holds its amount in liquid stamps, the pass holds the correction and says why.`,
       read: bugReadHint(id) };
   }, env);
 }

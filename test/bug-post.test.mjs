@@ -204,6 +204,12 @@ function bugTables() {
         .filter((r) => r.seq > Number(p[0]) && r.seq <= Number(p[1]) && like(p[2]).test(r.canonical));
       return { rows, rowCount: rows.length };
     }],
+    // the recredit's row lock (review-3842-578 § 3): the bug's row, FOR UPDATE
+    [/^SELECT id FROM posts WHERE id = \$1 AND class = \$2 FOR UPDATE$/i, (q, p) => {
+      const r = posts.get(p[0]);
+      const hit = r && r.class === p[1];
+      return { rows: hit ? [{ id: r.id }] : [], rowCount: hit ? 1 : 0 };
+    }],
     [/^SELECT json FROM town_letters WHERE id = \$1$/i, (q, p) => {
       const l = LETTERS.get(p[0]);
       return l ? { rows: [{ json: JSON.stringify(l) }], rowCount: 1 } : { rows: [], rowCount: 0 };
@@ -979,7 +985,7 @@ test("14 · #3757: briefed re-credited to kinofire with Kino's letter is its own
   const before = JSON.stringify(t.posts.get(KINO_BUG));
   const r = await rc({ credit: "kinofire", link: KINO_PLAN });
   assert.deepEqual([r.stage, r.recredit, r.was, r.credit, r.stamps, r.link], ["briefed", true, "wright", "kinofire", 10, KINO_PLAN]);
-  assert.match(r.receipt, /^re-credited: kinofire\/false-sweep-warning's briefed from wright to kinofire by wright's hand; .*The reviewed stage pass pays kinofire 10 stamps \(post:kinofire\/false-sweep-warning\/briefed-recredit\) and burns the 10 it paid wright, together or not at all; this act moves no stamps/);
+  assert.match(r.receipt, /^re-credited: kinofire\/false-sweep-warning's briefed from wright to kinofire by wright's hand; .*The reviewed stage pass reads the town's ledger: it pays kinofire what briefed's line paid wright \(10 stamps, by the office's chain\) \(post:kinofire\/false-sweep-warning\/briefed-recredit\) and burns that mint, together or not at all; this act moves no stamps/);
   const act = t.pen.rows().at(-1);
   assert.deepEqual([act.class, act.action, act.actor, act.object], ["bug", "recredit", "wright", KINO_BUG]);
   assert.deepEqual(JSON.parse(act.payload), { post: KINO_BUG, to: "briefed", was: "wright", credit: "kinofire", link: KINO_PLAN, note: NOTE, paid: 10, hand: "wright" });
@@ -1018,16 +1024,44 @@ test("14 · a second recredit of the same stage is refused, whoever it names", a
   await refusedNothing(t, rc({ credit: "wayward-archivist", link: KINO_PLAN }), 409, /^"kinofire\/false-sweep-warning"'s briefed was already re-credited, to kinofire one recredit per post and stage, ever/);
 });
 
-test("14 · a stage never passed, a skipped stage, and a stage that has paid no one yet are each refused, and say what to do instead", async () => {
+test("14 · a stage never passed and a skipped stage are refused, and say what to do instead", async () => {
   const t = await paidToWright();
   await refusedNothing(t, advanceAtTown({ post: KINO_BUG, to: "fixed", recredit: true, credit: "kinofire", link: pull("kinofire"), note: NOTE }, WRIGHT, { now: NOW, roll: ROLL }), 409,
     /^"kinofire\/false-sweep-warning" never passed fixed it stands briefed; advance it to fixed, crediting the right resident, rather than re-crediting/);
   await refusedNothing(t, advanceAtTown({ post: KINO_BUG, to: "diagnosed", recredit: true, credit: "kinofire", link: KINO_PLAN, note: NOTE }, WRIGHT, { now: NOW, roll: ROLL }), 409,
     /never passed diagnosed diagnosed was skipped, and a skipped stage paid no one: there is nothing to re-credit/);
-  // the line not written yet (the chain holds the bug's confirmed, not its briefed): nothing to correct, so wait for it
+});
+
+test("14 · (review-3842-578 § 1) the door never gates on the store's stamp chain: with no chain (prod today) or a chain without the stage's line, the act records with paid null, and the stage pass reads the ledger", async () => {
+  // prod: the store holds no stamp_lines at all
+  const t = await paidToWright();
   resetChainMemo();
-  t.ledger.lines = [stageLine("kinofire", 2, KINO_BUG, "confirmed")];
-  await refusedNothing(t, rc({ credit: "kinofire", link: KINO_PLAN }), 409, /^briefed on "kinofire\/false-sweep-warning" has paid no one yet a recredit corrects a paid stage/);
+  t.ledger.lines = null;
+  const r = await rc({ credit: "kinofire", link: KINO_PLAN });
+  assert.equal(r.stamps, null);
+  assert.match(r.receipt, /it pays kinofire what briefed's line paid wright \(post:kinofire\/false-sweep-warning\/briefed-recredit\) and burns that mint/);
+  assert.match(r.receipt, /If the ledger holds no such line paid to wright, or wright no longer holds its amount in liquid stamps, the pass holds the correction and says why/);
+  assert.equal(JSON.parse(t.pen.rows().at(-1).payload).paid, null, "the act claims an amount the office could not read");
+  // a chain that holds the bug's confirmed but not its briefed: recorded the same way
+  const t2 = await paidToWright();
+  resetChainMemo();
+  t2.ledger.lines = [stageLine("kinofire", 2, KINO_BUG, "confirmed")];
+  assert.equal((await rc({ credit: "kinofire", link: KINO_PLAN })).stamps, null);
+  assert.equal(t2.pen.rows().at(-1).action, "recredit");
+});
+
+test("14 · (review-3842-578 § 3) the recredit locks the bug's row before it reads the stage's acts, so a second recredit of the stage waits and is refused", async () => {
+  const t = await paidToWright();
+  const from = t.pen.asked().length;
+  await rc({ credit: "kinofire", link: KINO_PLAN });
+  const asked = t.pen.asked().slice(from);
+  const lock = asked.findIndex((q) => /^SELECT id FROM posts WHERE id = \$1 AND class = \$2 FOR UPDATE$/i.test(q));
+  const insert = asked.findIndex((q) => /^INSERT INTO acts/i.test(q));
+  assert.ok(lock >= 0, "the recredit took no row lock");
+  const actsRead = asked.findIndex((q, i) => i > lock && /FROM acts WHERE class = \$1 AND object = ANY\(\$2\)/i.test(q));
+  assert.ok(actsRead > lock && insert > actsRead, `the lock (${lock}) must come before the acts read (${actsRead}) and the insert (${insert}) in the write`);
+  // the second, after the first committed, reads the first's act and is refused
+  await refusedNothing(t, rc({ credit: "wayward-archivist", link: KINO_PLAN }), 409, /was already re-credited, to kinofire/);
 });
 
 test("14 · the recredit's own law: wright and keemin only, a note, recredit true, no ladder fields, an earned stage, a new credit; each refusal writes nothing", async () => {
@@ -1039,8 +1073,20 @@ test("14 · the recredit's own law: wright and keemin only, a note, recredit tru
   await refusedNothing(t, rc({ credit: "kinofire", link: KINO_PLAN, grade: "light" }), 422, /^a recredit takes no grade it pays the stage again at exactly what the stage paid/);
   await refusedNothing(t, advanceAtTown({ post: KINO_BUG, to: "confirmed", recredit: true, credit: "kinofire", note: NOTE }, WRIGHT, { now: NOW, roll: ROLL }), 422,
     /^only diagnosed, briefed, fixed are re-credited/);
-  await refusedNothing(t, rc({ credit: "wright", link: comment("wright") }), 422, /^briefed on "kinofire\/false-sweep-warning" already credits wright a recredit names someone else/);
   await refusedNothing(t, rc({ link: KINO_PLAN }), 422, /^a recredit names whom it credits/);
+});
+
+test("14 · (review-3842-578 § 2) a recredit never credits a founder, whoever wrote the link; and it names someone other than the stage's credit", async () => {
+  const t = await paidToWright();
+  for (const founder of ["wright", "keemin"])
+    await refusedNothing(t, rc({ credit: founder, link: comment(founder) }), 422,
+      new RegExp(`^a recredit never credits a founder \\(${founder}\\) a correction gives a stage to the resident whose work earned it; moving one to wright or keemin is Darko's Call, never a recredit`));
+  // a resident's stage, re-credited to the same resident
+  const k = await kinoBug();
+  resetChainMemo();
+  await adv({ to: "briefed", grade: "light", credit: "kinofire", link: KINO_PLAN });
+  k.ledger.lines = [stageLine("kinofire", 10, KINO_BUG, "briefed")];
+  await refusedNothing(k, rc({ credit: "kinofire", link: KINO_PLAN }), 422, /^briefed on "kinofire\/false-sweep-warning" already credits kinofire a recredit names someone else/);
 });
 
 // ── 15 · the GitHub read's token, and the links it may follow (POS-649 follow-ups, review-649 §§ 4 and 6) ──
@@ -1099,4 +1145,11 @@ test("15 · a repo name that is a dot, or starts with one, is no link the office
   for (const link of ["https://github.com/postmark-town/../pull/5", "https://github.com/postmark-town/./pull/5", "https://github.com/postmark-town/.hidden/pull/5"])
     assert.throws(() => judgeEarnedLink("fixed", link), (e) => e.code === 422 && /fixed's link is not one the office can read/.test(e.defect), link);
   assert.equal(judgeEarnedLink("fixed", "https://github.com/postmark-town/postmark.town-site/pull/5").ref.repo, "postmark.town-site", "a dot inside a name stays legal");
+});
+
+test("15 · (review-3842-578 nit) an idea award's label is never a bug stage's correction: the town would refuse its line forever", async () => {
+  const { judgeAward } = await import("../src/ideas.mjs");
+  for (const label of ["diagnosed-recredit", "briefed-recredit", "fixed-recredit"])
+    assert.throws(() => judgeAward({ to: "finn", stamps: 5, label }, new Set(["finn"])), (e) => e.code === 422 && /is a bug stage's correction, and an award's label is never one/.test(e.defect), label);
+  assert.equal(judgeAward({ to: "finn", stamps: 5, label: "confirmed-recredit" }, new Set(["finn"])).label, "confirmed-recredit", "only the three corrected stages are reserved");
 });

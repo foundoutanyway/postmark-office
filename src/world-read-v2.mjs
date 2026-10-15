@@ -344,6 +344,8 @@ export function shapeV2(p) {
     ...(p.handle ? { handle: p.handle } : {}),
     at: { x: Math.round(sp.x), y: Math.round(sp.y) },
     ...(p.here ? { here: p.here } : {}),
+    // open ground: the place the words say you are near, whole
+    ...(p.near ? { near: p.near } : {}),
     within: spine.map((m) => p.marks?.get(m.id) ?? { id: m.id, name: m.id, body: m.body ?? "" }),
     holding: p.holdings ?? [],
     ...(p.stancesAwaiting ? { waiting_on_you: { stances: p.stancesAwaiting, read: 'household { read: "stances" }' } } : {}),

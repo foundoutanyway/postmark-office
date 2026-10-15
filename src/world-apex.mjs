@@ -77,7 +77,7 @@ import {
   actsHaveNonce,
   markCentreOf, // POS-632 PR-3: the live lines are placed by their anchors, as the save places them
   markRows, // POS-632: marks shown with their whole bodies (Darko 22:33)
-  innermostPlaceAt, // POS-632 PR-4: a place line carries its innermost place, whole
+  placeMarksAt, // POS-632: the marks place words name, as rows (v2 you.near; PR-4 every place line)
 } from "./world.mjs";
 // v2.2 §B — the frame block and the three-shelf delta. Both compose the one
 // standpoint derivation; neither derives a position of its own.
@@ -1839,7 +1839,7 @@ async function investigateOn(args, oriented) {
       return holdingsOf(await storeAttachmentRows(), h);
     },
     placeOf: (r) => composeAnchor({ anchor: r.at_anchor, dx: r.at_dx, dy: r.at_dy }, centreOf),
-    innermost: (p) => innermostPlaceAt(p),
+    placeMarks: (p) => placeMarksAt(p),
     marksOf: (ids) => markRows(ids),
   });
 }
@@ -2549,6 +2549,10 @@ async function apexRead(args, key, ctx = {}) {
     // once: world-read-v2.mjs § markIdsShown is the one list shapeV2 bodies.
     const shownIds = markIdsShown({ spine, events, departures, frame, standpoint: answer.standpoint, happened });
     const marks = new Map((await markRows(shownIds).catch(() => [])).map((r) => [r.id, r]));
+    // On open ground the words name the place you are near: it rides as a row too.
+    const at = { x: answer.standpoint?.x, y: answer.standpoint?.y };
+    const here = await placeWords(at);
+    const near = /^near /.test(here ?? "") ? (await placeMarksAt(at).catch(() => ({}))).near ?? null : null;
     const shaped = shapeV2({
       deep,
       marks,
@@ -2557,7 +2561,8 @@ async function apexRead(args, key, ctx = {}) {
       handle: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null,
       standpoint: answer.standpoint,
       spine,
-      here: await placeWords({ x: answer.standpoint?.x, y: answer.standpoint?.y }),
+      here,
+      near,
       holdings,
       stancesAwaiting: stances?.stances_awaiting ?? 0,
       note: oriented.note,

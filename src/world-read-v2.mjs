@@ -31,8 +31,10 @@
 //   G5  only public acts are named, a say as "said something".
 //   G6  who.active is capped at 8, nearest first; the rest are counted.
 //   BODIES (Darko 2026-10-14 22:33): every mark shown carries its WHOLE body —
-//       each view row, each spine mark on `you.within`, an event's place and a
-//       departure's destination. Size is saved by rows, never by bodies.
+//       each view row, each spine mark on `you.within`, an event's place, a
+//       departure's destination, and every mark the aboard block, the seat,
+//       the arrival lines and the to_you events name (§ markIdsShown). Size is
+//       saved by rows, never by bodies.
 //   G7  happening_here: the events on now here, the vessel's departures, the
 //       Mists where you stand in them; empty is omitted.
 //   G8  each act's line is the Darko-approved one-liner without its fields.
@@ -267,6 +269,66 @@ export function happeningBlock({ events = [], departures = null, mists = null, m
   return rows.length ? rows : null;
 }
 
+// ── the marks the conditional blocks name ───────────────────────────────────
+//
+// The aboard block (world-apex.mjs § frameBlock, with world-ride.mjs §
+// rideBlockFrom spread in), the seat, the arrival lines and the to_you events
+// each name marks by id. v2 shows every one of them whole (Darko 22:33), so the
+// apex reads their bodies with the rest (`markIdsShown` → markRows) and shapeV2
+// says each one through `whole`. The two lists are one: a field added here is
+// read there (review-555, 10-14: six were bare, and no test filled the blocks).
+
+/** The aboard block's top-level fields that name a mark. */
+const FRAME_MARKS = ["aboard", "vehicle", "entered_via"];
+
+/** Every mark id the aboard block names. */
+const frameIds = (f) => !f ? [] : [
+  ...FRAME_MARKS.map((k) => f[k]),
+  f.moves_next?.toward, f.ride?.origin, f.ride?.to, f.arrived?.at,
+  ...(f.can_ride_to ?? []).map((s) => s.mark),
+];
+
+/** The to_you event fields that name a mark: a claim's mark, a carrier, a thing held. */
+const EVENT_MARKS = ["mark", "carrier", "thing"];
+
+/**
+ * Every mark id shapeV2 shows beyond the view rows (which carry their own
+ * bodies): the spine, the events' places, the departures' destinations, the
+ * aboard block, the seat's ground, the arrival lines and the to_you events.
+ */
+export function markIdsShown({ spine = [], events = [], departures = null, frame = null, standpoint = null, happened = null } = {}) {
+  const ids = [
+    ...spine.map((m) => m.id),
+    ...events.map((e) => e.place?.mark),
+    ...(departures?.next ?? []).map((d) => d.toward),
+    ...frameIds(frame),
+    standpoint?.seat?.ground, standpoint?.arrival?.mark, standpoint?.enters_on_arrival?.mark,
+    ...(happened?.to_you?.events ?? []).flatMap((e) => EVENT_MARKS.map((k) => e[k])),
+  ];
+  return [...new Set(ids.filter((id) => typeof id === "string" && id))];
+}
+
+/** The aboard block with each mark it names said whole. */
+export function aboardBlock(f, whole) {
+  const out = { ...f };
+  for (const k of FRAME_MARKS) if (f[k]) out[k] = whole(f[k]);
+  if (f.moves_next?.toward) out.moves_next = { ...f.moves_next, toward: whole(f.moves_next.toward) };
+  if (f.ride) out.ride = { ...f.ride, ...(f.ride.origin ? { origin: whole(f.ride.origin) } : {}), ...(f.ride.to ? { to: whole(f.ride.to) } : {}) };
+  if (f.arrived?.at) out.arrived = { ...f.arrived, at: whole(f.arrived.at) };
+  if (f.can_ride_to) out.can_ride_to = f.can_ride_to.map((s) => ({ ...s, mark: whole(s.mark) }));
+  return out;
+}
+
+/** to_you with each event's mark, carrier and thing said whole. */
+const toYouWhole = (t, whole) => !t?.events ? t : {
+  ...t,
+  events: t.events.map((e) => {
+    const out = { ...e };
+    for (const k of EVENT_MARKS) if (typeof e[k] === "string" && e[k]) out[k] = whole(e[k]);
+    return out;
+  }),
+};
+
 /**
  * The v2 answer. `p` is what the apex already computed plus the three v2
  * reads; see the header. Key order is the read order.
@@ -275,6 +337,8 @@ export function shapeV2(p) {
   const sp = p.standpoint ?? {};
   const spine = p.spine ?? [];
   const inner = spine.at(-1) ?? null;
+  // A mark shown is shown whole; one the body read missed still says its id and an empty body, never a bare id.
+  const whole = (id) => (typeof id === "string" && id ? p.marks?.get(id) ?? { id, name: id, body: "" } : id);
   const you = {
     ...(p.handle ? { handle: p.handle } : {}),
     at: { x: Math.round(sp.x), y: Math.round(sp.y) },
@@ -283,17 +347,17 @@ export function shapeV2(p) {
     holding: p.holdings ?? [],
     ...(p.stancesAwaiting ? { waiting_on_you: { stances: p.stancesAwaiting, read: 'household { read: "stances" }' } } : {}),
     ...(p.note != null ? { note: p.note } : {}),
-    ...(p.frame ? { aboard: p.frame } : {}),
-    ...(sp.seat ? { seat: sp.seat } : {}),
-    ...(sp.arrival ? { arrival: sp.arrival } : {}),
-    ...(sp.enters_on_arrival ? { enters_on_arrival: sp.enters_on_arrival } : {}),
+    ...(p.frame ? { aboard: aboardBlock(p.frame, whole) } : {}),
+    ...(sp.seat ? { seat: { ...sp.seat, ground: whole(sp.seat.ground) } } : {}),
+    ...(sp.arrival ? { arrival: { ...sp.arrival, mark: whole(sp.arrival.mark) } } : {}),
+    ...(sp.enters_on_arrival ? { enters_on_arrival: { ...sp.enters_on_arrival, mark: whole(sp.enters_on_arrival.mark) } } : {}),
   };
   const now = {
     crossing: p.crossing,
     ...(p.nextCrossingIn ? { next_crossing_in: p.nextCrossingIn } : {}),
     ...(p.air ? { air: p.air } : {}),
     ...(p.canon ? { canon: p.canon } : {}),
-    happened: happenedGlance(p.happened, { sinceCrossing: p.sinceCrossing }),
+    happened: happenedGlance(p.happened ? { ...p.happened, to_you: toYouWhole(p.happened.to_you, whole) } : p.happened, { sinceCrossing: p.sinceCrossing }),
   };
   const markOf = (id) => p.marks?.get(id) ?? null;
   const happening = happeningBlock({ events: p.events, departures: p.departures, mists: p.mists, markOf });

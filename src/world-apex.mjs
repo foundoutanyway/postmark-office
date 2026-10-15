@@ -72,6 +72,7 @@ import {
   worldStateRaw,
   worldCanon,
   actsHaveNonce,
+  markRows, // POS-632: marks shown with their whole bodies (Darko 22:33)
 } from "./world.mjs";
 // v2.2 §B — the frame block and the three-shelf delta. Both compose the one
 // standpoint derivation; neither derives a position of its own.
@@ -2440,7 +2441,14 @@ async function apexRead(args, key, ctx = {}) {
       const ids = new Set([...spine.map((m) => m.id), ...(seen._fov?.rows ?? []).map((r) => r.id)]);
       events = eventsHere(await calendarAtOffice({}, { now: nowMs }), { at: { x: answer.standpoint?.x, y: answer.standpoint?.y }, ids });
     } catch { events = []; }
+    // The marks this read names beyond the view (the spine, the events' places,
+    // the departures' destinations), each with its whole body, read once.
+    const shownIds = [...spine.map((m) => m.id), ...events.map((e) => e.place?.mark).filter(Boolean),
+      ...((departures?.next ?? []).map((d) => d.toward).filter(Boolean))];
+    const marks = new Map((await markRows([...new Set(shownIds)]).catch(() => [])).map((r) => [r.id, r]));
     return shapeV2({
+      marks,
+      canUnavailable: store.unavailable ? `${store.unavailable} — none can be read: the class layer lives in the world store` : null,
       events,
       handle: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null,
       standpoint: answer.standpoint,
@@ -3410,6 +3418,8 @@ async function worldApexAnswer(args, key, ctx) {
   const v2Asked = (args.read_shape ?? ctx.readShape) === "v2";
   if (args.diagnostics != null && !v2Asked)
     return bounce(422, "diagnostics: rides the v2 read", "world { read_shape: \"v2\", diagnostics: true } — the read you have today carries the engine's notes already");
+  if (v2Asked && args.telling === true)
+    return bounce(422, "v2 tells no prose — it is the compact glance", "the telling rides the v1 read: world { read_shape: \"v1\", telling: true }");
   if (v2Asked && args.cards != null && args.cards !== "")
     return bounce(422, "v2 has no cards: dial — each act is already one line", "world { read: \"<act>\" } is one act's full card; cards: sizes the v1 read (omit read_shape)");
   // ── THE TWO `since` CLOCKS, ONE WORD EACH (POS-70; office PR #48) ─────────
@@ -3471,7 +3481,7 @@ const APEX_INPUT_SCHEMA = { type: "object", properties: {
     beside: { type: "string", description: "with as: \"human\" — which of your residents the human stands beside (optional; omitted, the house chooses the housemate it is awake at). Must be one of your own key's residents." },
     telling: { type: "boolean", description: "true adds the prose telling of what you see; omit for the cheap structural read" },
     // POS-632 (W1): the shape, per call. It wins over the office's default.
-    read_shape: { type: "string", enum: [...READ_SHAPES], description: "read_shape: \"v2\" is the new compact read, opt-in this week: you, now (with what happened since the last crossing), view (what fills your eyes, by bearing), who (who is active near you), happening_here, can (each act in one line) and law, in about 5k characters. Omit it for the read you get today." },
+    read_shape: { type: "string", enum: ["v1", "v2"], description: "read_shape: \"v2\" is the new compact read, opt-in this week: you, now (with what happened since the last crossing), view (what fills your eyes, by bearing), who (who is active near you), happening_here, can (each act in one line) and law, in about 5k characters. Omit it for the read you get today." },
     diagnostics: { type: "boolean", description: "with read_shape: \"v2\", also bring the engine's notes (the full law block, presence's disclosures). v1 always carries them." },
     cards: { type: "string", enum: ["names"], description: "cards: \"names\" shrinks `actions` to each act's name, one line, and how it reached you — for a repeat read by a caller who has already learnt the acts. Which acts are afforded is identical either way; only how much is said about each changes. Omit for the full cards, which is the default and carries the fields a caller needs to compose an act." },
   },

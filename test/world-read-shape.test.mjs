@@ -27,7 +27,7 @@ const CLONE = worldClone();
 const HAVE_CLONE = Boolean(CLONE) && existsSync(join(CLONE, "WORLD", "world-state.json"));
 const WHY_NOT = CLONE ? `the world clone at ${CLONE} is missing world-state.json` : NO_WORLD;
 
-const ENV = { WORLD_PRESENCE: undefined, WORLD_APEX: "1", WORLD2_PG: "1", WORLD2_PG_URL: "postgres://world-read-shape/none", WORLD_READ_SHAPE: undefined };
+const ENV = { WORLD_MOVEMENT_V2: undefined, WORLD_PRESENCE: undefined, WORLD_APEX: "1", WORLD2_PG: "1", WORLD2_PG_URL: "postgres://world-read-shape/none", WORLD_READ_SHAPE: undefined };
 const saved = Object.fromEntries(Object.keys(ENV).map((k) => [k, process.env[k]]));
 const setEnv = (k, v) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
 for (const [k, v] of Object.entries(ENV)) setEnv(k, v);
@@ -188,9 +188,31 @@ test("v2: no url anywhere in a bare read, and a picture is a flag", { skip: !HAV
   for (const [b, rows] of Object.entries(v2.view)) if (b !== "how") for (const r of rows) if ("image" in r) assert.equal(r.image, true);
 });
 
-test("v2: at most 5k characters as the MCP door serves it, at the rig's standpoint", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+// THE SIZE BUDGET IS PENDING DARKO (POS-632). The ≤5K was the build's target;
+// Darko's 22:33 ruling put every mark's whole body back (bodies win; the lever is
+// rows, never bodies), and the budget went to his Call. 8K holds CI meaningful
+// meanwhile, on Wright's word.
+test("v2: within the budget as the MCP door serves it, at the rig's standpoint (8k, pending Darko on POS-632)", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
   const served = JSON.stringify(await v2At(), null, 1).length; // mcp.mjs § the answer's text block
-  assert.ok(served <= 5000, `v2 served is ${served} characters`);
+  assert.ok(served <= 8000, `v2 served is ${served} characters`);
+});
+
+test("v2: every mark the bare read shows carries its whole body (Darko 22:33)", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const { unbodied } = await import("./helpers/mark-bodies.mjs");
+  const v2 = await v2At();
+  assert.deepEqual(unbodied(v2), []);
+  for (const [b, rows] of Object.entries(v2.view)) if (b !== "how") for (const r of rows) assert.equal(typeof r.body, "string", r.id);
+  assert.ok(v2.you.within.length >= 1 && v2.you.within.every((m) => typeof m.body === "string" && m.name));
+});
+
+test("G4: with no cursor, happened reaches back to the previous crossing's start (review-555 § 2)", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  setEnv("WORLD_MOVEMENT_V2", "1");
+  try {
+    const v2 = await v2At();
+    const { currentCrossing } = await import("../src/crossings.mjs");
+    assert.equal(v2.now.happened.since, `crossing ${currentCrossing() - 1}`);
+    assert.ok(!v2.now.happened.unavailable, "the delta is read with movement on");
+  } finally { setEnv("WORLD_MOVEMENT_V2", undefined); }
 });
 
 test("v2: with presence off, who says so rather than showing an empty room", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
@@ -205,6 +227,7 @@ test("v2: diagnostics rides v2 only, and cards: has nothing to size there", { sk
   assert.ok(!("diagnostics" in await v2At()));
   assert.equal((await worldApex({ handle: WHO, diagnostics: true }, KEY, {})).code, 422);
   assert.equal((await v2At({ cards: "names" })).code, 422);
+  assert.equal((await v2At({ telling: true })).code, 422, "v2 tells no prose; v1 does (review-555 nit)");
 });
 
 test("v2: the per-call shape wins over the process's, both ways; v1 is the bytes it was", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
@@ -269,7 +292,7 @@ test("v2: the description says the v2 read and its size, and read_shape is on ev
   try {
     assert.match(APEX_TOOL.description, /SIZE: a bare call is the world read v2, roughly 5k characters/);
   } finally { setEnv("WORLD_READ_SHAPE", undefined); }
-  assert.deepEqual(APEX_TOOL.inputSchema.properties.read_shape.enum, ["v0", "v1", "v2"]);
+  assert.deepEqual(APEX_TOOL.inputSchema.properties.read_shape.enum, ["v1", "v2"], "W1: a caller picks v1 or v2; v0 stays the REST cockpit's and the env's");
 });
 
 test("the lean read's stated size is near what it measures at the rig's standpoint", { skip: !HAVE_CLONE && WHY_NOT }, async () => {

@@ -148,8 +148,8 @@ export function viewBlock(rows = []) {
   return { ...view, how: VIEW_HOW };
 }
 
-/** WHO: the crowd split by activity. `active` is handle → { action, at } (ms or ISO), public acts only. */
-export function whoBlock(crowd = [], active = new Map(), { nowMs = Date.now(), unavailable = null } = {}) {
+/** WHO: the crowd split by activity. `active` is handle → { action, at } (ms or ISO), public acts only. `whole` (read: "who") lists everyone, paged. */
+export function whoBlock(crowd = [], active = new Map(), { nowMs = Date.now(), unavailable = null, whole = null } = {}) {
   const isActive = (h) => {
     const a = active.get(h);
     if (!a || !PUBLIC_ACTS[a.action]) return null;
@@ -159,6 +159,19 @@ export function whoBlock(crowd = [], active = new Map(), { nowMs = Date.now(), u
   const busy = [];
   const quiet = [];
   for (const r of crowd) (isActive(r.handle) ? busy : quiet).push(r);
+  if (whole) {
+    // read: "who": everyone within reach, nearest first, the active and the quiet alike, paged
+    const { limit, offset } = whole;
+    const rows = crowd.slice(offset, offset + limit).map((r) => {
+      const a = isActive(r.handle);
+      return { kind: "resident", handle: r.handle, ...distanceOf(r.distance_m), bearing: r.bearing, band: r.band, doing: doingOf(r),
+        ...(a ? { active: true, last: `${PUBLIC_ACTS[a.action]}, ${ago(a.t, nowMs)}` } : {}) };
+    });
+    const next = offset + rows.length;
+    return { total: crowd.length, active: busy.length, shown: rows.length, offset, rows,
+      ...(next < crowd.length ? { next_offset: next, more_note: `${crowd.length - next} more within reach: read: "who", args: { offset: ${next} }` } : {}),
+      complete: next >= crowd.length, ...(unavailable ? { active_unavailable: unavailable } : {}) };
+  }
   const out = {
     active: busy.slice(0, ACTIVE_CAP).map((r) => {
       const a = isActive(r.handle);
@@ -351,7 +364,7 @@ export function shapeV2(p) {
     now,
     view: viewBlock(p.viewRows),
     // presence off or failed: say so, never an empty room (presence's own rule: absence ≠ nobody)
-    who: p.presenceUnavailable ? { unavailable: p.presenceUnavailable } : whoBlock(p.crowd, p.active, { nowMs: p.nowMs, unavailable: p.activeUnavailable }),
+    who: p.presenceUnavailable ? { unavailable: p.presenceUnavailable } : whoBlock(p.crowd, p.active, { nowMs: p.nowMs, unavailable: p.activeUnavailable, whole: p.deep?.block === "who" ? p.deep : null }),
     ...(happening ? { happening_here: happening } : {}),
     // the class layer unreadable: say so, as v1's law does, never an empty can (review-555 § 1)
     can: p.canUnavailable ? { unavailable: p.canUnavailable } : canBlock(p.entries, { pace: p.pace, handles: p.handles, standing: p.handle, humanHere: p.humanHere, notYours: p.notYours }),
@@ -364,6 +377,29 @@ export function shapeV2(p) {
     read_shape: "v2",
   };
   return out;
+}
+
+// ── read: "<block>", the deeper read of a v2 block (G9, Wright 2026-10-14) ──
+
+/**
+ * The world door's block reads: blocks with no act behind them get the
+ * block's own name (the design's § 2: "the same kind of read as mark: and
+ * find:: looking performs nothing"). Each takes its own narrowing fields.
+ */
+export const BLOCK_READS = Object.freeze({
+  view: { limit: { type: "number", description: "how many places, ranked as the glance ranks them (default 30, at most 60)" } },
+  who: { limit: { type: "number", description: "how many residents (default 50, at most 200)" }, offset: { type: "number", description: "walk past the first rows: the previous answer's next_offset" } },
+  happened: { since: { type: "number", description: "the crossing number to reach back to (default: the previous crossing)" } },
+  happening: {},
+});
+
+/** The block read's own fields, clipped to their caps. */
+export function blockFields(block, f = {}) {
+  const n = (v, d, max) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(max, Math.floor(Number(v)))) : d);
+  if (block === "view") return { block, limit: Math.max(1, n(f.limit, 30, 60)) };
+  if (block === "who") return { block, limit: Math.max(1, n(f.limit, 50, 200)), offset: n(f.offset, 0, 1e9) };
+  if (block === "happened") return { block, ...(f.since != null ? { since: Number(f.since) } : {}) };
+  return { block };
 }
 
 /** The pace dial in km an hour, from the resident class's record (the walk line names it). */

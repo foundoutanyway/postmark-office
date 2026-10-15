@@ -241,6 +241,35 @@ test("v2: the per-call shape wins over the process's, both ways; v1 is the bytes
   assert.ok(!("read_shape" in await worldApex({ handle: WHO }, KEY, {})), "a REST call that does not ask is v0, as ever");
 });
 
+test("G9: read: \"view\" is the whole view, ranked as the glance ranks it, with more seats", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const glance = await v2At();
+  const whole = await worldApex({ handle: WHO, read: "view", args: { limit: 30 } }, KEY, {});
+  assert.equal(whole.read, "view");
+  const ids = (v) => Object.entries(v).filter(([k]) => k !== "how").flatMap(([, rows]) => rows.map((r) => r.id));
+  assert.ok(ids(whole.view).length >= ids(glance.view).length, "at least the glance's places");
+  for (const id of ids(glance.view)) assert.ok(ids(whole.view).includes(id), `${id} is in the whole view too`);
+  assert.doesNotMatch(JSON.stringify(whole), URL_RE);
+  assert.equal((await worldApex({ handle: WHO, read: "view", args: { bogus: 1 } }, KEY, {})).code, 422, "a field the read does not take is refused by name");
+  const { unbodied } = await import("./helpers/mark-bodies.mjs");
+  assert.deepEqual(unbodied(whole), [], "every place in the whole view carries its whole body (Darko 22:33)");
+  assert.deepEqual(unbodied(await worldApex({ handle: WHO, read: "happening" }, KEY, {})), [], "an event's place and a departure's destination too");
+});
+
+test("G9: read: \"who\", \"happened\" and \"happening\" answer their block whole, under its own name", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  for (const block of ["who", "happened", "happening"]) {
+    const r = await worldApex({ handle: WHO, read: block }, KEY, {});
+    assert.equal(r.read, block);
+    assert.ok(block in r, `${block} rides under its own name`);
+    assert.deepEqual(Object.keys(r).sort(), ["read", block, "reading_law"].sort());
+  }
+});
+
+test("explain: every key of the real v2 read at the rig's standpoint has a row", { skip: !HAVE_CLONE && WHY_NOT }, async () => {
+  const { unexplained } = await import("../src/read-grammar.mjs");
+  assert.deepEqual(unexplained("world", await v2At(), 2), []);
+  assert.deepEqual(unexplained("world", await v2At({ diagnostics: true }), 2), []);
+});
+
 test("v1: the description says the lean read and its size, and cards takes \"full\"", () => {
   for (const shape of ["v1"]) {
     setEnv("WORLD_READ_SHAPE", shape);

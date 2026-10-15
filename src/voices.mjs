@@ -592,13 +592,18 @@ export function createVoices({
   // MEMOISED FOR EARSHOT_MEMO_MS (review-559 on #564): the main thread takes one
   // for every handed v2 bare read, so a burst of reads shares one walk of the
   // window. A voice landing inside the second is heard on the next read.
+  // The PROMISE is what is kept, from the moment the walk starts, so a burst
+  // that lands before the first walk resolves shares it too (review-559 on
+  // #564, the creatures' law-cache pattern). A walk that fails is forgotten.
   let memo = null;
-  async function earshotSnapshot() {
+  function earshotSnapshot() {
     const t = now();
-    if (memo && t - memo.t >= 0 && t - memo.t < EARSHOT_MEMO_MS) return memo;
-    const snap = await snapshot(t, { clusters: false });
-    memo = { t, audible: snap.audible.map(({ v, x, y, structural }) => ({ v: { handle: v.handle, text: v.text, at: v.at, x: v.x, y: v.y, aboard: Boolean(v.aboard) }, x, y, structural })) };
-    return memo;
+    if (memo && t - memo.t >= 0 && t - memo.t < EARSHOT_MEMO_MS) return memo.p;
+    const p = snapshot(t, { clusters: false }).then((snap) => ({ t, audible: snap.audible.map(({ v, x, y, structural }) => ({ v: { handle: v.handle, text: v.text, at: v.at, x: v.x, y: v.y, aboard: Boolean(v.aboard) }, x, y, structural })) }));
+    const mine = { t, p };
+    memo = mine;
+    p.catch(() => { if (memo === mine) memo = null; });
+    return p;
   }
 
   // `how` is "spoke" or "listened" — the same touch either way, because the dial

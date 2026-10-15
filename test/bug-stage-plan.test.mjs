@@ -82,7 +82,7 @@ const github = createServer((req, res) => {
 });
 await new Promise((ok) => github.listen(0, "127.0.0.1", ok));
 process.env.GITHUB_API_URL = `http://127.0.0.1:${github.address().port}`;
-test.after(() => github.close());
+github.unref();   // never holds the run open; closing it in an after hook ran early under --test-name-pattern
 test.afterEach(() => uninstallActsPen());
 
 /** Post a bug by `who` and confirm it by a hand; returns its id. */

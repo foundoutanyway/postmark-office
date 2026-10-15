@@ -1547,3 +1547,15 @@ test("F14 · the capability index is generated from the acts table, so it cannot
   assert.deepEqual(capabilityIndex().map((a) => a.act), [...HOUSEHOLD_DISPATCHABLE]);
   for (const { teaches } of capabilityIndex()) assert.ok(teaches && teaches.length > 10);
 });
+
+// ── POS-632: explain: covers the household's bare read, every shape ─────────
+test("explain: every key of the household's bare read (full, slim, h1, h2) has a row in the read grammar's table", async () => {
+  const { unexplained } = await import("../src/read-grammar.mjs");
+  for (const extra of [{}, { slim: true }, { slim: true, readShape: "h1" }, { slim: true, readShape: "h2" }]) {
+    const bare = await householdApex({}, KEY, ctx(extra));
+    assert.ok(!bare.error, `the bare read answers (${JSON.stringify(extra)})`);
+    assert.deepEqual(unexplained("household", bare, 1), [], `household ${JSON.stringify(extra)}`);
+  }
+  const ex = await householdApex({ explain: "papers" }, KEY, ctx({ slim: true }));
+  assert.equal(ex.explains, "papers");
+});

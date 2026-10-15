@@ -2114,7 +2114,7 @@ export async function markRecords(ids = [], w = null) {
   return out;
 }
 
-export async function worldEyes(args = {}, key = null, { roll = [], v2 = false } = {}) {
+export async function worldEyes(args = {}, key = null, { roll = [], v2 = false, budget = null } = {}) {
   const choice = chooseStandpoint(args, key);
   if (choice.bounce) return choice.bounce;
   const w = await sightFor(await world(), choice.handle, key);
@@ -2143,7 +2143,8 @@ export async function worldEyes(args = {}, key = null, { roll = [], v2 = false }
   // the engine can only do that if it is told who is acting. `choice.handle` is the
   // handle chooseStandpoint SELECTED (an embodied read only; a spectator's x/y has
   // none), never `args.name` and never a key's first handle.
-  const r = verbs.openYourEyes({ x: at.x, y: at.y, name: args.name }, w, { crossing, actor: choice.handle ?? null });
+  // `budget`: read: "view" (POS-632 G9) asks for more seats than the glance's twelve.
+  const r = verbs.openYourEyes({ x: at.x, y: at.y, name: args.name }, w, { crossing, actor: choice.handle ?? null, ...(budget ? { budget } : {}) });
   // tell is a lazy thunk on the verb's return — render it here so the JSON
   // skin carries the prose (a function would vanish in serialization).
   const engineTelling = typeof r.tell === "function" ? r.tell() : r.tell ?? null;

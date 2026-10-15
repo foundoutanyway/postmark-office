@@ -43,7 +43,7 @@ import { IDENTITIES_SQL } from "./world2-fold.mjs"; // POS-350: the household gr
 import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt, nextCrossingAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock; POS-632: v2's next crossing
 import { cardsSchemaAt, describeAt, readShape, shapeRead, READ_SHAPES } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
-import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
+import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, markIdsShown } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
 import { join } from "node:path";
 
 import {
@@ -2441,11 +2441,10 @@ async function apexRead(args, key, ctx = {}) {
       const ids = new Set([...spine.map((m) => m.id), ...(seen._fov?.rows ?? []).map((r) => r.id)]);
       events = eventsHere(await calendarAtOffice({}, { now: nowMs }), { at: { x: answer.standpoint?.x, y: answer.standpoint?.y }, ids });
     } catch { events = []; }
-    // The marks this read names beyond the view (the spine, the events' places,
-    // the departures' destinations), each with its whole body, read once.
-    const shownIds = [...spine.map((m) => m.id), ...events.map((e) => e.place?.mark).filter(Boolean),
-      ...((departures?.next ?? []).map((d) => d.toward).filter(Boolean))];
-    const marks = new Map((await markRows([...new Set(shownIds)]).catch(() => [])).map((r) => [r.id, r]));
+    // The marks this read names beyond the view, each with its whole body, read
+    // once: world-read-v2.mjs § markIdsShown is the one list shapeV2 bodies.
+    const shownIds = markIdsShown({ spine, events, departures, frame, standpoint: answer.standpoint, happened });
+    const marks = new Map((await markRows(shownIds).catch(() => [])).map((r) => [r.id, r]));
     return shapeV2({
       marks,
       canUnavailable: store.unavailable ? `${store.unavailable} — none can be read: the class layer lives in the world store` : null,

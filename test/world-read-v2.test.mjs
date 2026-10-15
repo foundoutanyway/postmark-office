@@ -13,11 +13,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  viewBlock, whoBlock, canBlock, happeningBlock, eventsHere, happenedGlance, shapeV2, activeOf, actLine, inWords,
+  viewBlock, whoBlock, canBlock, happeningBlock, eventsHere, happenedGlance, shapeV2, activeOf, actLine, inWords, markIdsShown,
   LANDMARK_WEIGHT_FLOOR, ACTIVE_CAP, ACTIVE_WINDOW_MS, PUBLIC_ACTS, ACTIVE_SQL,
 } from "../src/world-read-v2.mjs";
 import { ONE_LINERS } from "../src/world-read-shape.mjs";
 import { unbodied } from "./helpers/mark-bodies.mjs";
+import { rideBlockFrom } from "../src/world-ride.mjs";
+import { arrivalLine } from "../src/arrival-entries.mjs";
+import { toYou } from "../src/world-happened.mjs";
+import { claimEffectsFrom } from "../src/claim-effects.mjs";
+import { holdEffectsFrom } from "../src/world-hold.mjs";
+import { currentCrossing } from "../src/crossings.mjs";
 
 const NOW = Date.parse("2026-10-15T00:08:00Z");
 
@@ -129,11 +135,67 @@ test("the assembled read: you, now, view, who, can, law in order; no URL; happen
   assert.deepEqual(unbodied(v2), [], "no mark is shown without its body");
   const dark = shapeV2({ standpoint: { x: 0, y: 0 }, spine: [], crossing: 1, entries: [], canUnavailable: "the world store is not open" });
   assert.deepEqual(dark.can, { unavailable: "the world store is not open" }, "an unreadable class layer is said, never an empty can (review-555 § 1)");
-  assert.deepEqual(v2.you.seat, { ground: "x" }, "G1: the seat is said on you");
+  assert.deepEqual(v2.you.seat, { ground: { id: "x", name: "x", body: "" } }, "G1: the seat is said on you, its ground a row");
   assert.deepEqual(v2.you.waiting_on_you, { stances: 55, read: 'household { read: "stances" }' });
   assert.ok("happened" in v2.now);
   assert.doesNotMatch(JSON.stringify(v2), /https?:\/\//);
   assert.equal(inWords(52 * 60000 + 11 * 3600000), "11h 52m");
+});
+
+// review-555 (10-14): the bodies check passed on empty blocks. This fills every
+// conditional block from its own producer (the aboard block's ride half from
+// world-ride.mjs, the arrival lines from arrival-entries.mjs, to_you from
+// world-happened.mjs with a claim, a hold and a carried leg), reads the bodies
+// for exactly the ids markIdsShown names, and holds that no mark is bare.
+test("every block filled: aboard, seat, arrival, to_you events — each mark they name is shown whole", () => {
+  const PO = "the-town/the-post-office";
+  const service = { pace: 15000, stops: [
+    { markId: "the-town/the-quay-reach", at: { x: 0, y: 0 } },
+    { markId: "the-town/the-snug", at: { x: 3000, y: 0 } },
+    { markId: "the-town/lanternseed", at: { x: 0, y: 4000 } },
+  ] };
+  const acts = [
+    { object: PO, action: "enter", payload: { via: "the-town/the-quay-reach" } },
+    { object: PO, action: "ride", payload: { origin: "the-town/the-quay-reach", to: "the-town/the-snug", distance_m: 3000, pace_km_per_crossing: 15, declared_at: "2026-10-14T23:00:00Z", arrives_at: "2026-10-15T00:00:00Z" } },
+  ];
+  const frame = {
+    aboard: PO, offset: { x: 2, y: 1 }, provenance: "a stop's door",
+    moves_next: { at: "2026-10-15T01:30:00Z", toward: "the-town/lanternseed", crossing: 250.1 },
+    how_to_leave: "world_walk anywhere off her footprint.", terms: "you ride where she goes.",
+    ...rideBlockFrom({ vesselId: PO, service, acts, nowMs: NOW }),
+  };
+  const nowC = currentCrossing(NOW);
+  const decided = new Date(NOW - 3600000).toISOString();
+  const happened = { to_you: toYou({
+    transitions: [{ kind: "born", carrier: PO, at: decided, crossing: nowC, reason: "you entered through a stop" }],
+    carriedLegs: [{ carrier: PO, at: decided, crossing: nowC, metres: 900, from: { x: 0, y: 0 }, to: { x: 900, y: 0 } }],
+    claimEffects: { readable: true, events: claimEffectsFrom({ rows: [{ slug: "wright/the-reading-room", status: "locked", submitted_at: decided, decided_at: decided, window_id: 77 }], sinceCrossing: nowC - 1, nowCrossing: nowC, mine: () => true }) },
+    holdEffects: { readable: true, events: holdEffectsFrom({ rows: [{ class: "holding", action: "give", object: "iris/a-lantern", actor: "iris", crossing: nowC, written_at: decided, payload: { holder: "wright", previous_holder: "iris" } }], handles: ["wright"], sinceCrossing: nowC - 1, nowCrossing: nowC }) },
+    sinceCrossing: nowC - 1, nowCrossing: nowC,
+  }), around_you: { count: 0, events: [] } };
+  const standpoint = {
+    x: 10, y: 5,
+    seat: { ground: "the-town/the-quay-reach", seat: "wright", human: "keemin", note: "you are seated by this ground" },
+    ...arrivalLine({ mark: "the-town/the-snug", settled_at: null, due_at: "2026-10-15T00:30:00Z" }),
+    ...arrivalLine({ mark: "the-town/lanternseed", settled_at: decided, outcome: "refused", words: "not tonight" }),
+  };
+  const spine = [{ id: "the-town/let-there-be-light" }];
+  const ids = markIdsShown({ spine, frame, standpoint, happened });
+  for (const id of [PO, "the-town/the-quay-reach", "the-town/the-snug", "the-town/lanternseed", "wright/the-reading-room", "iris/a-lantern"])
+    assert.ok(ids.includes(id), `${id} is read for its body`);
+  const marks = new Map(ids.map((id) => [id, { id, name: id.split("/")[1], body: `The body of ${id}.` }]));
+  const v2 = shapeV2({ marks, handle: "wright", standpoint, spine, frame, happened, crossing: nowC, sinceCrossing: nowC - 1,
+    viewRows: [], crowd: [], active: new Map(), nowMs: NOW, entries: [] });
+  for (const k of ["aboard", "seat", "arrival", "enters_on_arrival"]) assert.ok(v2.you[k], `the fixture fills you.${k}`);
+  assert.ok(v2.you.aboard.can_ride_to.length && v2.you.aboard.ride && v2.you.aboard.arrived, "and the ride half of aboard");
+  assert.deepEqual(v2.now.happened.to_you.events.map((e) => e.kind).sort(), ["carried", "claim-locked", "claim-pending", "frame-entered", "hold-give"]);
+  assert.deepEqual(unbodied(v2), [], "no mark is shown without its body");
+  assert.equal(v2.you.aboard.aboard.body, `The body of ${PO}.`);
+  assert.equal(v2.you.aboard.moves_next.toward.body, "The body of the-town/lanternseed.");
+  assert.equal(v2.you.seat.ground.body, "The body of the-town/the-quay-reach.");
+  assert.equal(v2.you.arrival.mark.body, "The body of the-town/lanternseed.");
+  assert.equal(v2.you.enters_on_arrival.mark.body, "The body of the-town/the-snug.");
+  assert.equal(v2.now.happened.to_you.events.find((e) => e.kind === "claim-locked").mark.body, "The body of wright/the-reading-room.");
 });
 
 test("activeOf: one query for the crowd, public acts only, and a store that cannot answer is said", async () => {

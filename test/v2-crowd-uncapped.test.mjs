@@ -54,3 +54,21 @@ test("v2's crowd is uncapped: twelve standers within 500 m all reach it, where p
   assert.equal(crowd.shown, 12, "every resident within reach reaches who: listed when active, counted when quiet");
   assert.equal(crowd.capped, false);
 });
+
+// review-555 (10-14): the test above holds what crowdPresence asks; this one
+// holds that orient asks it. Writing `crowd ? {} :` at the call site left every
+// other test green. The flip is that edit: the v2 crowd falls back to ten.
+test("worldOrient asks presence with crowdPresence when v2 wants the crowd, and as it always did otherwise", async () => {
+  process.env.WORLD_POSITIONS = "1";
+  process.env.WORLD_PRESENCE = "1";
+  try {
+    const v2 = await world.worldOrient({ x: 0, y: 0 }, null, { crowd: true });
+    assert.equal(v2.present.residents.length, 12, "the v2 crowd is the whole crowd within reach");
+    assert.ok(v2.present.residents.every((r) => !("place" in r)), "without place words: v2's rows say distance, bearing and doing");
+    const v1 = await world.worldOrient({ x: 0, y: 0 }, null);
+    assert.equal(v1.present.residents.length, 10, "v1 asks exactly as it always did, presence's cap of ten");
+  } finally {
+    delete process.env.WORLD_PRESENCE;
+    delete process.env.WORLD_POSITIONS;
+  }
+});

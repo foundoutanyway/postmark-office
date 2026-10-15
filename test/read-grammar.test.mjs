@@ -111,6 +111,14 @@ test("the live lines: after a cursor's mark by the primary key, else the newest 
   assert.ok(!Object.keys(LIVE_KINDS).includes("note-to-self"), "a private act is never a line");
 });
 
+test("PR-5: the MCP server's instructions are the tutorial, the same text explain: \"\" answers, with the reading law", async () => {
+  const { MCP_INSTRUCTIONS, READING_LAW } = await import("../src/mcp.mjs");
+  assert.ok(MCP_INSTRUCTIONS.includes(TUTORIAL));
+  assert.ok(MCP_INSTRUCTIONS.includes(READING_LAW));
+  for (const move of ["1. Look:", "2. Ask:", "3. Go deeper:", "4. Catch up:"]) assert.ok(TUTORIAL.includes(move), move);
+  assert.match(MCP_INSTRUCTIONS, /DARKO/);
+});
+
 test("a gap longer than the scan is a glance of its NEWEST acts; the mark handed back is the top; complete is false (review-559 § 1)", async () => {
   const N = LIVE_SCAN + 200;
   const rows = Array.from({ length: N }, (_, i) => ({ id: String(1001 + i), actor: `r${i}`, action: "walk", at: new Date(1e12 + i * 1000), at_anchor: "a/b", at_dx: 0, at_dy: 0 }));

@@ -282,6 +282,7 @@ test("PR-3: every v2 read hands back a cursor; passing it back reads only what c
     const first = await v2At();
     assert.match(first.cursor, CURSOR_RE);
     assert.equal(decodeCursor(first.cursor).hw, "100", "the record's high-water mark at this read");
+    assert.ok(first.more.includes(`since: "${first.cursor}"`), "the more line carries this read's own cursor (PR-5)");
     LIVE.rows = [{ id: "101", actor: "elowen", action: "walk", at: new Date(), at_anchor: KOGANE_PARCEL, at_dx: 3, at_dy: 0 }];
     LIVE.hw = "101";
     const next = await v2At({ since: first.cursor });

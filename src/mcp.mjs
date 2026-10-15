@@ -51,6 +51,7 @@ import { TUTORIAL } from "./read-grammar.mjs"; // POS-632: the tutorial is the s
 import { doorShape } from "./door-read-shape.mjs"; // POS-486: the town and household reads' shapes, likewise
 import { HOUSEHOLD_TOOL, householdApex, householdDispatchToolFor } from "./household-apex.mjs";
 import { TOWN_TOOL, townApex, townDispatchToolFor, townTools } from "./town-apex.mjs";
+import { DOORSTEP_TOOL, doorstepApex } from "./doorstep-apex.mjs"; // POS-632 PR-6: the apex of apexes
 import { TOWN_STAKE_TOOLS, callTownStakeTool } from "./town-stake.mjs"; // the stake gesture, 2026-08-31
 import { TOWN_POST_TOOLS, EVENT_POST_PROPERTIES, QUEST_POST_PROPERTIES, BUG_POST_PROPERTIES, callTownPostTool, townPostEvent, ideaPrecheck } from "./town-post.mjs"; // the post machine, POS-288 (quests: POS-294; bugs: Posts phase 2)
 import { ideaPostsOn, IDEA_HANDS, IDEA_POST_HOW } from "./ideas.mjs"; // the idea class, POS-290, behind IDEA_POSTS
@@ -549,11 +550,11 @@ export const TOOLS = [
 // nineteen a connector paid for on connect this morning. The three boundaries
 // above are unchanged: every delisted verb still answers, the whole delist
 // lifts with WORLD_APEX unset, and nothing was unplugged.
-export const toolList = () => (apexEnabled() ? [...TOOLS.filter((t) => !DELISTED.has(t.name)), ...apexTools(), ...townTools()] : TOOLS);
+export const toolList = () => (apexEnabled() ? [...TOOLS.filter((t) => !DELISTED.has(t.name)), ...apexTools(), ...townTools(), DOORSTEP_TOOL] : TOOLS);
 
 // What may be CALLED is wider than what is LISTED — the whole point of a
 // listing-only delist. The call path looks up here, never in toolList.
-const callableList = () => (apexEnabled() ? [...TOOLS, ...apexTools(), ...townTools()] : TOOLS);
+const callableList = () => (apexEnabled() ? [...TOOLS, ...apexTools(), ...townTools(), DOORSTEP_TOOL] : TOOLS);
 
 // The apex is the one tool whose SHAPE depends on its arguments: bare it is a
 // read anyone may make, and with `do:` it performs a write-shaped act through
@@ -964,6 +965,22 @@ export async function callTool(name, args, ctx) {
       // rather than leaving the 429 to be the only place it is ever said.
       return householdApex(args, key, { db, clone, odb, dbPath, pen, rdb, canWrite, meta, asOf, slim: true, schemas: flatPropsMap(), schemaRequired: flatRequiredMap(), strictFields: true, worldWriteBudget,
         ...(ctx.door === "mcp" ? { readShape: doorShape("household") } : {}) }); // POS-486: the MCP door's shape only
+    }
+    case "doorstep": {
+      // POS-632 PR-6. The doorstep draws from the three doors through this very
+      // dispatcher, so every item is the line a door's own read answers; the
+      // two readers it needs beside them are the bundle's own (D1: the bundle
+      // itself is untouched, and read: "bundle" answers it).
+      const tis = await import("./town-index-store.mjs");
+      const ix = tis.townIndexReads() ? tis.storeIndexPooled(clone) : null;
+      const { unreadFor } = await import("./unread-store.mjs");
+      const { nextStepsFor } = await import("./queries.mjs");
+      return doorstepApex(args, key, {
+        call: (tool, fields) => callTool(tool, fields, ctx),
+        unread: async (h) => (await unreadFor(db, [h], { ix })).get(h) ?? [],
+        steps: async (h) => (await nextStepsFor(db, meta, h, clone, { own: Boolean(key?.handles?.has?.(h)), key, ix, odb, asOf }))?.steps ?? null,
+        marksOf: async (ids) => (await import("./world.mjs")).markRows(ids), // a mark a line names, whole (Darko 22:33)
+      });
     }
     case "town": {
       // `call` is this very dispatcher, handed back to the apex. The town verb

@@ -22,7 +22,7 @@ const { townApex } = await import("../src/town-apex.mjs");
 const NOW = Date.parse("2026-10-15T00:08:00Z");
 
 test("every row has the fixed shape, and changes is one of the three cadences", () => {
-  assert.deepEqual(EXPLAIN_DOORS, ["world", "household", "town"]);
+  assert.deepEqual(EXPLAIN_DOORS, ["world", "household", "doorstep", "town"]);
   for (const door of EXPLAIN_DOORS) for (const [path, r] of Object.entries(EXPLAIN[door])) {
     assert.equal(typeof r.what, "string", `${door} ${path}: what`);
     assert.ok(r.what.length <= 200, `${door} ${path}: what is one line`);

@@ -480,8 +480,9 @@ test("the slim: rounds three and four take the listing to six; world_note and wo
     // transport door with no register semantics and two world flats that have
     // no apex twin yet (the standing ruling: a delist must never hide a
     // capability with no other door).
-    assert.deepEqual([...names].sort(), ["household", "town", "upload_media", "world", "world_investigate", "world_note"]);
-    assert.equal(names.length, 6);
+    // POS-632 PR-6 (Darko 2026-10-14 20:50): the doorstep joins as the fourth apex, the apex of apexes.
+    assert.deepEqual([...names].sort(), ["doorstep", "household", "town", "upload_media", "world", "world_investigate", "world_note"]);
+    assert.equal(names.length, 7);
   });
 });
 

@@ -1509,7 +1509,10 @@ export async function declareStanceViaOffice(repo, args = {}, key = null, { dbPa
   if (world.unreachable) throw bounce(503, "the stance candidate list could not be read", world.unreachable);
   const all = world.marks;
   const target = all.find((m) => m.id === on);
-  if (!target) throw bounce(404, `no mark "${on}"`, "ids are <by>/<slug> — see the telling, or your own inbox: world { read: \"" + ACTION_STANCE + "\" }");
+  // The inbox is a household read: a stance is spoken from standing, and
+  // `world { read: "declare-stance-on" }` bounces 422 for that reason (world-apex
+  // § STANDING_SCOPED_DOORS). The hint names the read that answers.
+  if (!target) throw bounce(404, `no mark "${on}"`, "ids are <by>/<slug>: see the telling, or your own inbox, household { read: \"stances\" }");
 
   // ── THE SET-DOWN ARM (POS-138; Keemin, 2026-09-24: "I agree with you here") ─
   //

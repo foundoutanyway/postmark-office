@@ -29,7 +29,9 @@
 //   G4  `happened` with no cursor reaches back to the previous crossing's
 //       start; it is stateless (the cursor, PR-3, gives "since my last read").
 //   G5  only public acts are named, a say as "said something".
-//   G6  who.active is capped at 8, nearest first; the rest are counted.
+//   G6  who.active is capped at 8, nearest first; the rest are counted. The
+//       spine's ids are not repeated on `you`: `here` names them and
+//       `here_body` is the innermost's words (the 5k budget, served).
 //   G7  happening_here: the vessel's departures, the Mists where you stand in
 //       them; empty is omitted.
 //   G8  each act's line is the Darko-approved one-liner without its fields.
@@ -236,7 +238,6 @@ export function shapeV2(p) {
     ...(p.handle ? { handle: p.handle } : {}),
     at: { x: Math.round(sp.x), y: Math.round(sp.y) },
     ...(p.here ? { here: p.here } : {}),
-    within: spine.map((m) => m.id),
     ...(inner?.body ? { here_body: inner.body } : {}),
     holding: p.holdings ?? [],
     ...(p.stancesAwaiting ? { waiting_on_you: { stances: p.stancesAwaiting, read: 'household { read: "stances" }' } } : {}),

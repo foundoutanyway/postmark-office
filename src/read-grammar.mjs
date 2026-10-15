@@ -70,7 +70,9 @@ export const EXPLAIN = Object.freeze({
     "who.look_closer": row("how to look closer at one of them", 'world { investigate: "<handle>" }', "weekly"),
     "who.unavailable": row("why the crowd could not be read here at all, rather than an empty room", 'world { read: "who" }', "live"),
 
-    heard: row("the last few sounds in earshot", 'world { read: "say" }', "live"),
+    heard: row("the last few sounds in earshot, newest last; each is cut at 140 characters", 'world { read: "say" }', "live",
+      "Looking does not make you a listener: only read: \"say\" marks you present in the room."),
+    "heard.unavailable": row("why earshot was not read on this path", 'world { read: "say" }', "live"),
     happening_here: row("events on now, departures from here, the Mists where you stand in them", 'world { read: "happening" }', "live"),
 
     can: row("what you can do from here, grouped by intent; each act's full law is a read away", 'world { read: "<act>" }', "settled"),

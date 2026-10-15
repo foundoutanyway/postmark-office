@@ -244,6 +244,18 @@ export function eventsHere(calendar, { at, ids = new Set() } = {}) {
     || (at && Number.isFinite(e.place?.x) && Math.hypot(e.place.x - at.x, e.place.y - at.y) <= EVENT_NEAR_M));
 }
 
+/** G6: how many sounds the glance carries, and how much of each; the whole is read: "say". */
+export const HEARD_CAP = 3;
+export const SAID_MAX = 140;
+
+/** HEARD: the last few sounds in earshot, each cut at SAID_MAX with "…" (G6). Null is "not read here", said by the caller. */
+export function heardBlock(voices = []) {
+  return voices.slice(-HEARD_CAP).map((v) => {
+    const said = String(v.said ?? "");
+    return { from: v.handle, said: said.length > SAID_MAX ? `${said.slice(0, SAID_MAX - 1).trimEnd()}…` : said, ago: v.ago };
+  });
+}
+
 /** HAPPENING_HERE (G7): events on now here, the vessel's departures from here, the Mists where you stand in them. Null when nothing is. */
 export function happeningBlock({ events = [], departures = null, mists = null } = {}) {
   const rows = [];
@@ -292,6 +304,7 @@ export function shapeV2(p) {
     view: viewBlock(p.viewRows),
     // presence off or failed: say so, never an empty room (presence's own rule: absence ≠ nobody)
     who: p.presenceUnavailable ? { unavailable: p.presenceUnavailable } : whoBlock(p.crowd, p.active, { nowMs: p.nowMs, unavailable: p.activeUnavailable, whole: p.deep?.block === "who" ? p.deep : null }),
+    heard: p.heard == null ? { unavailable: "earshot is not read on this path; read: \"say\" hears the room" } : heardBlock(p.heard),
     ...(happening ? { happening_here: happening } : {}),
     can: canBlock(p.entries, { pace: p.pace, handles: p.handles, standing: p.handle, humanHere: p.humanHere, notYours: p.notYours }),
     law: { ...(p.canon ? { canon: p.canon } : {}), ...(p.nextSettlement ? { next_settlement: p.nextSettlement } : {}) },

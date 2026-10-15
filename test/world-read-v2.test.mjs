@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  viewBlock, whoBlock, canBlock, happeningBlock, eventsHere, happenedGlance, shapeV2, activeOf, actLine, inWords,
+  viewBlock, whoBlock, canBlock, happeningBlock, eventsHere, heardBlock, HEARD_CAP, SAID_MAX, happenedGlance, shapeV2, activeOf, actLine, inWords,
   LANDMARK_WEIGHT_FLOOR, ACTIVE_CAP, ACTIVE_WINDOW_MS, PUBLIC_ACTS, ACTIVE_SQL,
 } from "../src/world-read-v2.mjs";
 import { ONE_LINERS } from "../src/world-read-shape.mjs";
@@ -113,7 +113,8 @@ test("the assembled read: you, now, view, who, can, law in order; no URL; happen
     here: "the Quay Reach, the Town Centre", holdings: [], stancesAwaiting: 55, note: null, crossing: 250, nextCrossingIn: "11h 52m",
     canon: "S109", nextSettlement: "06:00Z", happened: null, sinceCrossing: 249, viewRows: [], crowd: [], active: new Map(), nowMs: NOW, entries: [{ action: "say" }],
   });
-  assert.deepEqual(Object.keys(v2).slice(0, 6), ["you", "now", "view", "who", "can", "law"]);
+  assert.deepEqual(Object.keys(v2).slice(0, 7), ["you", "now", "view", "who", "heard", "can", "law"]);
+  assert.match(v2.heard.unavailable, /read: "say"/, "earshot not read here is said, never an empty room");
   assert.equal(v2.you.here_body, "The reach.");
   assert.deepEqual(v2.you.seat, { ground: "x" }, "G1: the seat is said on you");
   assert.deepEqual(v2.you.waiting_on_you, { stances: 55, read: 'household { read: "stances" }' });
@@ -133,4 +134,14 @@ test("activeOf: one query for the crowd, public acts only, and a store that cann
   assert.match((await activeOf(["a"], { query: async () => null })).unavailable, /store/);
   assert.match((await activeOf(["a"], { query: async () => { throw new Error("gone"); } })).unavailable, /could not be read/);
   assert.equal((await activeOf([], { query: async () => { throw new Error("never asked"); } })).active.size, 0);
+});
+
+test("G6: heard is the newest three, each cut at 140 characters with an ellipsis", () => {
+  const voices = Array.from({ length: 5 }, (_, i) => ({ handle: `r${i}`, said: i === 4 ? "x".repeat(300) : `line ${i}`, ago: "1 min" }));
+  const h = heardBlock(voices);
+  assert.equal(h.length, HEARD_CAP);
+  assert.deepEqual(h.map((v) => v.from), ["r2", "r3", "r4"], "newest last, as the room reads");
+  assert.equal(h[2].said.length, SAID_MAX);
+  assert.ok(h[2].said.endsWith("…"));
+  assert.equal(h[0].said, "line 2");
 });

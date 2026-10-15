@@ -565,6 +565,32 @@ export function createVoices({
     return out;
   }
 
+  // ── THE EAR AT A POINT (POS-632 W4; POS-637's creatures read it too) ──────
+  //
+  // What is audible at `at`, newest last, at most `cap`, and NOBODY is marked
+  // present: looking performs nothing (the read grammar), and a creature's ear
+  // is not a resident's attendance. `hear` above is the listen, and it touches;
+  // this never does. `snapshot` is a carried earshot (earshotSnapshot below),
+  // for a read answered off the main thread, where the voices window is not:
+  // the main thread takes it at the call's admission and hands it over.
+  async function heardAt(at, { aboard = false, since = null, cap = hearMax, exclude = null, snapshot: carried = null } = {}) {
+    const t = carried?.t ?? now();
+    const snap = carried ?? await snapshot(t);
+    const fresh = (v) => !(Number.isFinite(since) && v.at <= since) && v.handle !== exclude;
+    const heard = heardBy({ at, aboard }, snap).filter(fresh);
+    return heard.slice(-cap).map((v) => ({
+      handle: v.handle, said: v.text, ago: agoWords(t - v.at),
+      distance: distanceWords(distM(v.heardFrom ?? v, at)), at_ms: v.at,
+    }));
+  }
+
+  /** The earshot as plain data, for a worker to hear from: the instant and every audible voice, no clusters. */
+  async function earshotSnapshot() {
+    const t = now();
+    const snap = await snapshot(t);
+    return { t, audible: snap.audible.map(({ v, x, y, structural }) => ({ v: { handle: v.handle, text: v.text, at: v.at, x: v.x, y: v.y, aboard: Boolean(v.aboard) }, x, y, structural })) };
+  }
+
   // `how` is "spoke" or "listened" — the same touch either way, because the dial
   // says attention IS presence, but the derived names its source so a reader can
   // tell a word from an ear. It is the only field this map gained.
@@ -1011,5 +1037,5 @@ export function createVoices({
     now,
   };
 
-  return { say, hear, conversations, lastPresent, room, log: pathOf, _voices: () => hydrate(), _presence: presence };
+  return { say, hear, heardAt, earshotSnapshot, conversations, lastPresent, room, log: pathOf, _voices: () => hydrate(), _presence: presence };
 }

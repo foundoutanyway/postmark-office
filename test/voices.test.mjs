@@ -992,3 +992,19 @@ test("POS-226: the memory cap bounds how far back an ear can page, and the reply
   assert.deepEqual(r.voices.map((v) => v.said), ["new 3", "new 4", "new 5", "new 6", "new 7"]);
   assert.match(r.hearing_disclosed, /at most 5 voices in memory/);
 });
+
+// ── POS-632 W4: the ear at a point marks nobody present ─────────────────────
+test("heardAt: hears what is in earshot of a point, newest last, and marks nobody present; a carried snapshot hears the same", async () => {
+  const { store } = bench({ near: { x: 0, y: 20 }, far: { x: 0, y: EARSHOT_M + 5 }, sitter: { x: 0, y: 0 } });
+  await store.say("near", "the lamps are lit");
+  await store.say("far", "too far to carry");
+  const before = new Map(store._presence);
+  const heard = await store.heardAt({ x: 0, y: 0 });
+  assert.deepEqual(heard.map((v) => [v.handle, v.said]), [["near", "the lamps are lit"]]);
+  assert.deepEqual(new Map(store._presence), before, "the ear touched no one's presence");
+  const carried = JSON.parse(JSON.stringify(await store.earshotSnapshot()));
+  assert.deepEqual(await store.heardAt({ x: 0, y: 0 }, { snapshot: carried }), heard, "a worker hears the main thread's snapshot the same way");
+  assert.deepEqual(await store.heardAt({ x: 0, y: 0 }, { exclude: "near" }), [], "exclude leaves the reader's own voice out");
+  const listen = await store.hear("sitter");
+  assert.ok(!listen.listeners.includes("anyone-who-only-looked"));
+});

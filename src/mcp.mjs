@@ -662,7 +662,7 @@ export async function callTool(name, args, ctx) {
       };
       // the read's shape rides the MCP door's own calls only (POS-486, #455 finding 1): REST reaches this
       // dispatcher too (GET/POST /town/apex), without the marker, and keeps the full read
-      const r = name === "world" ? await worldApex(args, key, { roll: rollFor(), ...(ctx.door === "mcp" ? { readShape: readShape() } : {}) }) : await callWorldTool(name, args, key, { roll: rollFor() });
+      const r = name === "world" ? await worldApex(args, key, { roll: rollFor(), ...(ctx.door === "mcp" ? { readShape: readShape() } : {}), ...(ctx.earshot ? { earshot: ctx.earshot } : {}) }) : await callWorldTool(name, args, key, { roll: rollFor() });
       if (r !== null) return r;
     } catch (e) {
       // Same hand-picked extras list as world-apex.mjs § the act branch, and it
@@ -1238,7 +1238,7 @@ export function handleMcp(req, res, ctx) {
     // above like any call, then answered on another core (read-workers.mjs §
     // mcpWorkerTakes). `handOver` is false when the call is not one of those
     // reads or no worker is ready, and this thread answers it as before.
-    if (ctx.handOver?.(raw, messages)) {
+    if (await ctx.handOver?.(raw, messages)) {
       const last = messages.at(-1);
       if (ctx.req?.tel) ctx.req.tel.mcp = last?.params?.name ?? last?.method ?? null;
       return;

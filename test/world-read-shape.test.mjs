@@ -177,6 +177,7 @@ test("v2: the blocks in read order, and none of v1's keys", { skip: !HAVE_CLONE 
   assert.match(v2.now.happened.since, /^crossing \d+$/);
   assert.ok(v2.who.unavailable || (Array.isArray(v2.who.active) && typeof v2.who.around_but_quiet.count === "number"), "who is a block, or says why not");
   assert.equal(v2.you.handle, WHO);
+  assert.ok(Array.isArray(v2.heard), "heard is read on the main thread (W4): a list, empty when the room is quiet");
 });
 
 test("v2: the view's places are v1's nearby, in the engine's rank, grouped by bearing", { skip: !HAVE_CLONE && WHY_NOT }, async () => {

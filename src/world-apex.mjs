@@ -76,6 +76,7 @@ import {
   worldCanon,
   actsHaveNonce,
   markCentreOf, // POS-632 PR-3: the live lines are placed by their anchors, as the save places them
+  heardAt, // POS-632 W4: the shared ear, no listen mark
 } from "./world.mjs";
 // v2.2 §B — the frame block and the three-shelf delta. Both compose the one
 // standpoint derivation; neither derives a position of its own.
@@ -2513,7 +2514,20 @@ async function apexRead(args, key, ctx = {}) {
       const ids = new Set([...spine.map((m) => m.id), ...(seen._fov?.rows ?? []).map((r) => r.id)]);
       events = eventsHere(await calendarAtOffice({}, { now: nowMs }), { at: { x: answer.standpoint?.x, y: answer.standpoint?.y }, ids });
     } catch { events = []; }
+    // HEARD (W4): the shared ear at your standpoint, marking no one present.
+    // On a read worker it hears from the earshot the main thread snapshotted at
+    // admission (ctx.earshot); a worker with none says so rather than hearing
+    // its own stale window.
+    let heard = null;
+    try {
+      const { isMainThread } = await import("node:worker_threads");
+      if (isMainThread || ctx.earshot) {
+        heard = await heardAt({ x: answer.standpoint?.x, y: answer.standpoint?.y },
+          { cap: 3, exclude: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null, ...(ctx.earshot ? { snapshot: ctx.earshot } : {}) });
+      }
+    } catch { heard = null; }
     const shaped = shapeV2({
+      heard,
       deep,
       events,
       handle: oriented.standpoint?.stance === "embodied" ? standingHandle(args, key) : null,

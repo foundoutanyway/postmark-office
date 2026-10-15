@@ -43,8 +43,8 @@ import { IDENTITIES_SQL } from "./world2-fold.mjs"; // POS-350: the household gr
 import { refShaFromDisk } from "./world-branches.mjs";
 import { arrivesAt, nextCrossingAt } from "./crossings.mjs"; // POS-331 part 3: a walker's arrival on the wall clock; POS-632: v2's next crossing
 import { cardsSchemaAt, describeAt, readShape, shapeRead, READ_SHAPES } from "./world-read-shape.mjs"; // POS-486: the bare read's shape, one env var; v0 untouched
-import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, BLOCK_READS, blockFields } from "./world-read-v2.mjs";
-import { explainAnswer, explainPath } from "./read-grammar.mjs"; // POS-632: explain:, the read grammar's one table // POS-632: the world read v2, opt-in per call
+import { shapeV2, activeOf, paceFrom, inWords, hourZ, eventsHere, BLOCK_READS, blockFields } from "./world-read-v2.mjs"; // POS-632: the world read v2, opt-in per call
+import { explainAnswer, explainPath } from "./read-grammar.mjs"; // POS-632: explain:, the read grammar's one table
 import { join } from "node:path";
 
 import {

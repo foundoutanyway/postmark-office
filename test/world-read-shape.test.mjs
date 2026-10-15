@@ -250,6 +250,9 @@ test("G9: read: \"view\" is the whole view, ranked as the glance ranks it, with 
   for (const id of ids(glance.view)) assert.ok(ids(whole.view).includes(id), `${id} is in the whole view too`);
   assert.doesNotMatch(JSON.stringify(whole), URL_RE);
   assert.equal((await worldApex({ handle: WHO, read: "view", args: { bogus: 1 } }, KEY, {})).code, 422, "a field the read does not take is refused by name");
+  const { unbodied } = await import("./helpers/mark-bodies.mjs");
+  assert.deepEqual(unbodied(whole), [], "every place in the whole view carries its whole body (Darko 22:33)");
+  assert.deepEqual(unbodied(await worldApex({ handle: WHO, read: "happening" }, KEY, {})), [], "an event's place and a departure's destination too");
 });
 
 test("G9: read: \"who\", \"happened\" and \"happening\" answer their block whole, under its own name", { skip: !HAVE_CLONE && WHY_NOT }, async () => {

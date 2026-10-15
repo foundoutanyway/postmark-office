@@ -755,6 +755,7 @@
   "world_investigate",
   "world_note",
   "world",
-  "town"
+  "town",
+  "doorstep"
  ]
 }

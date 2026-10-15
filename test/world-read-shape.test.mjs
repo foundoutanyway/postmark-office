@@ -284,6 +284,10 @@ test("PR-3: every v2 read hands back a cursor; passing it back reads only what c
     const next = await v2At({ since: first.cursor });
     assert.equal(next.now.happened.since, "your last read (the cursor)");
     assert.deepEqual(next.now.happened.around_you.events.map((e) => e.who), ["elowen"], "only the act after the cursor");
+    assert.equal(next.now.happened.complete, true, "nothing was cut");
+    const old = await v2At({ since: "c1.0.0.100" });
+    assert.equal(old.now.happened.complete, false, "a reach back past the last 14 crossings is clamped, and said");
+    assert.match(old.now.happened.reach, /clamped to the last 14 crossings/);
     assert.equal(decodeCursor(next.cursor).hw, "101");
     LIVE.rows = [];
     const quiet = await v2At({ since: next.cursor });

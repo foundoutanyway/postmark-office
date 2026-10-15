@@ -115,6 +115,10 @@ test("G4: happened with no cursor names where it reaches back to; an unread delt
   assert.equal(g.around_you.count, 7);
   assert.deepEqual(g.around_you.events[0], { who: "elowen", what: "set out", when: "00:01Z" });
   assert.match(happenedGlance(null, { sinceCrossing: 249 }).unavailable, /not read/);
+  assert.equal(g.complete, true, "nothing cut is said as complete");
+  const cut = happenedGlance({ complete: false, reach: "clamped to the last 14 crossings", around_you: { events: [] } }, { sinceCrossing: 236 });
+  assert.equal(cut.complete, false, "a cut delta says so (review-559 § 2)");
+  assert.match(cut.reach, /clamped/);
 });
 
 test("the assembled read: you, now, view, who, can, law in order; no URL; happened always", () => {

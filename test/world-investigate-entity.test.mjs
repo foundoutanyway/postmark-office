@@ -19,7 +19,7 @@ const deps = (over = {}) => ({
   from: { x: 0, y: 0 },
   known: async (h) => h === "elowen",
   standpoint: async () => ({ placed: true, x: 30, y: 40, moving: false, aboard: false, source: "walk" }),
-  place: async ({ x }) => (x === 30 ? "the Quay Reach, the Town Centre" : "the Gauge House, the Town Centre"),
+  place: async ({ x }) => (x === 30 ? "the Quay Reach, the Town Centre" : "near the Gauge House"),
   saved: () => ({ crossing: 250, x: -62, y: 148 }),
   recent: async () => [
     { action: "say", at: ago(4), at_anchor: "a/b" },
@@ -29,7 +29,9 @@ const deps = (over = {}) => ({
   ],
   holds: async () => ["the-town/a-pocket-comet"],
   placeOf: () => ({ x: 30, y: 40 }),
-  innermost: async ({ x }) => (x === 30 ? { id: "the-town/the-quay-reach", name: "the Quay Reach", body: "The mail's own water." } : { id: "histor-reeves/the-gauge-house", name: "the Gauge House", body: "A low brick house." }),
+  placeMarks: async ({ x }) => (x === 30
+    ? { within: [{ id: "the-town/the-town-centre", name: "the Town Centre", body: "Where the roads meet." }, { id: "the-town/the-quay-reach", name: "the Quay Reach", body: "The mail's own water." }] }
+    : { near: { id: "histor-reeves/the-gauge-house", name: "the Gauge House", body: "A low brick house." } }),
   marksOf: async (ids) => ids.map((id) => ({ id, name: "a Pocket Comet", body: "A comet small enough to carry." })),
   ...over,
 });
@@ -51,9 +53,13 @@ test("a resident: presence now and at the last crossing, each labelled with what
   assert.equal(r.presence.last_crossing.crossing, 250);
   assert.match(r.presence.last_crossing.answered_by, /as of crossing 250/);
   assert.deepEqual(r.holds, [{ id: "the-town/a-pocket-comet", name: "a Pocket Comet", body: "A comet small enough to carry." }], "a held thing is a mark row, whole");
-  assert.equal(r.presence.now.place.body, "The mail's own water.");
-  assert.equal(r.presence.last_crossing.place.id, "histor-reeves/the-gauge-house");
-  assert.equal(r.recent.acts[0].place.id, "the-town/the-quay-reach");
+  // review-559 Addendum 3: every mark the place words name rides as a row: the
+  // chain it stands in, root first, or the place it is near on open ground
+  assert.deepEqual(r.presence.now.within.map((m) => m.name), ["the Town Centre", "the Quay Reach"]);
+  assert.equal(r.presence.now.within[1].body, "The mail's own water.");
+  assert.equal(r.presence.last_crossing.here, "near the Gauge House");
+  assert.equal(r.presence.last_crossing.near.id, "histor-reeves/the-gauge-house");
+  assert.deepEqual(r.recent.acts[0].within.map((m) => m.id), ["the-town/the-town-centre", "the-town/the-quay-reach"]);
   assert.deepEqual(unbodied(r), [], "every mark under investigated carries its whole body (Darko 22:33)");
 });
 

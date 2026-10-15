@@ -29,10 +29,9 @@ import { PUBLIC_ACTS, ACTIVE_WINDOW_MS, doingOf, distanceOf } from "./world-read
 
 export const RECENT_CAP = 10;
 
-/** { place: { id, name, body } } for the innermost place at a point, or nothing. */
-async function placeRow(innermost, p) {
-  const row = await Promise.resolve(innermost({ x: p.x, y: p.y })).catch(() => null);
-  return row ? { place: row } : {};
+/** The marks a place line names, whole: { within: [rows] } or { near: row }, or nothing. */
+async function placeRows(placeMarks, p) {
+  return (await Promise.resolve(placeMarks({ x: p.x, y: p.y })).catch(() => null)) ?? {};
 }
 export const CREATURE_PREFIX = "creature/";
 
@@ -59,14 +58,15 @@ export function entityKindOf(value) {
  *   recent(handle)         → act rows (RECENT_SQL), or null when the record cannot be read
  *   holds(handle)          → the thing ids they carry, or null when unreadable
  *   placeOf(row)           → { x, y } of an act row, or null
- *   innermost({x, y})      → the innermost place there as { id, name, body }, or null
+ *   placeMarks({x, y})     → { within: [{ id, name, body }] } root first, or { near: { id, name, body } }, or {}
  *   marksOf(ids)           → [{ id, name, body }] for the thing ids held
  *
  * EVERY MARK SHOWN CARRIES ITS WHOLE BODY (Darko, 2026-10-14 22:33): a place
- * line says its words AND its innermost place as a mark row; a held thing is a
+ * line says its words AND every mark those words name, as rows: the chain it
+ * stands in (`within`), or the place it is near (`near`); a held thing is a
  * mark row. Bodies are resident-authored; the block's reading law covers them.
  */
-export async function investigateResident(handle, { from = null, nowMs = Date.now(), known, standpoint, place, saved, recent, holds, placeOf, innermost = async () => null, marksOf = async (ids) => ids.map((id) => ({ id, name: id, body: "" })) }) {
+export async function investigateResident(handle, { from = null, nowMs = Date.now(), known, standpoint, place, saved, recent, holds, placeOf, placeMarks = async () => ({}), marksOf = async (ids) => ids.map((id) => ({ id, name: id, body: "" })) }) {
   if (!(await known(handle)))
     return { error: "bounce", code: 404, defect: `no resident "${handle}"`, hint: 'investigate: takes a resident\'s handle, as who and the white pages name them; a mark is mark: "<by>/<slug>"' };
   const here = await standpoint(handle).catch(() => null);
@@ -74,7 +74,7 @@ export async function investigateResident(handle, { from = null, nowMs = Date.no
   const now = placed ? {
     at: { x: Math.round(here.x), y: Math.round(here.y) },
     here: await place({ x: here.x, y: here.y }),
-    ...(await placeRow(innermost, here)),
+    ...(await placeRows(placeMarks, here)),
     doing: doingOf(here),
     ...(from && Number.isFinite(from.x) ? { from_you: distanceOf(Math.hypot(here.x - from.x, here.y - from.y)) } : {}),
     answered_by: "the record, as of now",
@@ -82,7 +82,7 @@ export async function investigateResident(handle, { from = null, nowMs = Date.no
   const snap = await Promise.resolve(saved(handle)).catch(() => null);
   const last = snap ? {
     crossing: snap.crossing, at: { x: Math.round(snap.x), y: Math.round(snap.y) }, here: await place({ x: snap.x, y: snap.y }),
-    ...(await placeRow(innermost, snap)),
+    ...(await placeRows(placeMarks, snap)),
     answered_by: `the crossing save, as of crossing ${snap.crossing}`,
   } : null;
 
@@ -92,7 +92,7 @@ export async function investigateResident(handle, { from = null, nowMs = Date.no
     const t = r.at instanceof Date ? r.at.getTime() : Date.parse(r.at);
     if (!Number.isFinite(t) || nowMs - t > ACTIVE_WINDOW_MS) continue;
     const p = placeOf(r);
-    acts.push({ did: PUBLIC_ACTS[r.action], at: new Date(t).toISOString(), ...(p ? { where: await place(p), ...(await placeRow(innermost, p)) } : {}) });
+    acts.push({ did: PUBLIC_ACTS[r.action], at: new Date(t).toISOString(), ...(p ? { where: await place(p), ...(await placeRows(placeMarks, p)) } : {}) });
   }
   const heldIds = await Promise.resolve(holds(handle)).catch(() => null);
   const held = heldIds == null ? null : await marksOf(heldIds).then((rows) => {

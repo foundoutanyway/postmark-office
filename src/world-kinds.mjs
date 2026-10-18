@@ -351,7 +351,20 @@ export async function callKinds(route, args, key, actor, deps) {
         const inside = [];
         for (const t of holdingsOf(attachments, from)) inside.push({ thing: t, class: markClassOf(await deps.markById(t).catch(() => null)) ?? "thing" });
         const plan = { ...planTakeKinds({ fold, actor, from, kind, n, seed, things: inside, extendsOf: view.extendsOf }), seed };
-        refuseOverCarry({ who: actor, units: totalOf(fold, actor) + inFlight, things: holdingsOf(attachments, actor).length, adding: n, cap });
+        try {
+          refuseOverCarry({ who: actor, units: totalOf(fold, actor) + inFlight, things: holdingsOf(attachments, actor).length, adding: n, cap });
+        } catch (e) {
+          // WHAT THE DRAW FELL ON, when your hands have no slots for it (POS-679 B; Darko 2026-10-18 12:04 and 12:17):
+          // a holder the draw lands on comes over whole, with what it holds, and takes 1 slot. Words only.
+          if (e?.code !== 409 || e.carried == null || !plan.things?.length) throw e;
+          const named = [];
+          for (const t of plan.things) { try { named.push((await deps.nameOf?.(t)) ?? t); } catch { named.push(t); } }
+          const counted = plan.moves.filter((m) => m.n > 0).map((m) => blurOf({ edges: [{ kind: m.kind, count: m.n }], things: [], extendsOf: view.extendsOf }).shows);
+          const hands = e.carried >= e.cap ? `your hands are full, ${e.carried} of ${e.cap}` : `your hands have ${e.cap - e.carried} of ${e.cap} slots free, not ${n}`;
+          throw bounce(409, `the draw fell on ${[...named, ...counted].join(" and ")}; ${hands}`,
+            `pot luck draws over everything ${from} holds, and a holder it lands on comes into your hands whole, with what it holds, taking 1 slot. Set something down first. Nothing was changed.`,
+            { carried: e.carried, cap: e.cap, drew: plan.things });
+        }
         try {
           await refuseSecondHolder({ who: actor, actor, adding: plan.things, held: holdingsOf(attachments, actor), markById: deps.markById, view });
         } catch (e) {

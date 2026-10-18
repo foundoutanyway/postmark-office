@@ -549,6 +549,22 @@ export async function investigateMark(id, usable = null) {
 }
 
 /**
+ * A RESIDENT'S HANDS, BOTH NUMBERS (POS-679 D; Darko 2026-10-18 12:17): the slots
+ * used of the capacity (each top-level thing 1, each counted unit 1: the number
+ * the carry cap is judged by, world-stacks § refuseOverCarry), and the things in
+ * all, counting each carried holder and everything inside it (heldLoadOf, the
+ * holders' own count). "7 of 24 slots · 21 things in all".
+ */
+export function handsCount({ fold, attachments, handle, cap }) {
+  const h = String(handle);
+  const used = totalOf(fold, h) + holdingsOf(attachments, h).length;
+  const inAll = heldLoadOf(attachments, fold, h);
+  const of = Number.isInteger(cap) ? cap : null;
+  return { slots: { used, of }, in_all: inAll,
+    shows: `${of == null ? `${used} slots` : `${used} of ${of} slots`} · ${inAll} ${inAll === 1 ? "thing" : "things"} in all` };
+}
+
+/**
  * WHAT A RESIDENT HOLDS BY KIND (review-610 S1): a class and a number, and
  * sharpened, each kind with its count — never a unit. For world_holdings and
  * investigate on a resident. Null when the hold record cannot be read.
@@ -557,7 +573,9 @@ export async function kindsHeldBy(handle) {
   try {
     const [guards, { lawSnapshot }, { classViewOf }, { isUnitRow }] = await Promise.all([
       import("./world2-guards.mjs"), import("./law-snapshot.mjs"), import("./world-units.mjs"), import("./world-stacks.mjs")]);
-    const { fold } = await holdRecordNow();
-    return { holder: String(handle), ...blurOf({ edges: kindEdgesOf(fold, String(handle)), extendsOf: classViewOf(lawSnapshot()).extendsOf, sharp: true }) };
+    const { fold, attachments } = await holdRecordNow();
+    const view = classViewOf(lawSnapshot());
+    return { holder: String(handle), ...blurOf({ edges: kindEdgesOf(fold, String(handle)), extendsOf: view.extendsOf, sharp: true }),
+      hands: handsCount({ fold, attachments, handle, cap: carryOf(view) }) };
   } catch { return null; }
 }

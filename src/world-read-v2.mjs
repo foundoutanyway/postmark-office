@@ -395,6 +395,8 @@ export function shapeV2(p) {
     // your whole things by id, then what you hold by kind, a kind and a number each, never a unit
     // (the playground's QA of part 2, fail 5: counted kinds were left out of your own hands)
     holding: [...(p.holdings ?? []), ...(p.heldKinds?.kinds ?? []).map(({ kind, count, shows }) => ({ kind, count, shows }))],
+    // both numbers for your hands (POS-679 D): "7 of 24 slots · 21 things in all"; the carry cap is judged on the slots
+    ...(p.heldKinds?.hands ? { hands: p.heldKinds.hands } : {}),
     ...(p.stancesAwaiting ? { waiting_on_you: { stances: p.stancesAwaiting, read: 'household { read: "stances" }' } } : {}),
     ...(p.note != null ? { note: p.note } : {}),
     ...(p.frame ? { aboard: aboardBlock(p.frame, whole) } : {}),

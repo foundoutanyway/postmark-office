@@ -1355,7 +1355,11 @@ async function holdAct(name, args = {}, key = null, verb = null) {
         // THE COUNTED HOLDING (WLD-27): one edge per label, and what it shows.
         ...((await import("./chests-candy.mjs")).chestsCandyOn() ? { units: await unitsHeldBy(actor) } : {}),
         // BY KIND (LOGOS v2, O2; review-610 S1): live whatever WORLD_CHESTS_CANDY says — the kind doors are not #499's
-        kinds: await (await import("./world-kinds.mjs")).kindsHeldBy(actor),
+        ...(await (async () => {
+          const kinds = await (await import("./world-kinds.mjs")).kindsHeldBy(actor);
+          // BOTH NUMBERS (POS-679 D): the slots used of 24, and the things in all, holders' contents counted
+          return { kinds, ...(kinds?.hands ? { hands: kinds.hands } : {}) };
+        })()),
       };
     }
     // ── TWO INPUTS THIS DOOR DOES NOT YET COMPUTE ──────────────────────────

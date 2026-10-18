@@ -108,7 +108,10 @@ export function isHolderMark(mark, classProperty) {
 }
 
 /** How many holders a resident carries at once, when a ruling sets it: `resident/holder/holders`; null when unset (no limit). */
-export const holdersCarriedOf = (classProperty) => whole(classProperty("resident", "holders")?.value);
+export const holdersCarriedOf = (classProperty) => {
+  // a law that cannot be read sets no dial either: the ruled answer, no limit (a hold with no law loaded, hold-reach's end-to-end takes)
+  try { return whole(classProperty("resident", "holders")?.value); } catch { return null; }
+};
 
 // ANY NUMBER OF HOLDERS (Darko, 2026-10-18 12:17, POS-679 / WLD-76: "Yeah, I agree
 // with your recommended shape"): a resident carries as many holders as their 24

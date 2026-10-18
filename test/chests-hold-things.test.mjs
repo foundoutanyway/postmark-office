@@ -30,7 +30,7 @@ const CLASSES = new Map(Object.entries({
   candy: { extends: "consumable", dials: {}, labels: [{ label: LABEL, name: "Test Comets", creator: "sbx-ana" }] },
   chest: { extends: "thing", dials: { capacity: 30, capacity_min: 1, capacity_max: 120, first_stock: 30, portable: true, welcome: "open" } },
   toaster: { extends: "thing", dials: {} },
-  resident: { extends: null, dials: { holders: 1 } }, // one holder in a resident's hands (LOGOS v2: resident/holder/holders)
+  resident: { extends: null, dials: {} }, // no holders dial: any number carried (Darko 2026-10-18 12:17, POS-679)
 }));
 const view = () => classViewOf({ classes: CLASSES });
 const KEY = (h) => ({ handles: new Set([h]) });
@@ -207,11 +207,11 @@ test("5d · plumb-nest-guard at the chest door: a chest 70 levels inside the thi
   const roomy = rig({ marks: chests });
   roomy.hold("sbx-cy", "sbx-cy/c-1"); roomy.seedUnits("sbx-cy/c-1", 2);
   assert.equal((await callUnits("thing-into-chest", { thing: "sbx-cy/c-1", to: "sbx-cy/c-2" }, KEY("sbx-cy"), "sbx-cy", roomy.deps)).did, "give");
-  // ONE HOLDER IN HAND: carrying c-0, a take of c-4 out of c-3 is refused in the full-hands voice
+  // ANY NUMBER OF HOLDERS (Darko 2026-10-18 12:17, POS-679): carrying c-0, a take of c-4 out of c-3 lands
   const hands = rig({ marks: chests });
   hands.hold("sbx-cy", "sbx-cy/c-0"); hands.hold("sbx-cy/c-3", "sbx-cy/c-4");
-  await assert.rejects(callUnits("thing-from-chest", { thing: "sbx-cy/c-4", from: "sbx-cy/c-3" }, KEY("sbx-cy"), "sbx-cy", hands.deps),
-    (e) => e.defect === "you're already carrying a holder (sbx-cy/c-0)" && e.hint === "set it down first. Nothing was recorded.");
+  const second = await callUnits("thing-from-chest", { thing: "sbx-cy/c-4", from: "sbx-cy/c-3" }, KEY("sbx-cy"), "sbx-cy", hands.deps);
+  assert.deepEqual([second.did, second.holder], ["take", "sbx-cy"]);
 });
 
 // ── Wright, 2026-10-13T01:19Z: refill reach stays — the REAL reach, not a stub ─

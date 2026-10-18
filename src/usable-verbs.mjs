@@ -61,8 +61,8 @@ export function usablePairs({ actor, here, marks = [], residents = [], fold, att
   for (const [t, r] of last) if (r.policy === "cascade") { const e = String(r.entity); if (!inside.has(e)) inside.set(e, []); inside.get(e).push(t); }
   const up = liveHolders(attachments); // a holder's room counts each holder in it 1 and all it holds (counts confer up)
   const carriedThings = inside.get(me) ?? [];
-  // ONE HOLDER IN HAND (Darko, 2026-10-17 23:29): no take of a holder is offered to hands that already
-  // carry as many as the resident class allows (kind-holding § refuseSecondHolder, the door's own rule)
+  // A HOLDERS DIAL, WHEN A RULING SETS ONE (kind-holding § refuseSecondHolder, the door's own rule): no take of
+  // a holder is offered to hands already at it. Since 2026-10-18 12:17 (POS-679) it is unset, so nothing is held back.
   const classProperty = (n, p) => view.property?.(n, p) ?? null;
   const byId = new Map(marks.filter((x) => x?.id).map((x) => [String(x.id), x]));
   const isHolder = (id) => { const x = byId.get(String(id)); return x ? isHolderMark(x, classProperty) : false; };

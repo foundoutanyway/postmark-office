@@ -54,7 +54,6 @@ const LAW = [
   cls("halloween-candy-bag", { extends: "thing" }),
   prop("postmark-node", "makers", false, "constitution"), prop("thing", "makers", true, "constitution"),
   prop("resident", "holder", true, "constitution"), prop("resident", "capacity", 24, "constitution", "holder"),
-  prop("resident", "holders", 1, "constitution", "holder"), // one holder in hand (Darko 2026-10-17 23:29)
   prop("thing", "holder", false, "sovereign"), prop("thing", "capacity", 30, "sovereign", "holder"),
   prop("thing", "min", 1, "constitution", "capacity"), prop("thing", "max", 120, "constitution", "capacity"),
   prop("thing", "open", true, "sovereign", "holder"), prop("thing", "portable", true, "sovereign"),
@@ -430,25 +429,18 @@ test("QA fail 1 · end to end: the world's own resident class grants consume, an
   }, { verbs });
 });
 
-// ── ONE HOLDER IN HAND, through the real hold door (plumb-nest-guard; Darko 2026-10-17 23:29) ──
-test("one holder · carrying a bag, a take of a basket at your feet is refused in the full-hands voice; with empty hands it lands", { skip }, async () => {
+// ── ANY NUMBER OF HOLDERS, through the real hold door (Darko 2026-10-18 12:17, POS-679) ──
+test("holders · carrying a bag, a take of a basket at your feet lands: a second holder in hand", { skip }, async () => {
   await seed();
   await carry(BAG);
-  await assert.rejects(callHoldTool("world_hold", { thing: BASKET }, KEY, { verb: "take" }),
-    (e) => e.code === 409 && e.defect === `you're already carrying a holder (${BAG})` && e.hint === "set it down first. Nothing was recorded.");
-  await seed();
   const took = await callHoldTool("world_hold", { thing: BASKET }, KEY, { verb: "take" });
   assert.deepEqual([took.did, took.holder], ["take", "sbx-cy"]);
 });
 
-test("one holder · a give of a bag to a resident who carries a bowl is refused, naming them; to one who carries none it lands", { skip }, async () => {
+test("holders · a give of a bag to a resident who carries a bowl lands", { skip }, async () => {
   await seed();
   await carry(BAG);
   await carry(MY_BOWL, "sbx-dee");
-  await assert.rejects(callHoldTool("world_hold", { thing: BAG, to: "sbx-dee" }, KEY, { verb: "give" }),
-    (e) => e.code === 409 && e.defect === `sbx-dee is already carrying a holder (${MY_BOWL})`);
-  await seed();
-  await carry(BAG);
   const gave = await callHoldTool("world_hold", { thing: BAG, to: "sbx-dee" }, KEY, { verb: "give" });
   assert.deepEqual([gave.did, gave.holder ?? gave.to], ["give", "sbx-dee"]);
 });

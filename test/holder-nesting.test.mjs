@@ -89,7 +89,10 @@ test("1 · a second holder into your hands is refused, by a take and by a pot-lu
   const rows = [row(ME, bag("mine")), row(bag("crate"), bag("other"))];
   const w = world(rows);
   await assert.rejects(go(w, "thing-from-holder", { thing: bag("other"), from: bag("crate") }), (e) => e.code === 409 && e.defect === full && e.hint === hint);
-  await assert.rejects(go(w, "take", { from: bag("crate"), count: 1 }), (e) => e.code === 409 && e.defect === full && e.hint === hint, "a pot-luck draw that would bring a holder");
+  // a pot-luck draw that would bring a holder: the same refusal, saying the draw fell on it (hotfix w43.1 B)
+  await assert.rejects(go(w, "take", { from: bag("crate"), count: 1 }),
+    (e) => e.code === 409 && e.defect === `the draw fell on ${bag("other")}, a holder, and ${full}` && /pot luck draws over everything/.test(e.hint) && e.hint.endsWith(`Or ${hint}`),
+    "a pot-luck draw that would bring a holder");
   assert.equal(w.written(), 0, "nothing was written");
   // with no holder in hand, the take stands
   const free = world([row(bag("crate"), bag("other"))]);

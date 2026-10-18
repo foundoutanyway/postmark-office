@@ -24,7 +24,7 @@ import { foldUnits, kindEdgesOf, totalOf, unitCount, refuseOverCarry, UNIT_ACTIO
 import { holdingsOf, sameHousehold, holdTurn, liveHolder } from "./world-hold.mjs";
 import { liveHolders, weightOf, refuseNesting } from "./holder-tree.mjs"; // the walks, cycle-safe; counts confer up
 import { chestRoomGuard } from "./chest-lock.mjs";
-import { inFlightFor, writeThingHolding, thingHoldingEntry, wholeLoadIn, refuseOverRoomAbove } from "./world-units.mjs";
+import { inFlightFor, writeThingHolding, thingHoldingEntry, wholeLoadIn, heldLoadOf, refuseOverRoomAbove } from "./world-units.mjs";
 import { markClassOf, lineageOf } from "./world-grants.mjs";
 import { standsWithin, EARSHOT_M } from "./reach.mjs";
 import {
@@ -84,11 +84,45 @@ async function writeKinds(deps, key, actor, plan, { stamp = null, guard = null, 
   return { seq: row?.actId ?? row?.seq ?? null, effect: entry.effect };
 }
 
-/** What a holder shows after an act: its kinds and its whole things, at the nearest common class. */
+/**
+ * What a holder shows, after an act and at the close look: its kinds and its
+ * whole things, at the nearest common class.
+ *
+ * COUNTS CONFER UP ON THE READ TOO (hotfix w43.1; Darko, 2026-10-17 23:29: "one
+ * holder and counts confer up"). A holder that is a mark counts each whole
+ * thing in it as 1 plus everything that thing holds, so `count` here is
+ * heldLoadOf, the very number the door's room is judged by (capacity less it).
+ * A bowl with 8 candies and a bag of 8 reads 17, not 9. When something inside
+ * holds things, `shows` names it ("8 candies and A Candy Bag holding 8"),
+ * `whole` lists each whole thing with what it holds and what it counts, and
+ * `counting` says the sum in plain words. A resident's hands are unchanged:
+ * each top-level thing counts 1 (the ruled blur).
+ */
 async function shownIn(fold, holder, attachments, view, deps, { sharp = false } = {}) {
+  const ids = holdingsOf(attachments, String(holder));
   const things = [];
-  for (const id of holdingsOf(attachments, String(holder))) things.push(markClassOf(await deps.markById(id).catch(() => null)) ?? "thing");
-  return { holder: String(holder), ...blurOf({ edges: kindEdgesOf(fold, holder), things, extendsOf: view.extendsOf, sharp }) };
+  for (const id of ids) things.push(markClassOf(await deps.markById(id).catch(() => null)) ?? "thing");
+  const edges = kindEdgesOf(fold, holder);
+  const blur = blurOf({ edges, things, extendsOf: view.extendsOf, sharp });
+  if (!isHolderId(String(holder))) return { holder: String(holder), ...blur };
+  const count = heldLoadOf(attachments, fold, holder);
+  // THE FIELD CONTRACT (the World page, w2-final 15e19217 holderLines): one `whole` row per whole thing
+  // inside, { thing, name, holds }, its own conferred count; the page prints "<name> holding <holds>"
+  const nameOf = async (id) => { try { return (await deps.nameOf?.(id)) ?? String(id); } catch { return String(id); } };
+  const whole = [];
+  for (const id of ids) {
+    const holds = heldLoadOf(attachments, fold, id);
+    whole.push({ thing: id, name: await nameOf(id), holds, counts: 1 + holds });
+  }
+  if (count === blur.count) return { holder: String(holder), ...blur, ...(whole.length ? { whole } : {}) };
+  // something inside holds things (or units the kinds do not name): the count confers up
+  const kindWords = edges.length ? blurOf({ edges, things: [], extendsOf: view.extendsOf }).shows : null;
+  const wholeWords = whole.map((w) => (w.holds ? `${w.name} holding ${w.holds}` : w.name));
+  const parts = [...(kindWords ? [kindWords] : []), ...wholeWords];
+  const shows = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0] ?? `${count} things`;
+  const sum = [...(kindWords ? [kindWords] : []), ...whole.map((w) => (w.holds ? `${w.name} as 1 and the ${w.holds} it holds` : `${w.name} as 1`))];
+  return { holder: String(holder), ...blur, count, shows, whole,
+    counting: `${sum.join(", ")}: ${count} counted, as the room counts it (a holder counts 1 and everything it holds)` };
 }
 
 /** A published holder, or the refusal: a draft holds nothing yet; a mark that does not hold, says so. */
@@ -317,8 +351,33 @@ export async function callKinds(route, args, key, actor, deps) {
         const inside = [];
         for (const t of holdingsOf(attachments, from)) inside.push({ thing: t, class: markClassOf(await deps.markById(t).catch(() => null)) ?? "thing" });
         const plan = { ...planTakeKinds({ fold, actor, from, kind, n, seed, things: inside, extendsOf: view.extendsOf }), seed };
-        refuseOverCarry({ who: actor, units: totalOf(fold, actor) + inFlight, things: holdingsOf(attachments, actor).length, adding: n, cap });
-        await refuseSecondHolder({ who: actor, actor, adding: plan.things, held: holdingsOf(attachments, actor), markById: deps.markById, view });
+        try {
+          refuseOverCarry({ who: actor, units: totalOf(fold, actor) + inFlight, things: holdingsOf(attachments, actor).length, adding: n, cap });
+        } catch (e) {
+          // WHAT THE DRAW FELL ON, when your hands have no slots for it (POS-679 B; Darko 2026-10-18 12:04 and 12:17):
+          // a holder the draw lands on comes over whole, with what it holds, and takes 1 slot. Words only.
+          if (e?.code !== 409 || e.carried == null || !plan.things?.length) throw e;
+          const named = [];
+          for (const t of plan.things) { try { named.push((await deps.nameOf?.(t)) ?? t); } catch { named.push(t); } }
+          const counted = plan.moves.filter((m) => m.n > 0).map((m) => blurOf({ edges: [{ kind: m.kind, count: m.n }], things: [], extendsOf: view.extendsOf }).shows);
+          const hands = e.carried >= e.cap ? `your hands are full, ${e.carried} of ${e.cap}` : `your hands have ${e.cap - e.carried} of ${e.cap} slots free, not ${n}`;
+          throw bounce(409, `the draw fell on ${[...named, ...counted].join(" and ")}; ${hands}`,
+            `pot luck draws over everything ${from} holds, and a holder it lands on comes into your hands whole, with what it holds, taking 1 slot. Set something down first. Nothing was changed.`,
+            { carried: e.carried, cap: e.cap, drew: plan.things });
+        }
+        try {
+          await refuseSecondHolder({ who: actor, actor, adding: plan.things, held: holdingsOf(attachments, actor), markById: deps.markById, view });
+        } catch (e) {
+          // WHY THE DRAW WAS DECLINED, in words (hotfix w43.1; Darko 2026-10-18 12:04: "make it clear WHY the
+          // potluck draw resulted in a decline"). Words only: the draw, its seed and the one-holder rule are unchanged.
+          if (e?.code !== 409 || !Array.isArray(e.coming)) throw e;
+          const there = [...kindEdgesOf(fold, from).map((k) => blurOf({ edges: [k], things: [], extendsOf: view.extendsOf }).shows), ...inside.map((x) => `${x.thing} (a ${x.class})`)].join(", ");
+          const drew = `${e.coming.join(", ")}, ${e.coming.length === 1 ? "a holder" : "holders"}`;
+          const carrying = e.holders.some((h) => !e.coming.includes(h));
+          throw bounce(409, `the draw fell on ${drew}, and ${e.defect}`,
+            `${kind == null ? "pot luck draws" : `a draw within ${kind} draws`} over everything ${from} holds, whole things included, and a draw that lands on a holder you cannot carry is refused whole. kind: narrows the draw to what you name; ${from} holds ${there}. ${carrying ? `Or ${e.hint}` : e.hint.charAt(0).toUpperCase() + e.hint.slice(1)}`,
+            { holders: e.holders, drew: e.coming, limit: e.limit });
+        }
         // ONE EDGE, ONE TRANSACTION (review-610 S4): the draw's record (its seed, its kinds, the whole
         // marks it took) and each whole mark's own holding act commit together, or nothing moves
         const also = [];
@@ -385,9 +444,13 @@ export async function callKinds(route, args, key, actor, deps) {
         const fold = foldUnits(units);
         const edible = kindEdgesOf(fold, actor).filter((e) => lineageOf(e.kind, view.extendsOf).includes("consumable"));
         if (args.kind != null && !edible.some((e) => e.kind === String(args.kind))) {
+          // WORDS ONLY (hotfix w43.1, XH2): a kind that is no consumable is told so, by its class line, and
+          // the consumables you do hold are named; "no thing in your hands" with candies in them read as false
           const held = kindEdgesOf(fold, actor).some((e) => e.kind === String(args.kind));
-          throw bounce(held ? 422 : 409, held ? `a ${args.kind} is not a consumable` : `no ${args.kind} in your hands`,
-            held ? "consume uses up what is made to be used up (a consumable, as candy is). Nothing was changed." : "Nothing was changed.");
+          const consumable = lineageOf(String(args.kind), view.extendsOf).includes("consumable");
+          const yours = edible.length ? `you hold ${edible.map((e) => blurOf({ edges: [e], things: [], extendsOf: view.extendsOf }).shows).join(", ")} to consume: consume { kind: "${edible[0].kind}" }` : "you hold nothing to consume";
+          throw bounce(held || !consumable ? 422 : 409, held || !consumable ? `a ${args.kind} is not a consumable` : `no ${args.kind} in your hands`,
+            held || !consumable ? `consume uses up what is made to be used up (a consumable, as candy is); ${yours}. Nothing was changed.` : `${yours}. Nothing was changed.`);
         }
         const edge = selectKind(edible, args.kind ?? null, { where: "your hands", verb: "consume" });
         const plan = { action: UNIT_ACTION.consume, object: String(actor), moves: [{ from: String(actor), to: null, kind: edge.kind, n: 1 }], edge: { giver: String(actor), receiver: null } };
@@ -482,7 +545,23 @@ export async function investigateMark(id, usable = null) {
   if (!law.holder) return out;
   const { fold, attachments } = await holdRecordNow();
   return { ...out, holder: { capacity: law.capacity, open: law.open }, holds: await shownIn(fold, id, attachments, view,
-    { markById: async (m) => (await world.worldMarkById(m)).mark }, { sharp: true }) };
+    { markById: async (m) => (await world.worldMarkById(m)).mark, nameOf: async (m) => (await world.markRows([String(m)]))[0]?.name ?? null }, { sharp: true }) };
+}
+
+/**
+ * A RESIDENT'S HANDS, BOTH NUMBERS (POS-679 D; Darko 2026-10-18 12:17): the slots
+ * used of the capacity (each top-level thing 1, each counted unit 1: the number
+ * the carry cap is judged by, world-stacks § refuseOverCarry), and the things in
+ * all, counting each carried holder and everything inside it (heldLoadOf, the
+ * holders' own count). "7 of 24 slots · 21 things in all".
+ */
+export function handsCount({ fold, attachments, handle, cap }) {
+  const h = String(handle);
+  const used = totalOf(fold, h) + holdingsOf(attachments, h).length;
+  const inAll = heldLoadOf(attachments, fold, h);
+  const of = Number.isInteger(cap) ? cap : null;
+  return { slots: { used, of }, in_all: inAll,
+    shows: `${of == null ? `${used} slots` : `${used} of ${of} slots`} · ${inAll} ${inAll === 1 ? "thing" : "things"} in all` };
 }
 
 /**
@@ -494,7 +573,9 @@ export async function kindsHeldBy(handle) {
   try {
     const [guards, { lawSnapshot }, { classViewOf }, { isUnitRow }] = await Promise.all([
       import("./world2-guards.mjs"), import("./law-snapshot.mjs"), import("./world-units.mjs"), import("./world-stacks.mjs")]);
-    const { fold } = await holdRecordNow();
-    return { holder: String(handle), ...blurOf({ edges: kindEdgesOf(fold, String(handle)), extendsOf: classViewOf(lawSnapshot()).extendsOf, sharp: true }) };
+    const { fold, attachments } = await holdRecordNow();
+    const view = classViewOf(lawSnapshot());
+    return { holder: String(handle), ...blurOf({ edges: kindEdgesOf(fold, String(handle)), extendsOf: view.extendsOf, sharp: true }),
+      hands: handsCount({ fold, attachments, handle, cap: carryOf(view) }) };
   } catch { return null; }
 }

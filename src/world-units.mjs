@@ -143,6 +143,7 @@ export async function liveUnitDeps() {
       return { units: units.filter(isUnitRow), attachments };
     },
     markById: async (id) => (await world.worldMarkById(String(id))).mark,
+    nameOf: async (id) => (await world.markRows([String(id)]))[0]?.name ?? null, // a whole thing's name, where a holding is told (hotfix w43.1)
     reachTake: async (thing, actor) => hold.refuseOutOfReach({ thing, to: null, actor, act: "take", holder: null }),
     // A give of units is a take at arm's length, clause 3's measure in its one home.
     reachGive: async (to, actor) => {
@@ -292,6 +293,9 @@ export function holderCapacityOf(mark, view) {
 
 /** Everything inside `holder` past its own units, as its room counts it: each whole thing at any depth is 1 plus what it holds (holder-tree § wholeLoadOf). */
 export const wholeLoadIn = (attachments, fold, holder) => wholeLoadOf({ up: liveHolders(attachments), holder, unitsOf: (h) => totalOf(fold, h) });
+
+/** Everything `holder` holds as its room counts it: its units, and each whole thing as 1 and all it holds. The door's room is capacity less this; the read's count is this (hotfix w43.1). */
+export const heldLoadOf = (attachments, fold, holder) => totalOf(fold, holder) + wholeLoadIn(attachments, fold, holder);
 
 /**
  * COUNTS CONFER UP, ABOVE THE HOLDER (Darko, 2026-10-17 23:29; holder-tree.mjs

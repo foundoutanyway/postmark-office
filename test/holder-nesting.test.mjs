@@ -1,9 +1,12 @@
-// holder-nesting.test.mjs — plumb-nest-guard: one holder in hand, counts confer
-// up, and the loop check walks the whole way (Darko, 2026-10-17 23:29: "yes,
-// rule it, one holder and counts confer up"; LOGOS/classes.md § The transfer edge).
+// holder-nesting.test.mjs — plumb-nest-guard: counts confer up, and the loop
+// check walks the whole way (Darko, 2026-10-17 23:29: "counts confer up"; and
+// 2026-10-18 12:17, POS-679: any number of holders carried, nesting free;
+// LOGOS/classes.md § The transfer edge).
 //
-//   1. a second holder into a resident's hands is refused, by a take and by a
-//      pot-luck draw (and a make of a holder kind stays refused);
+//   1. a second and a third holder land in your hands, by a take and by a
+//      pot-luck draw that hands the holder over whole; the 24 slots still bind;
+//      a holders dial, if a ruling ever sets one, still binds (and a make of a
+//      holder kind stays refused);
 //   2. a holder counts 1 plus everything it holds toward the room of what holds
 //      it: a bag of 30 into a chest of 120 takes 31;
 //   3. a give into a pouch in a bag in a chest checks all three rooms;
@@ -38,7 +41,6 @@ const LAW = [
   cls("entity", { extends: "postmark-node" }), cls("resident", { extends: "entity" }),
   prop("postmark-node", "makers", false, "constitution"), prop("thing", "makers", true, "constitution"),
   prop("resident", "holder", true, "constitution"), prop("resident", "capacity", 24, "constitution", "holder"),
-  prop("resident", "holders", 1, "constitution", "holder"),
   prop("thing", "holder", false, "sovereign"), prop("thing", "capacity", 30, "sovereign", "holder"),
   prop("thing", "min", 1, "constitution", "capacity"), prop("thing", "max", 120, "constitution", "capacity"),
   prop("thing", "open", true, "sovereign", "holder"), prop("thing", "portable", true, "sovereign"),
@@ -46,7 +48,7 @@ const LAW = [
   prop("halloween-candy-bag", "max", 200, "constitution", "capacity"),
 ];
 const SNAP = lawSnapshotFromRows(LAW);
-const UNREAD = lawSnapshotFromRows(LAW.filter((r) => r.key !== "resident/holder/holders")); // the dial absent
+const BOUND = lawSnapshotFromRows([...LAW, prop("resident", "holders", 1, "constitution", "holder")]); // a holders dial a ruling could set (none does since 2026-10-18 12:17)
 
 const ME = "sbx-cy", LAMP = "sbx-cy/a-lamp";
 const bag = (name) => `sbx-cy/${name}`;
@@ -82,71 +84,71 @@ const go = (w, route, args) => callKinds(route, args, KEY, ME, w.deps);
 
 // ── 1 · ONE HOLDER IN A RESIDENT'S HANDS ────────────────────────────────────
 
-test("1 · a second holder into your hands is refused, by a take and by a pot-luck draw; with none in hand it lands", { timeout: 10_000 }, async () => {
-  const full = "you're already carrying a holder (sbx-cy/mine)";
-  const hint = "set it down first. Nothing was changed.";
-  // I carry a bag; a crate on the ground holds another bag
-  const rows = [row(ME, bag("mine")), row(bag("crate"), bag("other"))];
-  const w = world(rows);
-  await assert.rejects(go(w, "thing-from-holder", { thing: bag("other"), from: bag("crate") }), (e) => e.code === 409 && e.defect === full && e.hint === hint);
-  await assert.rejects(go(w, "take", { from: bag("crate"), count: 1 }), (e) => e.code === 409 && e.defect === full && e.hint === hint, "a pot-luck draw that would bring a holder");
-  assert.equal(w.written(), 0, "nothing was written");
-  // with no holder in hand, the take stands
-  const free = world([row(bag("crate"), bag("other"))]);
-  assert.equal((await go(free, "thing-from-holder", { thing: bag("other"), from: bag("crate") })).did, "take");
-  // a lamp is not a holder: carrying a bag, you still take one
-  const lamp = world([row(ME, bag("mine")), row(bag("crate"), LAMP)]);
-  assert.equal((await go(lamp, "thing-from-holder", { thing: LAMP, from: bag("crate") })).did, "take");
+test("1 · any number of holders (Darko 2026-10-18 12:17): a second and a third land, by a take and by a pot-luck draw that hands the holder over whole; a 25th slot is refused", { timeout: 10_000 }, async () => {
+  // I carry two bags; a crate on the ground holds a third, with 3 in it
+  const w = world([row(ME, bag("mine")), row(ME, bag("mine2")), row(bag("crate"), bag("other"))]);
+  w.seed(bag("other"), 3);
+  assert.equal((await go(w, "thing-from-holder", { thing: bag("other"), from: bag("crate") })).did, "take", "a third holder lands");
+  // pot luck over a crate holding only a bag of 2: the draw hands the bag over whole, its 2 inside it, and moves no unit
+  const draw = world([row(ME, bag("mine")), row(bag("crate2"), bag("bagx"))]);
+  draw.seed(bag("bagx"), 2);
+  const took = await go(draw, "take", { from: bag("crate2"), count: 1 });
+  assert.deepEqual([took.did, took.whole?.map((x) => x.thing)], ["take", [bag("bagx")]], "the whole bag is drawn");
+  assert.equal(took.holds.count, 2, "my hands: two bags, each 1 (top-level things count 1)");
+  assert.deepEqual(draw.acts.find((a) => a.payload?.kinds)?.payload?.moves, [], "no counted unit moved: the bag's 2 stay inside it");
+  // 24 slots: 23 candies and a bag in hand, and a 25th is refused
+  const full = world([row(ME, bag("mine")), row(bag("crate"), bag("other"))]);
+  full.seed(ME, 23);
+  await assert.rejects(go(full, "thing-from-holder", { thing: bag("other"), from: bag("crate") }), (e) => e.code === 409 && /cannot carry 1 more — 24 of 24 carried/.test(e.defect));
+  assert.equal(full.written(), 0, "nothing was written");
 });
 
 test("1b · a make of a holder kind stays refused (already so on the base: a count cannot carry a holder's contents)", async () => {
   await assert.rejects(go(world([]), "make", { kind: "halloween-candy-bag", count: 1, to: ME }), (e) => /holds things of its own/.test(e.defect));
 });
 
-test("1c · the give face names the receiver", { timeout: 10_000 }, async () => {
+test("1c · a holders dial a ruling sets still binds, and the give face names the receiver", { timeout: 10_000 }, async () => {
   const markById = async (id) => markOf(String(id));
-  await assert.rejects(kinds.refuseSecondHolder({ who: "sbx-dee", actor: ME, adding: [bag("mine")], held: [bag("theirs")], markById, view: classViewOf(SNAP) }),
+  await assert.rejects(kinds.refuseSecondHolder({ who: "sbx-dee", actor: ME, adding: [bag("mine")], held: [bag("theirs")], markById, view: classViewOf(BOUND) }),
     (e) => e.code === 409 && e.defect === "sbx-dee is already carrying a holder (sbx-cy/theirs)" && /Nothing was changed\.$/.test(e.hint));
-  // a lamp is not a holder: it comes in beside a bag
-  await kinds.refuseSecondHolder({ who: ME, actor: ME, adding: [LAMP], held: [bag("theirs")], markById, view: classViewOf(SNAP) });
+  // a lamp is not a holder: it comes in beside a bag, dial or not
+  await kinds.refuseSecondHolder({ who: ME, actor: ME, adding: [LAMP], held: [bag("theirs")], markById, view: classViewOf(BOUND) });
+  // unset (the law since 12:17): no limit, and nothing is refused
+  await kinds.refuseSecondHolder({ who: "sbx-dee", actor: ME, adding: [bag("mine")], held: [bag("theirs"), bag("one")], markById, view: classViewOf(SNAP) });
 });
 
-test("1d · a law without the holders dial answers as ruled (1): one holder lands, a second is refused; a dial that is read decides", { timeout: 10_000 }, async () => {
-  // the dial unread: the office and the world land separately, so the office answers Darko's 23:29 number
-  const empty = world([row(bag("crate"), bag("other"))], UNREAD);
-  assert.equal((await go(empty, "thing-from-holder", { thing: bag("other"), from: bag("crate") })).did, "take", "one holder into empty hands");
-  const full = world([row(ME, bag("mine")), row(bag("crate"), bag("other"))], UNREAD);
-  await assert.rejects(go(full, "thing-from-holder", { thing: bag("other"), from: bag("crate") }),
+test("1d · the holders dial: unset is no limit; a ruling that sets it binds, at the door and in the pot-luck words", { timeout: 10_000 }, async () => {
+  assert.equal(kinds.RULED_HOLDERS, Infinity);
+  const rows = [row(ME, bag("mine")), row(bag("crate"), bag("other"))];
+  assert.equal((await go(world(rows), "thing-from-holder", { thing: bag("other"), from: bag("crate") })).did, "take", "unset: a second holder lands");
+  const bound = world(rows, BOUND);
+  await assert.rejects(go(bound, "thing-from-holder", { thing: bag("other"), from: bag("crate") }),
     (e) => e.code === 409 && e.defect === "you're already carrying a holder (sbx-cy/mine)" && e.hint === "set it down first. Nothing was changed.");
-  assert.equal(full.written(), 0);
-  assert.equal(kinds.RULED_HOLDERS, 1);
-  // the dial read at 2: the dial, not the ruled number, decides
-  const TWO = lawSnapshotFromRows(LAW.map((r) => (r.key === "resident/holder/holders" ? { ...r, data: { ...r.data, default: 2 } } : r)));
-  const two = world([row(ME, bag("mine")), row(bag("crate"), bag("other"))], TWO);
-  assert.equal((await go(two, "thing-from-holder", { thing: bag("other"), from: bag("crate") })).did, "take");
+  await assert.rejects(go(bound, "take", { from: bag("crate"), count: 1 }),
+    (e) => e.code === 409 && e.defect === `the draw fell on ${bag("other")}, a holder, and you're already carrying a holder (sbx-cy/mine)` && /pot luck draws over everything/.test(e.hint));
+  assert.equal(bound.written(), 0);
+  const TWO = lawSnapshotFromRows([...LAW, prop("resident", "holders", 2, "constitution", "holder")]);
+  assert.equal((await go(world(rows, TWO), "thing-from-holder", { thing: bag("other"), from: bag("crate") })).did, "take", "a dial of 2 lets the second in");
 });
 
-test("1e · the verbs matrix offers no take of a second holder (review-620): not one at your feet, not one inside a crate", { timeout: 10_000 }, async () => {
+test("1e · the verbs matrix offers the take of a second holder; a dial a ruling sets holds it back", { timeout: 10_000 }, async () => {
   const placed = (id) => ({ ...markOf(id), extent: { w: 4, h: 4 } });
   const marks = [placed(bag("mine")), placed(bag("crate")), placed(bag("other")), placed(bag("loose")), placed(LAMP)];
-  const offered = (rows) => usablePairs({ actor: ME, here: { x: 5, y: 6 }, marks, residents: [], fold: foldUnits([]), attachments: rows, view: classViewOf(SNAP) })
+  const offered = (rows, snap) => usablePairs({ actor: ME, here: { x: 5, y: 6 }, marks, residents: [], fold: foldUnits([]), attachments: rows, view: classViewOf(snap) })
     .filter((p) => p.verb === "take").map((p) => p.object).sort();
-  // carrying a bag: the bag inside the crate and the loose bag are not offered; the lamp in the crate is, and so the crate's take
-  const full = offered([row(ME, bag("mine")), row(bag("crate"), bag("other")), row(bag("crate"), LAMP)]);
-  assert.deepEqual(full, [bag("crate"), LAMP].sort(), `offered: ${full}`);
-  // empty hands: every take is offered
-  const free = offered([row(bag("crate"), bag("other")), row(bag("crate"), LAMP)]);
-  assert.ok(free.includes(bag("other")) && free.includes(bag("loose")), `offered: ${free}`);
-  // the crate holding only a bag offers no take from it to full hands
-  const onlyBag = offered([row(ME, bag("mine")), row(bag("crate"), bag("other"))]);
-  assert.ok(!onlyBag.includes(bag("crate")) && !onlyBag.includes(bag("other")), `offered: ${onlyBag}`);
+  const rows = [row(ME, bag("mine")), row(bag("crate"), bag("other")), row(bag("crate"), LAMP)];
+  // unset: carrying a bag, the bag in the crate and the loose bag are offered too
+  const free = offered(rows, SNAP);
+  assert.ok(free.includes(bag("other")) && free.includes(bag("loose")) && free.includes(LAMP), `offered: ${free}`);
+  // a dial of 1: neither is offered to hands that carry one; the lamp, and so the crate's take, are
+  assert.deepEqual(offered(rows, BOUND), [bag("crate"), LAMP].sort());
 });
 
-test("1f · the full-hands words follow how many are carried: two from before the rule read as two", { timeout: 10_000 }, async () => {
+test("1f · with a dial set, the full-hands words follow how many are carried", { timeout: 10_000 }, async () => {
   const markById = async (id) => markOf(String(id));
-  await assert.rejects(kinds.refuseSecondHolder({ who: ME, actor: ME, adding: [bag("third")], held: [bag("one"), bag("two")], markById, view: classViewOf(SNAP) }),
+  await assert.rejects(kinds.refuseSecondHolder({ who: ME, actor: ME, adding: [bag("third")], held: [bag("one"), bag("two")], markById, view: classViewOf(BOUND) }),
     (e) => e.defect === "you're already carrying 2 holders (sbx-cy/one, sbx-cy/two)" && e.hint === "set them down first. Nothing was changed.");
-  await assert.rejects(kinds.refuseSecondHolder({ who: "sbx-dee", actor: ME, adding: [bag("third")], held: [bag("one"), bag("two")], markById, view: classViewOf(SNAP) }),
+  await assert.rejects(kinds.refuseSecondHolder({ who: "sbx-dee", actor: ME, adding: [bag("third")], held: [bag("one"), bag("two")], markById, view: classViewOf(BOUND) }),
     (e) => e.defect === "sbx-dee is already carrying 2 holders (sbx-cy/one, sbx-cy/two)" && /set those down/.test(e.hint));
 });
 

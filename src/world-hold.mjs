@@ -262,7 +262,7 @@ export const HOLD_TOOLS = [
     inputSchema: { type: "object", properties: {
       thing: { type: "string", description: "the thing's mark id, <by>/<slug> — as ids appear in the telling. A unit that was set down is a mark too: name it to take it back, or with act: \"consume\" to eat it where it stands" },
       to: { type: "string", description: "the resident who takes it (a give), or a chest's id to put counted units into it. Omit to set it down where you stand, or to pick up a thing standing on the ground" },
-      kind: { type: "string", description: "BY KIND (LOGOS v2): which kind — a class id, e.g. a kind of candy. A take that names no kind is pot luck over everything the holder holds, and naming one narrows the draw; a give with one kind in hand may omit it. With from: omitted, the one holder in reach that holds it is the source, and several are refused with the candidates listed" },
+      kind: { type: "string", description: "BY KIND (LOGOS v2): which kind — a class id, e.g. a kind of candy. A take that names no kind is pot luck over everything the holder holds, whole things included, and naming one narrows the draw; a draw that lands on a holder hands it over whole, with everything it holds, and it takes 1 slot in your hands; a draw your hands have no slots for is refused whole, saying what it fell on; a give with one kind in hand may omit it. With from: omitted, the one holder in reach that holds it is the source, and several are refused with the candidates listed" },
       label: { type: "string", description: "COUNTED UNITS (candy): which label — e.g. a candy's slug. With one label in hand or in the chest it may be omitted; with several it must be named, and an omission is refused listing what is there" },
       count: { type: "number", description: "COUNTED UNITS: how many, a whole number (default 1). A set-down is always one unit, one mark, one stamp" },
       from: { type: "string", description: "COUNTED UNITS: the chest to take from, <by>/<slug> — you stand within its extent to take" },
@@ -1355,7 +1355,11 @@ async function holdAct(name, args = {}, key = null, verb = null) {
         // THE COUNTED HOLDING (WLD-27): one edge per label, and what it shows.
         ...((await import("./chests-candy.mjs")).chestsCandyOn() ? { units: await unitsHeldBy(actor) } : {}),
         // BY KIND (LOGOS v2, O2; review-610 S1): live whatever WORLD_CHESTS_CANDY says — the kind doors are not #499's
-        kinds: await (await import("./world-kinds.mjs")).kindsHeldBy(actor),
+        ...(await (async () => {
+          const kinds = await (await import("./world-kinds.mjs")).kindsHeldBy(actor);
+          // BOTH NUMBERS (POS-679 D): the slots used of 24, and the things in all, holders' contents counted
+          return { kinds, ...(kinds?.hands ? { hands: kinds.hands } : {}) };
+        })()),
       };
     }
     // ── TWO INPUTS THIS DOOR DOES NOT YET COMPUTE ──────────────────────────

@@ -107,29 +107,33 @@ export function isHolderMark(mark, classProperty) {
   return holdingOf({ mark, className, classProperty }).holder === true;
 }
 
-/** How many holders a resident carries at once: `resident/holder/holders`, constitution and locked (1), or null when unread. */
-export const holdersCarriedOf = (classProperty) => whole(classProperty("resident", "holders")?.value);
+/** How many holders a resident carries at once, when a ruling sets it: `resident/holder/holders`; null when unset (no limit). */
+export const holdersCarriedOf = (classProperty) => {
+  // a law that cannot be read sets no dial either: the ruled answer, no limit (a hold with no law loaded, hold-reach's end-to-end takes)
+  try { return whole(classProperty("resident", "holders")?.value); } catch { return null; }
+};
 
-// THE RULED NUMBER, for a law that does not carry the dial yet: Darko, 2026-10-17
-// 23:29, "yes, rule it, one holder and counts confer up". The office and the world
-// land separately (the lead, 2026-10-18), so until the world's law snapshot
-// carries `resident/holder/holders` the office answers as ruled, never "no
-// holders" and never "any number". Once the dial is read, the dial decides.
-export const RULED_HOLDERS = 1;
+// ANY NUMBER OF HOLDERS (Darko, 2026-10-18 12:17, POS-679 / WLD-76: "Yeah, I agree
+// with your recommended shape"): a resident carries as many holders as their 24
+// slots hold, nesting is free, and counts confer up between holders, which is what
+// keeps nesting from multiplying room. It replaces 2026-10-17 23:29's one holder.
+// The dial stays, so a later ruling (a class of bag that grants more, say) can set
+// a number; unset, it is no limit.
+export const RULED_HOLDERS = Infinity;
 
 /**
- * ONE HOLDER IN A RESIDENT'S HANDS (Darko, 2026-10-17 23:29: "yes, rule it, one
- * holder and counts confer up"; LOGOS/classes.md § The transfer edge). A second
- * holder coming into a resident's hands — by a take, a give or a pot-luck draw —
- * is refused in the full-hands voice. `adding` are the whole marks arriving,
- * `held` the ones already in `who`'s hands, `markById` the record's reader. The
- * number is read from the class tree every time it is there; unread, it is the
- * ruled number, RULED_HOLDERS (below). A holder named `who` (a mark) is not a
- * resident and is not asked.
+ * A HOLDERS DIAL, WHEN A RULING SETS ONE. Since 2026-10-18 12:17 (POS-679) the
+ * law sets none: a resident carries any number of holders, and this refuses
+ * nothing. It stays for the dial: if `resident/holder/holders` is ever set, a
+ * holder past it coming into a resident's hands (by a take, a give or a
+ * pot-luck draw) is refused in the full-hands voice. `adding` are the whole
+ * marks arriving, `held` the ones already in `who`'s hands, `markById` the
+ * record's reader. A holder named `who` (a mark) is not a resident and is not asked.
  */
 export async function refuseSecondHolder({ who, actor, adding = [], held = [], markById, view, nothing = "Nothing was changed." }) {
   if (who == null || String(who).includes("/") || !adding.length) return;
   const classProperty = propertyOf(view);
+  if (holdersCarriedOf(classProperty) == null) return; // unset: no limit, and no mark is read for it
   const holds = async (id) => {
     const m = await markById(String(id)).catch(() => null);
     return m ? isHolderMark(m, classProperty) : false;
@@ -148,10 +152,10 @@ export async function refuseSecondHolder({ who, actor, adding = [], held = [], m
     const over = carrying.length + coming.length - limit; // how many must be set down first
     const setDown = carrying.length === 1 ? "set it down first" : over >= carrying.length ? "set them down first" : `set ${over} of them down first`;
     throw bounce(409, mine ? `you're already carrying ${what}` : `${who} is already carrying ${what}`,
-      `${mine ? setDown : `it goes to them once they set ${carrying.length === 1 ? "theirs" : "those"} down`}. ${nothing}`, { holders: carrying, limit });
+      `${mine ? setDown : `it goes to them once they set ${carrying.length === 1 ? "theirs" : "those"} down`}. ${nothing}`, { holders: carrying, coming, limit });
   }
   throw bounce(409, `that would put ${coming.length} holders in ${mine ? "your" : `${who}'s`} hands (${coming.join(", ")})`,
-    `a resident carries ${limit === 1 ? "one holder" : `${limit} holders`} at a time. ${nothing}`, { holders: coming, limit });
+    `a resident carries ${limit === 1 ? "one holder" : `${limit} holders`} at a time. ${nothing}`, { holders: coming, coming, limit });
 }
 
 /** Is this thing portable? `thing/portable` is sovereign, default true (the lead's settlement, 2026-10-17). */

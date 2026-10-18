@@ -24,7 +24,7 @@ import { foldUnits, kindEdgesOf, totalOf, unitCount, refuseOverCarry, UNIT_ACTIO
 import { holdingsOf, sameHousehold, holdTurn, liveHolder } from "./world-hold.mjs";
 import { liveHolders, weightOf, refuseNesting } from "./holder-tree.mjs"; // the walks, cycle-safe; counts confer up
 import { chestRoomGuard } from "./chest-lock.mjs";
-import { inFlightFor, writeThingHolding, thingHoldingEntry, wholeLoadIn, refuseOverRoomAbove } from "./world-units.mjs";
+import { inFlightFor, writeThingHolding, thingHoldingEntry, wholeLoadIn, heldLoadOf, refuseOverRoomAbove } from "./world-units.mjs";
 import { markClassOf, lineageOf } from "./world-grants.mjs";
 import { standsWithin, EARSHOT_M } from "./reach.mjs";
 import {
@@ -84,11 +84,43 @@ async function writeKinds(deps, key, actor, plan, { stamp = null, guard = null, 
   return { seq: row?.actId ?? row?.seq ?? null, effect: entry.effect };
 }
 
-/** What a holder shows after an act: its kinds and its whole things, at the nearest common class. */
+/**
+ * What a holder shows, after an act and at the close look: its kinds and its
+ * whole things, at the nearest common class.
+ *
+ * COUNTS CONFER UP ON THE READ TOO (hotfix w43.1; Darko, 2026-10-17 23:29: "one
+ * holder and counts confer up"). A holder that is a mark counts each whole
+ * thing in it as 1 plus everything that thing holds, so `count` here is
+ * heldLoadOf, the very number the door's room is judged by (capacity less it).
+ * A bowl with 8 candies and a bag of 8 reads 17, not 9. When something inside
+ * holds things, `shows` names it ("8 candies and A Candy Bag holding 8"),
+ * `whole` lists each whole thing with what it holds and what it counts, and
+ * `counting` says the sum in plain words. A resident's hands are unchanged:
+ * each top-level thing counts 1 (the ruled blur).
+ */
 async function shownIn(fold, holder, attachments, view, deps, { sharp = false } = {}) {
+  const ids = holdingsOf(attachments, String(holder));
   const things = [];
-  for (const id of holdingsOf(attachments, String(holder))) things.push(markClassOf(await deps.markById(id).catch(() => null)) ?? "thing");
-  return { holder: String(holder), ...blurOf({ edges: kindEdgesOf(fold, holder), things, extendsOf: view.extendsOf, sharp }) };
+  for (const id of ids) things.push(markClassOf(await deps.markById(id).catch(() => null)) ?? "thing");
+  const edges = kindEdgesOf(fold, holder);
+  const blur = blurOf({ edges, things, extendsOf: view.extendsOf, sharp });
+  if (!isHolderId(String(holder))) return { holder: String(holder), ...blur };
+  const count = heldLoadOf(attachments, fold, holder);
+  if (count === blur.count) return { holder: String(holder), ...blur };
+  // something inside holds things (or units the kinds do not name): the count confers up
+  const nameOf = async (id) => { try { return (await deps.nameOf?.(id)) ?? String(id); } catch { return String(id); } };
+  const whole = [];
+  for (const id of ids) {
+    const holds = heldLoadOf(attachments, fold, id);
+    whole.push({ thing: id, name: await nameOf(id), holds, counts: 1 + holds });
+  }
+  const kindWords = edges.length ? blurOf({ edges, things: [], extendsOf: view.extendsOf }).shows : null;
+  const wholeWords = whole.map((w) => (w.holds ? `${w.name} holding ${w.holds}` : w.name));
+  const parts = [...(kindWords ? [kindWords] : []), ...wholeWords];
+  const shows = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0] ?? `${count} things`;
+  const sum = [...(kindWords ? [kindWords] : []), ...whole.map((w) => (w.holds ? `${w.name} as 1 and the ${w.holds} it holds` : `${w.name} as 1`))];
+  return { holder: String(holder), ...blur, count, shows, whole,
+    counting: `${sum.join(", ")}: ${count} counted, as the room counts it (a holder counts 1 and everything it holds)` };
 }
 
 /** A published holder, or the refusal: a draft holds nothing yet; a mark that does not hold, says so. */
@@ -482,7 +514,7 @@ export async function investigateMark(id, usable = null) {
   if (!law.holder) return out;
   const { fold, attachments } = await holdRecordNow();
   return { ...out, holder: { capacity: law.capacity, open: law.open }, holds: await shownIn(fold, id, attachments, view,
-    { markById: async (m) => (await world.worldMarkById(m)).mark }, { sharp: true }) };
+    { markById: async (m) => (await world.worldMarkById(m)).mark, nameOf: async (m) => (await world.markRows([String(m)]))[0]?.name ?? null }, { sharp: true }) };
 }
 
 /**

@@ -106,14 +106,16 @@ async function shownIn(fold, holder, attachments, view, deps, { sharp = false } 
   const blur = blurOf({ edges, things, extendsOf: view.extendsOf, sharp });
   if (!isHolderId(String(holder))) return { holder: String(holder), ...blur };
   const count = heldLoadOf(attachments, fold, holder);
-  if (count === blur.count) return { holder: String(holder), ...blur };
-  // something inside holds things (or units the kinds do not name): the count confers up
+  // THE FIELD CONTRACT (the World page, w2-final 15e19217 holderLines): one `whole` row per whole thing
+  // inside, { thing, name, holds }, its own conferred count; the page prints "<name> holding <holds>"
   const nameOf = async (id) => { try { return (await deps.nameOf?.(id)) ?? String(id); } catch { return String(id); } };
   const whole = [];
   for (const id of ids) {
     const holds = heldLoadOf(attachments, fold, id);
     whole.push({ thing: id, name: await nameOf(id), holds, counts: 1 + holds });
   }
+  if (count === blur.count) return { holder: String(holder), ...blur, ...(whole.length ? { whole } : {}) };
+  // something inside holds things (or units the kinds do not name): the count confers up
   const kindWords = edges.length ? blurOf({ edges, things: [], extendsOf: view.extendsOf }).shows : null;
   const wholeWords = whole.map((w) => (w.holds ? `${w.name} holding ${w.holds}` : w.name));
   const parts = [...(kindWords ? [kindWords] : []), ...wholeWords];

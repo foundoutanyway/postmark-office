@@ -6,11 +6,12 @@
 //      8 reads 17 (1 + 8 + 8), and the read's count plus the door's room is the
 //      capacity. Counts confer up (Darko, 2026-10-17 23:29); a resident's hands
 //      still count each top-level thing 1.
-//   B. A pot-luck draw that lands on a holder you cannot carry says WHY it was
-//      declined: the draw fell on a holder, pot luck draws over everything, and
-//      kind: narrows it. Words only: the draw and the one-holder rule are unchanged.
+//   B. A pot-luck draw that lands on a holder hands it over whole, with what it
+//      holds, taking 1 slot (any number of holders: Darko 2026-10-18 12:17,
+//      POS-679); a draw your hands have no slot for says what it fell on.
 //   C. consume { kind: "thing" } with candies in hand says a thing is not a
 //      consumable and names the consumables you hold.
+//   D. A resident's hands read both numbers: "7 of 24 slots · 21 things in all".
 //
 // Each test is a falsifier: it fails on main @ 54ce28fdc and passes on the fix.
 // The kind door (`callKinds`) with every collaborator injected over an
@@ -34,7 +35,6 @@ const SNAP = lawSnapshotFromRows([
   cls("entity", { extends: "postmark-node" }), cls("resident", { extends: "entity" }),
   prop("postmark-node", "makers", false, "constitution"), prop("thing", "makers", true, "constitution"),
   prop("resident", "holder", true, "constitution"), prop("resident", "capacity", 24, "constitution", "holder"),
-  prop("resident", "holders", 1, "constitution", "holder"),
   prop("thing", "holder", false, "sovereign"), prop("thing", "capacity", 30, "sovereign", "holder"),
   prop("thing", "min", 1, "constitution", "capacity"), prop("thing", "max", 120, "constitution", "capacity"),
   prop("thing", "open", true, "sovereign", "holder"), prop("thing", "portable", true, "sovereign"),
@@ -114,21 +114,50 @@ test("A · a holder with nothing nested inside reads as before (the blur is the 
 
 // ── B ───────────────────────────────────────────────────────────────────────
 
-test("B · a pot-luck draw that falls on a holder says so, says pot luck draws over everything, and names kind:", async () => {
-  // the bowl holds 2 candies and a bag; sb-cleo already carries a bag of her own
+test("B · a pot-luck draw that lands on a holder hands it over whole, with what it holds, and it takes 1 slot (Darko 2026-10-18 12:17)", async () => {
+  // the bowl holds 2 candies and a cloth bag of 3; sb-cleo already carries a bag of her own
   const w = world([row(BOWL, CLOTH), row(CLEO, BAG)]);
-  w.seed(BOWL, 2);
-  // pot luck over 3 (2 candies + the bag), count 3: the draw must include the bag
-  await assert.rejects(go(w, "take", { from: BOWL, count: 3 }, CLEO), (e) => {
+  w.seed(BOWL, 2); w.seed(CLOTH, 3);
+  const took = await go(w, "take", { from: BOWL, count: 3 }, CLEO);
+  assert.equal(took.did, "take");
+  assert.deepEqual(took.whole.map((x) => x.thing), [CLOTH], "the whole cloth bag is drawn");
+  assert.equal(took.holds.count, 4, "her hands: her bag, the cloth bag (each 1, top-level) and 2 candies");
+  assert.equal(took.draw, "pot luck");
+});
+
+test("B · a draw your hands have no slot for says what it fell on: \"the draw fell on A Cloth Bag Two; your hands are full, 24 of 24\"", async () => {
+  // sb-cleo carries a bag and 23 candies, 24 of 24; the bowl holds only the cloth bag
+  const w = world([row(BOWL, CLOTH), row(CLEO, BAG)]);
+  w.seed(CLEO, 23);
+  await assert.rejects(go(w, "take", { from: BOWL, count: 1 }, CLEO), (e) => {
     assert.equal(e.code, 409);
-    assert.equal(e.defect, `the draw fell on ${CLOTH}, a holder, and you're already carrying a holder (${BAG})`);
-    assert.equal(e.hint, `pot luck draws over everything ${BOWL} holds, whole things included, and a draw that lands on a holder you cannot carry is refused whole. kind: narrows the draw to what you name; ${BOWL} holds 2 candies, ${CLOTH} (a halloween-candy-bag). Or set it down first. Nothing was changed.`);
-    assert.deepEqual(e.drew, [CLOTH]);
+    assert.equal(e.defect, "the draw fell on A Cloth Bag Two; your hands are full, 24 of 24");
+    assert.equal(e.hint, `pot luck draws over everything ${BOWL} holds, and a holder it lands on comes into your hands whole, with what it holds, taking 1 slot. Set something down first. Nothing was changed.`);
     return true;
   });
   assert.equal(w.written(), 0, "nothing was taken");
-  // the draw and the rule are unchanged: kind: candy lands at once
-  assert.equal((await go(w, "take", { from: BOWL, kind: "candy", count: 2 }, CLEO)).did, "take");
+});
+
+// ── D ───────────────────────────────────────────────────────────────────────
+
+test("D · a resident's hands read both numbers: the slots used of 24, and the things in all, the carried holder's contents counted", async () => {
+  const { handsCount } = await import("../src/world-kinds.mjs");
+  const { foldUnits } = await import("../src/world-stacks.mjs");
+  const make = (to, n) => ({ class: "holding", action: UNIT_ACTION.make, payload: { units: true, moves: [{ from: null, to, kind: "candy", n }] } });
+  // 6 candies in hand and a bag holding 14: 7 slots, 21 things in all
+  const fold = foldUnits([make(ASH, 6), make(BAG, 14)]);
+  assert.deepEqual(handsCount({ fold, attachments: [row(ASH, BAG)], handle: ASH, cap: 24 }),
+    { slots: { used: 7, of: 24 }, in_all: 21, shows: "7 of 24 slots · 21 things in all" });
+  // the carry cap stays on slots: the 24 is the slots' number, never the things in all
+  assert.deepEqual(handsCount({ fold: foldUnits([]), attachments: [], handle: ASH, cap: 24 }), { slots: { used: 0, of: 24 }, in_all: 0, shows: "0 of 24 slots · 0 things in all" });
+});
+
+test("A · the field contract: a holder with an empty bag in it carries whole [{ thing, name, holds: 0 }] and reads as before", async () => {
+  const w = world([row(BOWL, BAG)]);
+  w.seed(BOWL, 4);
+  const made = await go(w, "make", { kind: "candy", count: 1, to: BOWL });
+  assert.equal(made.holds.count, 6, "5 candies and the empty bag as 1");
+  assert.deepEqual(made.holds.whole, [{ thing: BAG, name: "A Candy Bag", holds: 0, counts: 1 }]);
 });
 
 // ── C ───────────────────────────────────────────────────────────────────────

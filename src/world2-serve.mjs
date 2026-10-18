@@ -42,17 +42,18 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { readDraftClaims, keyHouseholdOf, withHousehold, claimRowsForSlug } from "./world2-claims.mjs";
+import { readDraftClaims, keyHouseholdOf, withHousehold, claimRowsForSlug, lastAmendedRow } from "./world2-claims.mjs";
 import { receiptFrom } from "./mark-receipt.mjs";
 import { sessionKeysVia, resolveHouse, houseRowsVia } from "./household-deriver.mjs";
 
 /**
  * HOW MANY HOUSES the roster knows — counted as HOUSES, through the deriver.
  *
- * `identities` is one row per HANDLE and its `household` column carries
+ * `identities` is one row per HANDLE. Its `household` column used to carry
  * whichever spelling the world repo's copy held when the row landed (measured
  * 2026-09-22: 173 of 190 `gh:<id>`, 17 `hh:<slug>`, umbraliminalis both at
- * once). This figure used to be `idRows.length`, which is the handle count
+ * once); since 055 (POS-350) it is the registry's view and answers `hh:<slug>`
+ * or `solo:<handle>`, so the deriver below names each by its slug. This figure used to be `idRows.length`, which is the handle count
  * wearing a household's name — 190 where the town has 118 houses — and
  * `DISCLOSURES` has nothing to say about a number that is simply a different
  * quantity under the wrong word.
@@ -101,15 +102,18 @@ import { backedRow } from "./world-stake.mjs";
 // 1.0's own settlements rules — which tags count, the order, the cap — imported
 // rather than restated; see § THE SETTLEMENTS TWIN below.
 import { settlementsFrom } from "./settlements.mjs";
-import { CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
+import { askedCrossing, CROSSING_DERIVATION, currentCrossing } from "./crossings.mjs";
 import { myMarksRefused } from "./claim-effects.mjs";
 import { actorRoster } from "./human-actor.mjs";
 import { stopDepartures } from "./world-movement.mjs";
-// The class every reader IS — 1.0's own constant, so the two apexes name the
-// same mark in `records` (world.mjs § markRecords).
-import { STRIDE_MARK_ID } from "./world-classes.mjs";
+// WLD-29: a shown house's porch light, from the office's shared activity answer
+import { readHouseholdActivity, litOf, lightsUnknownWhy } from "./household-activity.mjs";
+import { faultLogged, plainReason } from "./fault-words.mjs"; // the office's own words for its own fault (POS-578)
 
 const state = { pool: null };
+
+/** Tests only: the office's own serve pool, as `pool()` would have made it. */
+export function __setPoolForTest(p) { state.pool = p; }
 
 export function world2ServeEnabled(env = process.env) {
   return env.WORLD2_PG === "1" && !!env.WORLD2_PG_URL;
@@ -215,11 +219,10 @@ export async function world2MyMarks(key, { offset = 0, p: injected = null, refus
   const p = injected ?? await pool();
   const { household, households = [], disclosure } = await keyHouseholdOf(p, key);
 
-  // The household's roster, from the store's own `identities` projection — the
-  // registry `roll-ingest.mjs` writes ("census decision 1: roster is
-  // REVIEW-class, repo-first"). 1.0 resolves the same question through the town
-  // clone's dated `currentHouseholdOf`; this is that resolution, already made
-  // at the ingested sha and stored.
+  // The household's roster, from the store's `identities`: since 055 (POS-350)
+  // the registry's VIEW over `households` and `household_pins`, housed by the
+  // office's one deriver, so it answers "which house NOW" as the ceremony last
+  // wrote it.
   // The spelling set, for `HOUSEHOLD_HANDLES_SQL`'s reason: the roster is keyed
   // in whichever spelling the world repo's copy carried, so asking for one
   // returns part of a house and the page silently loses the rest of it.
@@ -458,7 +461,7 @@ export async function docketEscrow(p) {
     ingestedAt = head?.ingested_at ? new Date(head.ingested_at).toISOString() : null;
   } catch (e) {
     return { townSha: null, byMark: null,
-      reason: `the town's projection head could not be read (${String(e?.message ?? e).slice(0, 120)}), so what stands behind these marks is unknown — not zero` };
+      reason: `the town's projection head could not be read (${plainReason(e, "record", "the town's projection head")}), so what stands behind these marks is unknown — not zero` };
   }
   if (!townSha) return { townSha: null, byMark: null,
     reason: "no town sha is ingested, so the store cannot say what stands behind these marks — unknown, not zero" };
@@ -469,7 +472,7 @@ export async function docketEscrow(p) {
     return { townSha, ingestedAt, byMark, reason: null };
   } catch (e) {
     return { townSha, ingestedAt, byMark: null,
-      reason: `the escrow projection could not be read at town ${townSha.slice(0, 8)} (${String(e?.message ?? e).slice(0, 120)}) — unknown, not zero` };
+      reason: `the escrow projection could not be read at town ${townSha.slice(0, 8)} (${plainReason(e, "record", "the escrow projection")}) — unknown, not zero` };
   }
 }
 
@@ -577,11 +580,16 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
   const notYetCarried = lockedNewest && windowKnown && Number(newest.window_id) > settled.settledWindow;
   const carriedUndecidable = standing && lockedNewest && !windowKnown;
   const published = standing && !notYetCarried && !carriedUndecidable;
+  // RULED AND CARRIED, AND NO LONGER STANDING (Wright, on office #539): the
+  // newest claim is locked at a candle a settlement has closed, and the mark is
+  // not in the rows. Its `mark_carried` row outlives it, so the receipt can name
+  // the settlement that carried it.
+  const carriedGone = !standing && lockedNewest && windowKnown && Number(newest.window_id) <= settled.settledWindow;
   // WHICH SETTLEMENT CARRIED IT: the recorded row, in 1.0's `{ s, sha, at }`.
   // `at` is looked up in the 20 newest settlements, as 1.0 looks it up in its
   // 20 newest tags; an older settlement's receipt names no date on either door.
   let carried = null;
-  if (published) {
+  if (published || carriedGone) {
     try {
       const { rows: [c] } = await p.query(
         `SELECT c.settlement, s.tag_sha FROM mark_carried c JOIN settlements s ON s.number = c.settlement WHERE c.mark = $1`, [id]);
@@ -591,9 +599,18 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
       }
     } catch { carried = null; }
   }
+  // THE LAST AMEND (POS-612): the same `amend_carried` row 1.0's reader asks
+  // for (world2-claims.mjs § lastAmendedRow), so the two doors answer one fact.
+  let last_amended = null, amends_unread = null;
+  if (published) {
+    try { last_amended = await lastAmendedRow(id, { p }); }
+    catch (e) { last_amended = null; amends_unread = e?.code === "42P01" ? "075 not applied" : "the store did not answer"; }
+  }
   const receipt = receiptFrom({
     id, canon: published ? { id } : null, published_at: carried,
     claims, settlement: settled?.current ?? null, site_pin: null,
+    last_amended, amends_unread,
+    settled_window: windowKnown ? settled.settledWindow : null,
   });
   if (carriedUndecidable) {
     const reason = settled ? "the settlements table names no candle a settlement closed" : "the settlements table could not be read";
@@ -604,7 +621,9 @@ export async function twinReceipt(p, id, { terrain = false, standing = false } =
   }
   if (receipt.status === "published" && !carried) {
     Object.assign(receipt, { crossing: null, settlement_sha: null,
-      says: "published — the store holds this mark standing; which settlement carried it is not recorded in the store (see tree_only)" });
+      says: receipt.last_amended
+        ? `published, last amended at S${receipt.last_amended.s} — the store holds this mark standing; which settlement first carried it is not recorded in the store (see tree_only)`
+        : "published — the store holds this mark standing; which settlement carried it is not recorded in the store (see tree_only)" });
   }
   let read_at = null;
   try {
@@ -820,7 +839,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
       // A torn ingest is a REFUSAL, never a fold with whichever k came back
       // first — `stakesFromStore`'s rule, applied to one mark's slice.
       return { code: 503, body: { error: "bounce", defect: "the escrow projection cannot be folded at this sha",
-        hint: String(e?.message ?? e).slice(0, 240) } };
+        hint: faultLogged("the escrow projection cannot be folded at this sha", e) } }; // its error goes to the log (POS-578)
     }
 
     return { code: 200, body: {
@@ -904,7 +923,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     try { eng = await engine(); }
     catch (e) {
       return { code: 503, body: { error: "bounce", defect: "the world engine cannot be read at this office",
-        hint: `${String(e?.message ?? e).slice(0, 160)}. investigate is the engine's judgment about a mark and its neighbourhood; this door refuses rather than composing one of its own.` } };
+        hint: `${faultLogged("the world engine cannot be read at this office (investigate)", e)} investigate is the engine's judgment about a mark and its neighbourhood; this door refuses rather than composing one of its own.` } };
     }
 
     const world = eng.build.assembleWorld({ worldState, skeleton });
@@ -964,7 +983,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
         WHERE action = ANY($1) ${live.DEPARTURE_ORDER_SQL}`, [live.DEPARTURE_ACTIONS]);
     let derived;
     try { derived = live.departureRecords(rows); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: faultLogged("a departure act matches no known era", e) } }; }
     const all = derived.records.map((d) => ({
       iso: d.iso, handle: d.handle,
       from: d.from, toward: d.toward, at: d.at,
@@ -1025,7 +1044,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     const dep = await departuresForEndpoints(p);
     let derived;
     try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: faultLogged("a departure act matches no known era", e) } }; }
     const fc = live.fractionalCrossing(at.ms);
     return { code: 200, body: {
       what: "every walker's derived position at one instant — position is a function of (record, clock); nothing en route is stored",
@@ -1069,7 +1088,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     ]);
     let derived;
     try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a departure act matches no known era", hint: faultLogged("a departure act matches no known era", e) } }; }
     const world = live.worldFromRows({ marks: markRows, identities: idRows });
     const fc = live.fractionalCrossing(at.ms);
     const roll = rollRows.map((r) => r.handle);
@@ -1175,7 +1194,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
     const dials = talk.sayDials(markRows.filter((m) => m.status === "standing"));
     let derived;
     try { derived = talk.voiceRecords(rows, { centreOf: (id) => centres.get(id) ?? null }); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a voice act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a voice act matches no known era", hint: faultLogged("a voice act matches no known era", e) } }; }
     const body = talk.conversationsOf(derived.voices, {
       now: at.ms,
       earshotM: dials.earshot_m.value,
@@ -1209,7 +1228,7 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
         WHERE action = ANY($1) ${live.PASSAGE_ORDER_SQL}`, [live.PASSAGE_ACTIONS]);
     let derived;
     try { derived = live.passageRecords(rows); }
-    catch (e) { return { code: 500, body: { error: "bounce", defect: "a passage act matches no known era", hint: String(e.message).slice(0, 400) } }; }
+    catch (e) { return { code: 500, body: { error: "bounce", defect: "a passage act matches no known era", hint: faultLogged("a passage act matches no known era", e) } }; }
     const fc = live.fractionalCrossing(at.ms);
     const occ = live.occupancyAt(derived.passages, fc);
     const handle = searchParams?.get("handle");
@@ -1230,7 +1249,11 @@ export async function world2Serve(path, searchParams, { p: injected = null } = {
   }
 
   if (path === "/world2/apex") {
-    const r = await world2Apex(searchParams, { p });
+    // ONE STORE, ONE ACTIVITY ANSWER (WLD-29 review 3887dfe1): only a store a
+    // CALLER injected travels as `p`. The office's own pool is left for the apex
+    // to obtain itself, so it reads (and shares) the office store's activity
+    // under the same key the 1.0 apex and eyes use — never as a second store.
+    const r = await world2Apex(searchParams, injected ? { p: injected } : {});
     return r.error ? r.error : { code: 200, body: r.body };
   }
 
@@ -1294,8 +1317,11 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
   if (near?.error) return { error: near.error };
   if (!near) return bounce(422, "an apex answer is taken from somewhere",
     "?x=<m>&y=<m> — the town's grid, metres from the Origin. This is the keyless spectator read; the embodied one is 1.0's `world {}` verb with a key.");
-  const askedCrossing = Number(searchParams?.get("crossing"));
-  const n = Number.isFinite(askedCrossing) ? askedCrossing : currentCrossing();
+  // THE CROSSING ASKED, BY 1.0's RULE (WLD-29; crossings.mjs § askedCrossing):
+  // this read `Number(searchParams.get("crossing"))`, and Number(null) is 0, so
+  // every bare read stood at crossing 0. Absent, empty, malformed or negative
+  // is the current crossing; an explicit 0 is crossing 0.
+  const n = askedCrossing(searchParams?.get("crossing"));
 
   // ── the law pin, BEFORE anything reads law ───────────────────────────────
   const [{ rows: [open] }, { rows: [closed] }, { rows: [head] }] = await Promise.all([
@@ -1322,7 +1348,7 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
   try { eng = await engine(); }
   catch (e) {
     return bounce(503, "the world engine cannot be read at this office",
-      `${String(e?.message ?? e).slice(0, 160)}. \`within\` is a containment chain and \`nearby\` a field of view; both are the engine's judgment. This door refuses rather than inventing a spine — a resident told they are somewhere they are not is worse than a resident told nothing.`);
+      `${faultLogged("the world engine cannot be read at this office (orient)", e)} \`within\` is a containment chain and \`nearby\` a field of view; both are the engine's judgment. This door refuses rather than inventing a spine — a resident told they are somewhere they are not is worse than a resident told nothing.`);
   }
 
   const world = eng.build.assembleWorld({ worldState, skeleton });
@@ -1397,8 +1423,7 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
   // standpoints: "the full mark record for everything `within` and `nearby`
   // just named, plus the town's ground (its region rings and its water), so a
   // reader never has to go and fetch what this answer already told them
-  // about" — then the mover's own class, so the walk desk can price a stride
-  // (world.mjs § markRecords, 2026-09-13). Same ids, same order, from the
+  // about". Same ids, same order, from the
   // world this answer was just judged over. `nearby` here is the final list:
   // this door composes no portal, so there is no loose-thing injection to
   // take the ids after (1.0's note on `withLoose` applies to the standpoint
@@ -1406,8 +1431,7 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
   //
   // Each record is the fold's PUBLISHED shape, projected from the row —
   // `apex-reads.mjs § records` names the seven fields no row holds and why
-  // they are absent rather than zero. The mover's class is law, not a row, so
-  // it is read from the same `law_projection` rows the affordances were.
+  // they are absent rather than zero.
   const ground = apex.groundMarkIdsOf({
     marks: world.marks, skeleton, regionSlugs: eng.regions.REGION_SLUGS,
     polygonOf: eng.geometry.polygonOf, waterFeatures: eng.water.waterFeatures, seaFeature: eng.water.seaFeature,
@@ -1415,10 +1439,21 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
   const records = apex.recordsBlock({
     marks: world.marks, ids: [...spine.map((m) => m.id), ...nearby.map((o) => o.id)], extra: ground,
   });
-  if (!records[STRIDE_MARK_ID]) {
-    const stride = apex.classRecordOf(lawRows.find((r) => r.kind === "class" && r.data?.id === STRIDE_MARK_ID));
-    if (stride) records[STRIDE_MARK_ID] = stride;
-  }
+  // No class rides `records` by name (WLD-29, the pointer model): a page reads
+  // its stride from GET /world/dials, as 1.0's apex says (world.mjs § markRecords).
+  //
+  // ── THE PORCH LIGHTS (WLD-29) ────────────────────────────────────────────
+  // `lit` on each house `within` and `nearby` show, as 1.0's apex carries it,
+  // from the office's shared activity answer: the STORE's, so this door's own
+  // store shares the office's (the pen's default key) and an injected pool is
+  // its own. No house in sight, no activity asked.
+  const isHouse = (id) => markById.get(id)?.kind === "parcel";
+  const houses = [...spine, ...nearby].some((o) => isHouse(o.id));
+  const activity = houses
+    ? await readHouseholdActivity({ current: n === currentCrossing(), pool: injected ?? null })
+    : null;
+  const lit = (list) => (activity ? list.map((o) => (isHouse(o.id) ? { ...o, lit: litOf(markById.get(o.id), activity) } : o)) : list);
+  const litUnknown = activity ? lightsUnknownWhy(activity) : null;
 
   return { body: {
     standpoint: { x: near.x, y: near.y, stance: "nobody" },
@@ -1427,10 +1462,11 @@ export async function world2Apex(searchParams, { p: injected = null } = {}) {
     // carries the key at all, and a spectator's note is nobody's. An absent key
     // here would read as "this door does not do notes", a different claim.
     note: null,
-    within: spine,
-    nearby,
-    // Every id `within` and `nearby` name, plus the town's ground set and the
-    // mover's class — the one small whole a painting needs for its floor.
+    within: lit(spine),
+    nearby: lit(nearby),
+    ...(litUnknown ? { lit_unknown: litUnknown } : {}),
+    // Every id `within` and `nearby` name, plus the town's ground set — the one
+    // small whole a painting needs for its floor.
     records,
     ...(departures ? { departures } : {}),
     ...(present ? { present } : {}),
@@ -1519,7 +1555,7 @@ export async function departuresForEndpoints(p) {
         if (!got.discard) return { records: got.records, eras: got.eras, snapshot: got.snapshot };
         discarded = got.discard;
       }
-    } catch (e) { discarded = `the snapshot could not be read (${String(e?.message ?? e).slice(0, 160)})`; }
+    } catch (e) { discarded = `the snapshot could not be read (${plainReason(e, "record", "the twin's departures snapshot")})`; }
   }
   const { rows } = await p.query(
     `SELECT id, at, crossing, actor, action, payload FROM acts
@@ -1539,7 +1575,7 @@ export async function apexPresent(p, { world, at, engine: eng, roster = "roll" }
   ]);
   let derived;
   try { derived = dep.records ? dep : live.departureRecords(dep.rows); }
-  catch (e) { return { unavailable: "a departure act matches no known era", detail: String(e?.message ?? e).slice(0, 200) }; }
+  catch (e) { return { unavailable: "a departure act matches no known era", detail: plainReason(e, "record", "the twin's departure eras") }; }
   const fc = live.fractionalCrossing(Date.now());
   const roll = roster === "roll" ? rollRows.map((r) => r.handle) : [];
   // BEFORE THE 500 m FILTER, and that ordering is the whole of it (#2900). The

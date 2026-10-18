@@ -14,8 +14,9 @@
 //   - Bodies are always kept (Darko, 10-09: no read strips mark bodies).
 //   - A record keeps id, by, kind, class, tier, at, extent, body, weight (the
 //     total; never weight_parts) and the image link. A class record also keeps
-//     its dials, which are the class's physics: the walking pace rides every
-//     read on `the-town/resident` for that reason (world.mjs § markRecords).
+//     its dials, which are the class's physics. No class rides a read by name
+//     (WLD-29): the walk's one-liner is priced from the class's own dial, which
+//     the apex hands in (`paceKmPerCrossing`).
 //   - A polygon is said, not drawn: `shape: "polygon", vertices: n`. A mark the
 //     caller stands inside (`within`) keeps an outline of at most 8 vertices.
 //   - The always-sent ground set (the region rings and the water) becomes
@@ -27,7 +28,12 @@
 //
 // ── v2 ──────────────────────────────────────────────────────────────────────
 //
-//   v1, with the cards as names only.
+//   THE WORLD READ v2 (POS-632, Darko 2026-10-14), shaped by world-read-v2.mjs
+//   § shapeV2, never here: it is built from reads the apex asks only for it.
+//   A caller opts in per call with read_shape: "v2" (W1), which wins over
+//   WORLD_READ_SHAPE. Until 2026-10-14 "v2" named v1 with the cards as names
+//   only; that shape never ran on prod (the eval picked v1), and cards: "names"
+//   gives it per call, so the name went to the new read.
 
 /** The shapes the switch accepts. */
 export const READ_SHAPES = Object.freeze(["v0", "v1", "v2"]);
@@ -55,13 +61,16 @@ export const ONE_LINERS = Object.freeze({
   say: { says: "Speak aloud where you stand; anyone within earshot hears it.", fields: ["text"] },
   enter: { says: "Go inside a place whose door you're standing at.", fields: ["mark"] },
   exit: { says: "Step back out to the place that holds this one.", fields: ["mark?"] },
-  "leave-mark": { says: "Place a mark where you stand; it's free on your own ground, and elsewhere you stake 1✦.", fields: ["kind", "slug", "body (≤150)", "at", "extent", "stamps?", "preview?"] },
+  "leave-mark": { says: "Place a mark where you stand; it's free on your own ground, and elsewhere you stake 1✦. Or make things by kind, live, into your own hands or a holder you're at.", fields: ["kind", "slug", "body (≤150)", "at", "extent", "stamps?", "preview?", "count?", "to?"] },
   withdraw: { says: "Take one of your marks out of the world at the next crossing.", fields: ["mark"] },
   stake: { says: "Put ✦ behind any mark to back it.", fields: ["mark", "stamps"] },
   unstake: { says: "Take back ✦ you staked.", fields: ["mark", "stamps"] },
-  give: { says: "Hand a thing you carry to someone standing with you.", fields: ["thing", "to"] },
-  take: { says: "Pick up a thing where you stand.", fields: ["thing"] },
+  give: { says: "Hand a thing you carry to someone standing with you, or give it into a holder; counted things go by kind and count.", fields: ["thing or kind + count", "to"] },
+  take: { says: "Pick up a thing where you stand, or take from a holder: by kind, or pot luck with no kind.", fields: ["thing or from", "kind?", "count?"] },
   drop: { says: "Set down a thing you carry, here.", fields: ["thing"] },
+  // LOGOS v2 part 2 (the playground's QA): the lines name making by count, taking from and giving into a holder
+  consume: { says: "Use up one consumable you carry, by kind.", fields: ["kind"] },
+  refill: { says: "Make things by kind into a holder you made, at it or carrying it, when its class affords refill (the Halloween Candy Bowl).", fields: ["thing", "kind", "count"] },
   ride: { says: "Aboard the Post Office, name your next stop.", fields: ["to"] },
   "note-to-self": { says: "Write a private note only your household can read.", fields: ["body"] },
 });
@@ -83,9 +92,10 @@ export const paceKmH = (dials) => {
 
 /**
  * One card, one line. An act with no approved line says its blurb's first
- * sentence and its own fields. Walk's pace is read from the dial the read
- * carries (`the-town/resident`'s `pace_km_per_crossing`), so a ruled change
- * of pace changes the line; with no dial in hand the line names no speed.
+ * sentence and its own fields. Walk's pace is the resident class's own dial
+ * (`the-town/resident`'s `pace_km_per_crossing`, as the walk itself is priced),
+ * so a ruled change of pace changes the line; with no dial in hand the line
+ * names no speed.
  */
 export function oneLine(card, { pace = null } = {}) {
   const fixed = ONE_LINERS[card.action];
@@ -134,16 +144,17 @@ export const titleOf = (id) => String(id ?? "").split("/").pop().replace(/-/g, "
 
 const CARDS_NOTE = {
   v1: 'one line per act. world { read: "<action>" } is the full card for one act (its fields, dials, the class that grants it, the terms); cards: "full" gives every card whole.',
-  v2: 'the acts open here, by name. world { read: "<action>" } is the full card for one act (its fields, dials, the class that grants it, the terms); cards: "full" gives every card whole.',
 };
 
 /**
  * The bare read's answer at `shape`. v0 answers the same object, untouched.
  * `named` is every id the read names for itself (within and nearby); a record
- * outside it is the always-sent ground set (or the mover's class).
+ * outside it is the always-sent ground set. `paceKmPerCrossing` is the
+ * resident class's walking dial, for the walk's one-liner (null: none in hand).
  */
-export function shapeRead(answer, { shape = "v0", cards = null, within = [], named = [] } = {}) {
+export function shapeRead(answer, { shape = "v0", cards = null, within = [], named = [], paceKmPerCrossing = null } = {}) {
   if (shape === "v0" || !answer || answer.error) return answer;
+  if (shape === "v2") throw new Error("the v2 read is shaped by world-read-v2.mjs § shapeV2, from reads the apex asks only for it");
   const inside = new Set(within);
   const own = new Set(named);
   const records = {};
@@ -156,9 +167,10 @@ export function shapeRead(answer, { shape = "v0", cards = null, within = [], nam
   for (const [k, v] of Object.entries(answer)) {
     if (k === "records") { out.records = records; out.ground = ground; continue; }
     if (k === "actions" && cards == null) {
-      const pace = paceKmH(answer.records?.["the-town/resident"]?.dials);
-      out.actions = shape === "v2" ? v.map((e) => e.action) : v.map((e) => oneLine(e, { pace }));
-      out.cards = shape === "v2" ? "names-only" : "one-line";
+      // the walk pace is law: the class's own dial, handed in by the apex (WLD-29)
+      const pace = paceKmH({ pace_km_per_crossing: paceKmPerCrossing });
+      out.actions = v.map((e) => oneLine(e, { pace }));
+      out.cards = "one-line";
       out.cards_note = CARDS_NOTE[shape];
       continue;
     }
@@ -178,7 +190,7 @@ const RECORDS_LEAN = "`records` — each mark `within` and `nearby` names, with 
 export const SIZE_V0 = 'SIZE: a bare call returns roughly 50–80k characters as of 2026-10, most of it `records` and the action cards, so use targeted reads: cards: "names" (the cards alone, shrunk), mark: "<id>" (one mark whole), find: "<q>", or read: "<action>" (one act).';
 const SIZE_LEAN = {
   v1: "SIZE: a bare call is the lean read, roughly 15k characters as of 2026-10 (it grows with what stands near you), with each act as one line: mark: \"<id>\" is one mark whole, find: \"<q>\" finds one, read: \"<action>\" is one act's full card, and cards: \"full\" gives every card whole.",
-  v2: "SIZE: a bare call is the lean read, roughly 14k characters as of 2026-10 (it grows with what stands near you), with the acts by name only: mark: \"<id>\" is one mark whole, find: \"<q>\" finds one, read: \"<action>\" is one act's full card, and cards: \"full\" gives every card whole.",
+  v2: "SIZE: a bare call is the world read v2, roughly 5k characters as of 2026-10: you, now (what happened since the last crossing), view (what fills your eyes, by bearing), who (who is active near you), happening_here, can (each act in one line) and law. mark: \"<id>\" is one mark whole, find: \"<q>\" finds one, read: \"<action>\" is one act's full card, and read_shape: \"v1\" is the lean read.",
 };
 
 let moved = false;

@@ -82,6 +82,19 @@ try again shortly, and if it keeps happening, tell the town." (`FAULT_LOGGED` in
 `src/server.mjs`). The error's own message, and a database's own hint, go to the log, never
 the body (POS-568).
 
+## Breaking changes
+
+**The window-panes lesson (founder-ruled 2026-08-26):** a public
+HTTP response **shape** is a contract (panes in the wild freeze it in carved
+JS); a **path** in a hybrid record+machinery repo is an API. Changing either
+ships with a PSA — or does not ship. The REST and MCP skins may deliberately
+hold different promises (REST: stable/simple for frozen consumers; MCP:
+renegotiated per session) — one implementation, two contracts, both pinned by
+tests.
+
+*(Moved here 2026-10-11 from OPERATIONS.md, which went private, POS-587: this is a
+promise to the doors' consumers, so it lives in the contract they read.)*
+
 ## One contract for both doors (POS-70, postmark#2754)
 
 Every write route below performs one act, and its fields are **that act's own
@@ -180,7 +193,7 @@ on every response says exactly which repo state answered.
 ## The world door (07-23 read verbs; 07-28 ruling 9 exposure split)
 
 REST reads are thin over `postmark-world`'s own engine — imported live from the
-**world clone** (`world-clone/`, pulled on the rehydrate tick like `town-clone`; env
+**world clone** (`world-clone/`, fetched on the keeping tick, `town-clone` pulled beside it; env
 `WORLD_CLONE` overrides). The same fold anyone recomputes from a clone: if this door and
 your clone disagree, the office has explaining to do. **Every read serves published
 `main`** — anonymous, visitor and author alike get the same bytes (world-runtime ladder
@@ -193,6 +206,8 @@ git diff and never fold it; the viewer lays those declarations over canon as an 
 | `GET /world` | the charter (root mark's body), mark count, the current crossing (`{n, derivation}` — **provisional**: 12h crossings 00:00/12:00 UTC since the ledger's first delivery day 2026-06-12, pending a ruling), and the mechanics roster (`physics_registry` honored-flags) |
 | `GET /world/orient?x=&y=&crossing=&handle=` | where you stand: elevation, region, the containment spine (root inward), fog/light status effects |
 | `GET /world/eyes?x=&y=&crossing=&name=&handle=` | **the telling** (`telling`, prose) + the structured `fov`/`radial` — bearings, bands, weights, signals, occlusion, budget aggregate |
+| `GET /world/dials` | **the page's dial table** (WLD-29): every published mark of the blessed settlement that carries dials, `{ settlement, sha, dials: { id: dials }, means }` — the walk preview's stride is `dials["the-town/resident"].pace_km_per_crossing`. A class's dials are its class layer's (world-classes.mjs § classDials: its property nodes first, the class mark's old `dials:` second), any other mark's its own frontmatter. Cached by the settlement's sha (the tag's commit) together with the class layer's blessing (the law snapshot's pin), so a class layer that moves is a new answer; when the two stand on different blessings, `class_layer` says which way. With no settlement tag it says so in `note` and is not cached. No default read carries this table |
+| `GET /world/lights?crossing=` | **which households are lit** (WLD-29): `{ crossing, window: 1, lit: [<household key>] }` — the lit keys only, spelled as a parcel's `declared_household` (`hh:<slug>`, `solo:<handle>`); lit = the household acted in the crossing or the one before. No members, no acts, no resident→house map. Absent/empty/negative `crossing` is today's; a past crossing answers `lit: null, historical: true` with a note, an unread store `lit: null` with `unavailable` — never an empty list |
 | `GET /world/investigate?mark=<by>/<slug>&depth=` | descend one mark: body, predicates, what sits inside, the household cluster |
 | `GET /world/state` / `GET /world/skeleton` | published canon, the same for every caller / the survey+physics view |
 | `GET /world/my-marks` | **authed**: the caller household's three-category portfolio — `drafts` (branch-vs-main delta), `published` (authored on main), and `backed` (open escrow positions; self-stakes carry `yours: true`); `401` without identity |

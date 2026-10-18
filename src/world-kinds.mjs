@@ -429,9 +429,13 @@ export async function callKinds(route, args, key, actor, deps) {
         const fold = foldUnits(units);
         const edible = kindEdgesOf(fold, actor).filter((e) => lineageOf(e.kind, view.extendsOf).includes("consumable"));
         if (args.kind != null && !edible.some((e) => e.kind === String(args.kind))) {
+          // WORDS ONLY (hotfix w43.1, XH2): a kind that is no consumable is told so, by its class line, and
+          // the consumables you do hold are named; "no thing in your hands" with candies in them read as false
           const held = kindEdgesOf(fold, actor).some((e) => e.kind === String(args.kind));
-          throw bounce(held ? 422 : 409, held ? `a ${args.kind} is not a consumable` : `no ${args.kind} in your hands`,
-            held ? "consume uses up what is made to be used up (a consumable, as candy is). Nothing was changed." : "Nothing was changed.");
+          const consumable = lineageOf(String(args.kind), view.extendsOf).includes("consumable");
+          const yours = edible.length ? `you hold ${edible.map((e) => blurOf({ edges: [e], things: [], extendsOf: view.extendsOf }).shows).join(", ")} to consume: consume { kind: "${edible[0].kind}" }` : "you hold nothing to consume";
+          throw bounce(held || !consumable ? 422 : 409, held || !consumable ? `a ${args.kind} is not a consumable` : `no ${args.kind} in your hands`,
+            held || !consumable ? `consume uses up what is made to be used up (a consumable, as candy is); ${yours}. Nothing was changed.` : `${yours}. Nothing was changed.`);
         }
         const edge = selectKind(edible, args.kind ?? null, { where: "your hands", verb: "consume" });
         const plan = { action: UNIT_ACTION.consume, object: String(actor), moves: [{ from: String(actor), to: null, kind: edge.kind, n: 1 }], edge: { giver: String(actor), receiver: null } };

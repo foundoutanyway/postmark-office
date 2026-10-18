@@ -130,3 +130,18 @@ test("B · a pot-luck draw that falls on a holder says so, says pot luck draws o
   // the draw and the rule are unchanged: kind: candy lands at once
   assert.equal((await go(w, "take", { from: BOWL, kind: "candy", count: 2 }, CLEO)).did, "take");
 });
+
+// ── C ───────────────────────────────────────────────────────────────────────
+
+test("C · consume { kind: \"thing\" } with candies in hand says a thing is not a consumable and names the candies", async () => {
+  const w = world([]);
+  w.seed(ASH, 3);
+  await assert.rejects(go(w, "consume", { kind: "thing" }), (e) => {
+    assert.equal(e.code, 422);
+    assert.equal(e.defect, "a thing is not a consumable");
+    assert.equal(e.hint, 'consume uses up what is made to be used up (a consumable, as candy is); you hold 3 candies to consume: consume { kind: "candy" }. Nothing was changed.');
+    return true;
+  });
+  // a consumable kind you do not hold is still "not in your hands", now with what you do hold
+  await assert.rejects(go(w, "consume", { kind: "consumable" }), (e) => e.code === 409 && e.defect === "no consumable in your hands" && /you hold 3 candies to consume/.test(e.hint));
+});

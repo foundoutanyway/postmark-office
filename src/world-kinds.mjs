@@ -350,7 +350,19 @@ export async function callKinds(route, args, key, actor, deps) {
         for (const t of holdingsOf(attachments, from)) inside.push({ thing: t, class: markClassOf(await deps.markById(t).catch(() => null)) ?? "thing" });
         const plan = { ...planTakeKinds({ fold, actor, from, kind, n, seed, things: inside, extendsOf: view.extendsOf }), seed };
         refuseOverCarry({ who: actor, units: totalOf(fold, actor) + inFlight, things: holdingsOf(attachments, actor).length, adding: n, cap });
-        await refuseSecondHolder({ who: actor, actor, adding: plan.things, held: holdingsOf(attachments, actor), markById: deps.markById, view });
+        try {
+          await refuseSecondHolder({ who: actor, actor, adding: plan.things, held: holdingsOf(attachments, actor), markById: deps.markById, view });
+        } catch (e) {
+          // WHY THE DRAW WAS DECLINED, in words (hotfix w43.1; Darko 2026-10-18 12:04: "make it clear WHY the
+          // potluck draw resulted in a decline"). Words only: the draw, its seed and the one-holder rule are unchanged.
+          if (e?.code !== 409 || !Array.isArray(e.coming)) throw e;
+          const there = [...kindEdgesOf(fold, from).map((k) => blurOf({ edges: [k], things: [], extendsOf: view.extendsOf }).shows), ...inside.map((x) => `${x.thing} (a ${x.class})`)].join(", ");
+          const drew = `${e.coming.join(", ")}, ${e.coming.length === 1 ? "a holder" : "holders"}`;
+          const carrying = e.holders.some((h) => !e.coming.includes(h));
+          throw bounce(409, `the draw fell on ${drew}, and ${e.defect}`,
+            `${kind == null ? "pot luck draws" : `a draw within ${kind} draws`} over everything ${from} holds, whole things included, and a draw that lands on a holder you cannot carry is refused whole. kind: narrows the draw to what you name; ${from} holds ${there}. ${carrying ? `Or ${e.hint}` : e.hint.charAt(0).toUpperCase() + e.hint.slice(1)}`,
+            { holders: e.holders, drew: e.coming, limit: e.limit });
+        }
         // ONE EDGE, ONE TRANSACTION (review-610 S4): the draw's record (its seed, its kinds, the whole
         // marks it took) and each whole mark's own holding act commit together, or nothing moves
         const also = [];

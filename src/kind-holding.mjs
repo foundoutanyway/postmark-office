@@ -148,10 +148,10 @@ export async function refuseSecondHolder({ who, actor, adding = [], held = [], m
     const over = carrying.length + coming.length - limit; // how many must be set down first
     const setDown = carrying.length === 1 ? "set it down first" : over >= carrying.length ? "set them down first" : `set ${over} of them down first`;
     throw bounce(409, mine ? `you're already carrying ${what}` : `${who} is already carrying ${what}`,
-      `${mine ? setDown : `it goes to them once they set ${carrying.length === 1 ? "theirs" : "those"} down`}. ${nothing}`, { holders: carrying, limit });
+      `${mine ? setDown : `it goes to them once they set ${carrying.length === 1 ? "theirs" : "those"} down`}. ${nothing}`, { holders: carrying, coming, limit });
   }
   throw bounce(409, `that would put ${coming.length} holders in ${mine ? "your" : `${who}'s`} hands (${coming.join(", ")})`,
-    `a resident carries ${limit === 1 ? "one holder" : `${limit} holders`} at a time. ${nothing}`, { holders: coming, limit });
+    `a resident carries ${limit === 1 ? "one holder" : `${limit} holders`} at a time. ${nothing}`, { holders: coming, coming, limit });
 }
 
 /** Is this thing portable? `thing/portable` is sovereign, default true (the lead's settlement, 2026-10-17). */

@@ -111,3 +111,22 @@ test("A · a holder with nothing nested inside reads as before (the blur is the 
   const made = await go(w, "make", { kind: "candy", count: 2, to: BOWL });
   assert.deepEqual([made.holds.count, made.holds.shows, made.holds.whole], [10, "10 candies", undefined]);
 });
+
+// ── B ───────────────────────────────────────────────────────────────────────
+
+test("B · a pot-luck draw that falls on a holder says so, says pot luck draws over everything, and names kind:", async () => {
+  // the bowl holds 2 candies and a bag; sb-cleo already carries a bag of her own
+  const w = world([row(BOWL, CLOTH), row(CLEO, BAG)]);
+  w.seed(BOWL, 2);
+  // pot luck over 3 (2 candies + the bag), count 3: the draw must include the bag
+  await assert.rejects(go(w, "take", { from: BOWL, count: 3 }, CLEO), (e) => {
+    assert.equal(e.code, 409);
+    assert.equal(e.defect, `the draw fell on ${CLOTH}, a holder, and you're already carrying a holder (${BAG})`);
+    assert.equal(e.hint, `pot luck draws over everything ${BOWL} holds, whole things included, and a draw that lands on a holder you cannot carry is refused whole. kind: narrows the draw to what you name; ${BOWL} holds 2 candies, ${CLOTH} (a halloween-candy-bag). Or set it down first. Nothing was changed.`);
+    assert.deepEqual(e.drew, [CLOTH]);
+    return true;
+  });
+  assert.equal(w.written(), 0, "nothing was taken");
+  // the draw and the rule are unchanged: kind: candy lands at once
+  assert.equal((await go(w, "take", { from: BOWL, kind: "candy", count: 2 }, CLEO)).did, "take");
+});

@@ -192,8 +192,8 @@ export const EXPLAIN_DOORS = Object.freeze(Object.keys(EXPLAIN));
 export const TUTORIAL = [
   "POSTMARK — how to read the town (the same moves on every door: doorstep, world, household, town)",
   "1. Look:      doorstep { }     the best of all three in one glance. Start here.",
-  "              world { read_shape: \"v2\" }   where you are and what's going on, compact: the recommended look.",
-  "              world { }        the older, fuller default read of the same.",
+  "              world { read_shape: \"v2\" }   the compact glance at where you are: the recommended way to look.",
+  "              world { }        the older, fuller read (still the default).",
   "              household { }    who you are and what your house needs next.  town { }  the town's public face.",
   "2. Ask:       explain: \"<path>\"   what any part of a read is for:   world { explain: \"who\" }",
   "              explain: \"<class>\"  what a thing IS, up its class chain: world { explain: \"thing\" } (every instance read names its class)",

@@ -370,7 +370,7 @@ test("v1: the description says the lean read and its size, and cards takes \"ful
       assert.match(APEX_TOOL.description, /SIZE: a bare call is the lean read, roughly \d+k characters as of 2026-10/);
       assert.doesNotMatch(APEX_TOOL.description, /50–80k/);
       assert.doesNotMatch(APEX_TOOL.description, /the full mark record/);
-      assert.match(APEX_TOOL.description, /read_shape: "v2" is the compact read, opt-in per call, at about half this size/, "POS-687: the SIZE sentence names v2");
+      assert.match(APEX_TOOL.description, /read_shape: "v2" is the compact read, at about half this size: opt-in per call, while the default stays as it is/, "POS-687: the SIZE sentence names v2");
       assert.deepEqual(APEX_TOOL.inputSchema.properties.cards.enum, ["names", "full"]);
     } finally { setEnv("WORLD_READ_SHAPE", undefined); }
   }

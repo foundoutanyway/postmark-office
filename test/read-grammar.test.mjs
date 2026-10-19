@@ -122,8 +122,8 @@ test("PR-5: the MCP server's instructions are the tutorial, the same text explai
 test("POS-687: the tutorial's look leads with the v2 world read, names plain world { } the older default, and says only v2 hands a cursor", () => {
   const lines = TUTORIAL.split("\n");
   const worlds = lines.filter((l) => /^\s+world \{/.test(l));
-  assert.match(worlds[0], /world \{ read_shape: "v2" \}.*the recommended look/);
-  assert.match(worlds[1], /world \{ \}.*the older, fuller default/);
+  assert.match(worlds[0], /world \{ read_shape: "v2" \}.*the compact glance.*the recommended way to look/);
+  assert.match(worlds[1], /world \{ \}.*the older, fuller read \(still the default\)/);
   assert.match(lines.find((l) => l.includes("4. Catch up:")), /the doorstep and the v2 world read hand you a cursor/);
   assert.doesNotMatch(TUTORIAL, /2026-w44/);
 });

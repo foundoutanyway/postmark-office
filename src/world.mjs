@@ -4541,7 +4541,10 @@ async function leaveMarkAct(worldClone, payload = {}, key = null, { setDown = nu
       throw bounce(503, `who may make a "${klass}" could not be read`,
         `the class layer is not readable here, so the office cannot tell whether this class is a resident's to make; nothing was written — try again shortly${disclosed ? ` — NOTE: ${disclosed}` : ""}`);
     const makers = droppedUnit ? null : makersOf(klass, classProperty);
-    if (!droppedUnit && !makers.may)
+    // THE ADMIN ROLE (WLD-21, Darko 2026-10-18): an admin household may make the
+    // three passage classes exactly (the world's admin-makers.mjs), asked only
+    // after makers said no; the refusal's words for everyone else are unchanged (G6).
+    if (!droppedUnit && !makers.may && !(await (await import("./admin-role.mjs")).adminMakes(klass, by)))
       throw bounce(422, `class "${klass}" is town-only`,
         makers.read
           ? `its makers is false (set on ${makers.from}): a resident may make an instance unless it would give them control over something that mints or confers standing (the-town/nothing-you-control-mints), so this class is the town's to make — world { explain: "${klass}" } says who makes what`

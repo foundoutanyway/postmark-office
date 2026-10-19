@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openOauthDb, mintBerth, berthLookup, berthTaken, acknowledgeVisitorRules, BERTH_SLUG, FROM_TOWN } from "../src/oauth.mjs";
 import { isReservedHandle } from "../src/residency.mjs";
+import { __setPoolForTest as setActsPool } from "../src/world2-acts.mjs";
+import { holdStoreProbe } from "../src/index-probe.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "postmark-berth-"));
 const odb = openOauthDb(join(dir, "oauth.db"));
@@ -86,4 +88,46 @@ test("the from_town grammar admits codepoint towns and plain names, refuses nois
     assert.ok(FROM_TOWN.test(good), good);
   for (const bad of ["", "-lead", "UPPER", "spa ce", "x".repeat(65)])
     assert.ok(!FROM_TOWN.test(bad), bad);
+});
+
+// #3965. The server's resolver hands every lookup a null `db` since office.db
+// went (POS-656), and the upgrade branch was gated on `db`, so a co-signed
+// berth never upgraded. This drives the lookup exactly as the resolver does:
+// null `db`, the store's pins (a stub pool, the world-apex seam), the store's
+// held probe (a stub naming the handle a resident). The pre-fix lookup answers
+// { berth: true, household: null, cosigned: true } here.
+test("a co-signed berth upgrades in place under the resolver's null db (#3965)", async () => {
+  const { key } = await mintBerth(odb, "upgrade-heir");
+  odb.prepare("UPDATE berths SET cosigned_gh_id = 4242, cosigned_gh_login = 'heir-human', cosigned_at = 1 WHERE slug = 'upgrade-heir'").run();
+  const saved = { WORLD2_PG: process.env.WORLD2_PG, WORLD2_PG_URL: process.env.WORLD2_PG_URL };
+  process.env.WORLD2_PG = "1";
+  process.env.WORLD2_PG_URL = "postgres://stub.invalid/never-dialled";
+  setActsPool({ query: async () => ({ rows: [{ handle: "upgrade-heir", login: "heir-human", gh_id: 4242 }] }) });
+  holdStoreProbe({
+    hasResident: (h) => h === "upgrade-heir", hasLetter: () => false,
+    loginStamp: () => "stub", loginRows: () => [], mailStateJson: () => null,
+  });
+  try {
+    const k = await berthLookup(odb, null, null, key);
+    assert.equal(k.keyKind, "berth-upgraded", "the same key answers as the household");
+    assert.ok(k.handles.has("upgrade-heir"), "the household holds the berth's handle");
+    assert.equal(k.household, "heir-human");
+    assert.equal(k.cosigned, true);
+    assert.equal(k.berth, undefined, "a settled household sheds the berth marker");
+    assert.equal(k.harbor, undefined);
+  } finally {
+    setActsPool(null);
+    holdStoreProbe(null);
+    for (const [name, v] of Object.entries(saved)) { if (v == null) delete process.env[name]; else process.env[name] = v; }
+  }
+});
+
+test("an unco-signed berth never asks the registry (#3965)", async () => {
+  const { key } = await mintBerth(odb, "still-at-quay");
+  // No pool, no probe: if the lookup asked, the refusing probe or the unpointed
+  // store would throw. It must answer the quay shape without asking.
+  const k = await berthLookup(odb, null, null, key);
+  assert.equal(k.berth, true);
+  assert.equal(k.cosigned, false);
+  assert.equal(k.keyKind, undefined);
 });

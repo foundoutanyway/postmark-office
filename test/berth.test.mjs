@@ -92,22 +92,35 @@ test("the from_town grammar admits codepoint towns and plain names, refuses nois
 
 // #3965. The server's resolver hands every lookup a null `db` since office.db
 // went (POS-656), and the upgrade branch was gated on `db`, so a co-signed
-// berth never upgraded. This drives the lookup exactly as the resolver does:
-// null `db`, the store's pins (a stub pool, the world-apex seam), the store's
-// held probe (a stub naming the handle a resident). The pre-fix lookup answers
-// { berth: true, household: null, cosigned: true } here.
-test("a co-signed berth upgrades in place under the resolver's null db (#3965)", async () => {
-  const { key } = await mintBerth(odb, "upgrade-heir");
-  odb.prepare("UPDATE berths SET cosigned_gh_id = 4242, cosigned_gh_login = 'heir-human', cosigned_at = 1 WHERE slug = 'upgrade-heir'").run();
+// berth never upgraded. These drive the lookup exactly as the resolver does:
+// null `db`, the store's pins and ashore rows (a stub pool, the world-apex
+// seam), the store's held probe (a stub naming who stands in the residents
+// index). The pre-fix lookup answers { berth: true, household: null,
+// cosigned: true } for all three co-signed cases.
+const cosignedBerth = async (slug, ghId, login) => {
+  const { key } = await mintBerth(odb, slug);
+  odb.prepare("UPDATE berths SET cosigned_gh_id = ?, cosigned_gh_login = ?, cosigned_at = 1 WHERE slug = ?").run(ghId, login, slug);
+  return key;
+};
+const withStore = async ({ pins, residents = [], ashore = [] }, fn) => {
   const saved = { WORLD2_PG: process.env.WORLD2_PG, WORLD2_PG_URL: process.env.WORLD2_PG_URL };
   process.env.WORLD2_PG = "1";
   process.env.WORLD2_PG_URL = "postgres://stub.invalid/never-dialled";
-  setActsPool({ query: async () => ({ rows: [{ handle: "upgrade-heir", login: "heir-human", gh_id: 4242 }] }) });
+  setActsPool({ query: async (sql) => ({ rows: /FROM ashore/.test(sql) ? ashore.map((handle) => ({ handle })) : pins }) });
   holdStoreProbe({
-    hasResident: (h) => h === "upgrade-heir", hasLetter: () => false,
+    hasResident: (h) => residents.includes(h), hasLetter: () => false,
     loginStamp: () => "stub", loginRows: () => [], mailStateJson: () => null,
   });
-  try {
+  try { return await fn(); } finally {
+    setActsPool(null);
+    holdStoreProbe(null);
+    for (const [name, v] of Object.entries(saved)) { if (v == null) delete process.env[name]; else process.env[name] = v; }
+  }
+};
+
+test("a co-signed berth upgrades in place under the resolver's null db (#3965)", async () => {
+  const key = await cosignedBerth("upgrade-heir", 4242, "heir-human");
+  await withStore({ pins: [{ handle: "upgrade-heir", login: "heir-human", gh_id: 4242 }], residents: ["upgrade-heir"] }, async () => {
     const k = await berthLookup(odb, null, null, key);
     assert.equal(k.keyKind, "berth-upgraded", "the same key answers as the household");
     assert.ok(k.handles.has("upgrade-heir"), "the household holds the berth's handle");
@@ -115,11 +128,36 @@ test("a co-signed berth upgrades in place under the resolver's null db (#3965)",
     assert.equal(k.cosigned, true);
     assert.equal(k.berth, undefined, "a settled household sheds the berth marker");
     assert.equal(k.harbor, undefined);
-  } finally {
-    setActsPool(null);
-    holdStoreProbe(null);
-    for (const [name, v] of Object.entries(saved)) { if (v == null) delete process.env[name]; else process.env[name] = v; }
-  }
+  });
+});
+
+test("a co-signed berth whose household is still at the harbor keeps the quay voice under a null db (#3965)", async () => {
+  const key = await cosignedBerth("harbor-heir", 4343, "harbor-human");
+  // Pinned to the account, but in neither the residents index nor the store's
+  // ashore rows: the household stands at the harbor.
+  await withStore({ pins: [{ handle: "harbor-heir", login: "harbor-human", gh_id: 4343 }] }, async () => {
+    const k = await berthLookup(odb, null, null, key);
+    assert.equal(k.keyKind, "berth-upgraded", "the key answers as the household");
+    assert.ok(k.handles.has("harbor-heir"));
+    assert.equal(k.harbor, true);
+    assert.equal(k.berth, "harbor-heir", "a harbor household keeps the berth marker");
+    assert.equal(k.slug, "harbor-heir");
+    assert.equal(k.rulesRead, false);
+    assert.equal(k.cosigned, true);
+  });
+});
+
+test("a co-signed berth whose account the registry does not know stays a berth under a null db (#3965)", async () => {
+  const key = await cosignedBerth("unknown-heir", 4444, "unknown-human");
+  // The store's pins name another account entirely, and no login row binds this one.
+  await withStore({ pins: [{ handle: "someone-else", login: "other-human", gh_id: 9999 }], residents: ["someone-else"] }, async () => {
+    const k = await berthLookup(odb, null, null, key);
+    assert.equal(k.berth, true, "no household match falls back to the berth shape");
+    assert.equal(k.household, null);
+    assert.equal(k.handles.size, 0);
+    assert.equal(k.cosigned, true);
+    assert.equal(k.keyKind, undefined);
+  });
 });
 
 test("an unco-signed berth never asks the registry (#3965)", async () => {
